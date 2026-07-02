@@ -2,3 +2,6 @@
 Thumbs.db
 *.log
 .vscode/
+
+# 本機真實工地/分包商/人員名單，絕不推上程式碼庫
+config.local.js

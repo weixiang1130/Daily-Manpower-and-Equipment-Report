@@ -10,6 +10,7 @@
 | [04](04-excel-alignment-subtabs.md) | Excel 欄位對齊與大頁籤重構 | 申請/回報拆為真正獨立的子模組、回報欄位對齊既有 Excel 查核表 |
 | [05](05-multi-site-support.md) | 多工地列控支援 | 工地改為申請時選定、匯入 16 個實際工地、總覽改為跨工地分列顯示 |
 | [06](06-git-github-setup.md) | Git / GitHub 版本控管建立 | 建立版本控制、推送至 GitHub、建立 PR 審核流程 |
+| [07](07-parent-child-multisite-isolation.md) | 父子單覆核與多工地隔離（v6） | 智慧搜尋下拉、申請/回報父子結構逐人勾選、小數出工、防呆警告、每工地獨立資料庫 |
 
 ## 如何新增下一個節點
 

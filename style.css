@@ -162,6 +162,59 @@ select option[value="__ADD_NEW__"]{
   color:var(--teal-700);font-weight:700;
 }
 
+/* ---------- Combobox（智慧搜尋下拉） ---------- */
+.combobox{position:relative;}
+.cb-list{
+  position:absolute;left:0;right:0;top:calc(100% + 4px);
+  background:#fff;border:1.5px solid var(--teal-500);border-radius:10px;
+  max-height:260px;overflow-y:auto;z-index:40;
+  box-shadow:0 10px 28px rgba(10,47,44,0.16);
+}
+.cb-item{
+  padding:10px 14px;font-size:14.5px;cursor:pointer;
+  border-bottom:1px solid #f0f5f4;
+}
+.cb-item:last-child{border-bottom:none;}
+.cb-item:hover{background:var(--teal-100);}
+.cb-item.cb-add{
+  color:var(--teal-700);font-weight:700;
+  background:#f7fbfa;border-top:1.5px dashed var(--line);
+  position:sticky;bottom:0;
+}
+.cb-item.cb-add:hover{background:var(--teal-600);color:#fff;}
+.cb-empty{padding:12px 14px;font-size:13px;color:var(--ink-400);font-style:italic;}
+
+/* ---------- 出工人員覆核（attendance） ---------- */
+.attendance-box{
+  border:1.5px solid var(--line);border-radius:10px;
+  padding:6px 12px;background:#fbfdfc;
+}
+.attendance-box.disabled{opacity:0.45;pointer-events:none;}
+.att-row{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:9px 2px;border-bottom:1px dashed var(--line);flex-wrap:wrap;
+}
+.att-row:last-child{border-bottom:none;}
+.att-check{
+  display:inline-flex;align-items:center;gap:9px;cursor:pointer;
+  font-size:15px;font-weight:600;color:var(--ink-600);min-width:120px;
+}
+.att-check input{width:19px;height:19px;accent-color:var(--teal-600);cursor:pointer;}
+.att-row.present .att-check{color:var(--teal-800);}
+.att-fields{display:flex;gap:14px;align-items:center;}
+.att-fields label{
+  display:inline-flex;align-items:center;gap:7px;
+  font-size:12.5px;font-weight:700;color:var(--ink-600);
+}
+.att-fields input{width:84px;padding:7px 8px;text-align:center;font-weight:700;}
+
+/* ---------- 0工確認 ---------- */
+.zero-chip{border-color:#f0cccc;}
+.zero-chip:has(input:checked){background:var(--red-500);border-color:var(--red-500);}
+
+/* ---------- 目前工地列 ---------- */
+tr.current-site-row td{background:#f4faf8;}
+
 /* ---------- Tag picker (dropdown-to-add multi-value fields) ---------- */
 .tag-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;min-height:22px;}
 .tag-pill{

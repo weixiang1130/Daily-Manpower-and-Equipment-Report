@@ -289,18 +289,6 @@ tr.current-site-row td{background:#f4faf8;}
 }
 .step-btn:active{transform:scale(0.94);}
 
-/* ---------- Timer ---------- */
-.timer-box{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
-#timerDisplay{
-  font-size:22px;
-  font-weight:800;
-  font-variant-numeric:tabular-nums;
-  color:var(--teal-800);
-  min-width:70px;
-}
-.timer-box.expired #timerDisplay{color:var(--red-500);}
-.timer-box.running #timerDisplay{color:var(--amber-600);}
-
 /* ---------- Buttons ---------- */
 .actions{display:flex;gap:10px;flex-wrap:wrap;}
 .btn-primary,.btn-secondary,.btn-ghost,.btn-danger{
@@ -317,6 +305,20 @@ tr.current-site-row td{background:#f4faf8;}
 .btn-ghost{background:transparent;color:var(--ink-600);border:1.5px solid var(--line);}
 .btn-danger{background:#fff;color:var(--red-500);border:1.5px solid var(--red-500);}
 .btn-danger:hover{background:var(--red-500);color:#fff;}
+.btn-sm{padding:8px 16px;font-size:13px;}
+.btn-danger-sm{
+  padding:6px 14px;font-size:12.5px;font-weight:600;
+  border-width:1px;opacity:0.85;
+}
+
+/* ---------- 管理員模式 ---------- */
+.admin-bar{display:flex;align-items:center;gap:12px;}
+.admin-only-badge{
+  display:inline-block;margin-left:8px;padding:2px 9px;border-radius:999px;
+  font-size:11px;font-weight:700;background:#fdf1de;color:var(--amber-600);
+  vertical-align:middle;
+}
+textarea[readonly]{background:#f1f5f4;color:var(--ink-400);cursor:not-allowed;}
 
 /* ---------- Tables / Lists ---------- */
 .table-wrap{overflow-x:auto;}

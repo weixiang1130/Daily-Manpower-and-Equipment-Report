@@ -145,15 +145,6 @@
           </div>
 
           <div class="field field-wide">
-            <label>現場清點計時（10分鐘，協助點算人數）</label>
-            <div class="timer-box">
-              <span id="timerDisplay">10:00</span>
-              <button type="button" id="timerStart" class="btn-secondary">開始清點</button>
-              <button type="button" id="timerReset" class="btn-ghost">重設</button>
-            </div>
-          </div>
-
-          <div class="field field-wide">
             <label>出工人員覆核（勾選到場者，並填寫實際出工數／加班時數）</label>
             <div id="l_attendance" class="attendance-box"></div>
           </div>
@@ -291,8 +282,8 @@
     <div id="sub-equip-report" class="sub-panel">
       <div class="panel highlight">
         <div class="panel-head">
-          <h2>機具回報</h2>
-          <p class="hint">由回報工程師填寫，直接承繼申請單資料。請先從下方清單點「填寫回報」選擇要回報的紀錄。</p>
+          <h2>機具回報覆核</h2>
+          <p class="hint">由回報工程師填寫（子層，直接承繼申請單資料）。逐台機具勾選確認到場後填寫實際工作使用時數；若機具完全未到場／未使用，勾選「0 使用確認」後仍可送出。</p>
         </div>
 
         <div id="equipReportContext" class="report-context">
@@ -300,8 +291,17 @@
         </div>
 
         <form id="equipReportForm" class="form-grid">
+          <div class="field field-wide">
+            <label>機具到場覆核（勾選到場者，並填寫實際工作使用時數）</label>
+            <div id="e_usage" class="attendance-box"></div>
+          </div>
+
+          <div class="field field-wide">
+            <label class="chip radio full-chip zero-chip"><input type="checkbox" id="e_zeroUse"><span>0 使用確認：機具實際未到場／未使用，本回報單以 0 時數寫入</span></label>
+          </div>
+
           <div class="field">
-            <label>機具實際工作使用時數（可含小數）</label>
+            <label>機具實際工作使用時數（總計，可含小數）</label>
             <input type="number" id="e_actualHours" min="0" step="0.5" value="0">
           </div>
           <div class="field">
@@ -363,7 +363,18 @@
   <section id="tab-settings" class="tab-panel">
     <div class="panel">
       <div class="panel-head">
-        <h2>工地清單（全域）</h2>
+        <h2>身分模式</h2>
+        <p class="hint">一般使用者可於各表單搜尋欄位新增選項（分包商／人員／地點等）；工地清單與基礎資料的批次編輯、還原、清空功能僅限管理員操作，避免誤觸。</p>
+      </div>
+      <div class="admin-bar">
+        <span id="adminStatus" class="tag warn">一般使用者</span>
+        <button type="button" id="adminToggleBtn" class="btn-secondary btn-sm">管理員登入</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>工地清單（全域）<span class="admin-only-badge">管理員</span></h2>
         <p class="hint">每行一個工地。新工地建立時會自動帶入預設分包商名單與基本選項；各工地的資料完全隔離，互不影響。</p>
       </div>
       <div class="form-grid">
@@ -376,8 +387,8 @@
 
     <div class="panel">
       <div class="panel-head">
-        <h2 id="siteConfigTitle">目前工地基礎資料</h2>
-        <p class="hint">以下清單僅屬於目前切換的工地。每行一個項目；也可直接在表單的搜尋欄位輸入後點「＋ 新增選項」快速加入。</p>
+        <h2 id="siteConfigTitle">目前工地基礎資料<span class="admin-only-badge">管理員</span></h2>
+        <p class="hint">以下清單僅屬於目前切換的工地。每行一個項目；一般使用者請改用表單搜尋欄位的「＋ 新增選項」加入。</p>
       </div>
       <div class="form-grid">
         <div class="field field-wide">
@@ -411,12 +422,12 @@
       </div>
     </div>
 
-    <div class="panel danger-zone">
-      <div class="panel-head"><h2>資料管理</h2></div>
-      <p class="hint">本系統資料暫存於本機瀏覽器（尚未接後端資料庫）。各工地資料獨立儲存。</p>
+    <div class="panel danger-zone" id="dangerZone">
+      <div class="panel-head"><h2>資料管理<span class="admin-only-badge">管理員</span></h2></div>
+      <p class="hint">本系統資料暫存於本機瀏覽器（尚未接後端資料庫）。各工地資料獨立儲存。清空操作無法復原，請謹慎使用。</p>
       <div class="actions">
-        <button id="clearSiteData" class="btn-danger">清空目前工地的紀錄</button>
-        <button id="clearAllData" class="btn-danger">清空全部工地資料</button>
+        <button id="clearSiteData" class="btn-danger btn-danger-sm">清空目前工地的紀錄</button>
+        <button id="clearAllData" class="btn-danger btn-danger-sm">清空全部工地資料</button>
       </div>
     </div>
   </section>

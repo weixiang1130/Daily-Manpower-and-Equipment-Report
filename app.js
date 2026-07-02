@@ -434,12 +434,9 @@ function loadLaborApplyRecord(id){
    ========================================================== */
 let editingLaborReportId = null;
 let attState = [];
-let auditTimer = { remaining: 600, handle: null, running:false };
 
 function initLaborReportForm(){
   bindCharCounter("l_conclusion","l_conclusionCount");
-  document.getElementById("timerStart").addEventListener("click", startAuditTimer);
-  document.getElementById("timerReset").addEventListener("click", resetAuditTimer);
   document.getElementById("laborReportCancelBtn").addEventListener("click", resetLaborReportForm);
   document.getElementById("l_actual").addEventListener("input", updateLaborDiff);
   document.getElementById("l_zeroWork").addEventListener("change", onZeroWorkToggle);
@@ -588,7 +585,6 @@ function updateLaborDiff(){
 function resetLaborReportForm(){
   editingLaborReportId = null;
   attState = [];
-  resetAuditTimer();
   document.getElementById("laborReportForm").reset();
   setCombo("cb_l_engineer", "");
   document.getElementById("l_attendance").innerHTML = "";
@@ -603,7 +599,6 @@ function loadLaborReportRecord(id){
   const rec = cur().labor.find(r=>r.id===id);
   if(!rec) return;
   editingLaborReportId = id;
-  resetAuditTimer();
 
   const prev = (rec.report && rec.report.attendance) || [];
   attState = (rec.workers||[]).map(name=>{
@@ -647,38 +642,6 @@ function deleteLaborRecord(id){
   toast("已刪除");
   renderLaborList();
   renderDashboard();
-}
-
-function startAuditTimer(){
-  const box = document.querySelector("#tab-labor .timer-box");
-  if(auditTimer.running) return;
-  auditTimer.running = true;
-  box.classList.remove("expired");
-  box.classList.add("running");
-  auditTimer.handle = setInterval(()=>{
-    auditTimer.remaining--;
-    renderTimerDisplay();
-    if(auditTimer.remaining<=0){
-      clearInterval(auditTimer.handle);
-      auditTimer.running = false;
-      box.classList.remove("running");
-      box.classList.add("expired");
-      toast("已逾時10分鐘，請僅計實到人數");
-    }
-  },1000);
-}
-function resetAuditTimer(){
-  clearInterval(auditTimer.handle);
-  auditTimer = { remaining:600, handle:null, running:false };
-  const box = document.querySelector("#tab-labor .timer-box");
-  if(box) box.classList.remove("running","expired");
-  renderTimerDisplay();
-}
-function renderTimerDisplay(){
-  const m = Math.floor(auditTimer.remaining/60);
-  const s = auditTimer.remaining%60;
-  const el = document.getElementById("timerDisplay");
-  if(el) el.textContent = `${m}:${String(s).padStart(2,"0")}`;
 }
 
 function renderLaborList(){
@@ -813,10 +776,30 @@ function loadEquipApplyRecord(id){
    機具 — 回報
    ========================================================== */
 let editingEquipReportId = null;
+let usageState = [];
 
 function initEquipReportForm(){
   document.getElementById("e_actualHours").addEventListener("input", updateEquipDiff);
   document.getElementById("equipReportCancelBtn").addEventListener("click", resetEquipReportForm);
+  document.getElementById("e_zeroUse").addEventListener("change", onZeroUseToggle);
+
+  const usageBox = document.getElementById("e_usage");
+  usageBox.addEventListener("change", e=>{
+    const cb = e.target.closest("input[type=checkbox][data-i]");
+    if(!cb) return;
+    const i = parseInt(cb.dataset.i,10);
+    usageState[i].present = cb.checked;
+    if(cb.checked && !(usageState[i].hours > 0)) usageState[i].hours = 8;
+    renderUsage();
+    syncTotalsFromUsage();
+  });
+  usageBox.addEventListener("input", e=>{
+    const el = e.target;
+    const i = parseInt(el.dataset.i,10);
+    if(Number.isNaN(i)) return;
+    if(el.classList.contains("usage-hours")) usageState[i].hours = parseFloat(el.value)||0;
+    syncTotalsFromUsage();
+  });
 
   document.getElementById("equipReportForm").addEventListener("submit", e=>{
     e.preventDefault();
@@ -832,11 +815,30 @@ function initEquipReportForm(){
     }
 
     const actualHours = parseFloat(document.getElementById("e_actualHours").value) || 0;
+    const zeroUse = document.getElementById("e_zeroUse").checked;
+
+    if(actualHours === 0 && !zeroUse){
+      toast("實際使用時數為 0：若機具確實未到場／未使用，請先勾選「0 使用確認」再送出");
+      return;
+    }
+    if(zeroUse && actualHours !== 0){
+      toast("已勾選 0 使用確認，但實際使用時數不為 0，請修正其中一項");
+      return;
+    }
+
+    const warnings = collectEquipWarnings(usageState, actualHours, zeroUse);
+    if(warnings.length){
+      const ok = confirm("⚠ 系統偵測到以下數據配置異常，請確認是否輸入錯誤：\n\n- " + warnings.join("\n- ") + "\n\n確認無誤仍要送出嗎？");
+      if(!ok) return;
+    }
 
     rec.report = {
       reportedAt: isoDate(new Date()),
-      checker, actualHours,
+      checker,
+      usage: usageState.map(u=>({type:u.type, present:u.present, hours:u.present?u.hours:0})),
+      actualHours,
       diff: actualHours - rec.requiredQty,
+      zeroUse,
       signReturnDate: document.getElementById("e_signReturnDate").value,
       selfDone: document.getElementById("e_selfDone").value.trim(),
       vendorDone: document.getElementById("e_vendorDone").value.trim()
@@ -844,12 +846,56 @@ function initEquipReportForm(){
     rec.status = "已回報";
 
     saveCur();
-    toast("已儲存回報");
+    toast(zeroUse ? "已以 0 時數寫入回報" : "已儲存回報");
     resetEquipReportForm();
     renderDashboard();
   });
 
   resetEquipReportForm();
+}
+
+function collectEquipWarnings(usage, actualHours, zeroUse){
+  const w = [];
+  if(zeroUse) return w;
+  usage.filter(u=>u.present).forEach(u=>{
+    if(!(u.hours > 0)) w.push(`${u.type}：已勾選到場，但實際使用時數為 0`);
+    if(u.hours > 12) w.push(`${u.type}：單日使用 ${fmt(u.hours)} 小時，高於常態`);
+  });
+  return w;
+}
+
+function renderUsage(){
+  const box = document.getElementById("e_usage");
+  const zero = document.getElementById("e_zeroUse").checked;
+  if(!usageState.length){
+    box.innerHTML = '<div class="empty-row">此申請單未填寫機具類型，請直接於下方輸入實際使用時數</div>';
+    return;
+  }
+  box.classList.toggle("disabled", zero);
+  box.innerHTML = usageState.map((u,i)=>`
+    <div class="att-row ${u.present?'present':''}">
+      <label class="att-check"><input type="checkbox" data-i="${i}" ${u.present?'checked':''} ${zero?'disabled':''}><span>${esc(u.type)}</span></label>
+      <div class="att-fields" ${u.present?'':'style="visibility:hidden;"'}>
+        <label>使用時數<input type="number" class="usage-hours" data-i="${i}" step="0.5" min="0" value="${u.hours}" ${zero?'disabled':''}></label>
+      </div>
+    </div>`).join("");
+}
+
+function syncTotalsFromUsage(){
+  if(!usageState.length){ updateEquipDiff(); return; }
+  const present = usageState.filter(u=>u.present);
+  document.getElementById("e_actualHours").value = present.reduce((s,u)=>s+(u.hours||0),0);
+  updateEquipDiff();
+}
+
+function onZeroUseToggle(){
+  const zero = document.getElementById("e_zeroUse").checked;
+  if(zero){
+    usageState.forEach(u=>{ u.present = false; });
+    document.getElementById("e_actualHours").value = 0;
+  }
+  renderUsage();
+  updateEquipDiff();
 }
 
 function updateEquipDiff(){
@@ -863,8 +909,10 @@ function updateEquipDiff(){
 
 function resetEquipReportForm(){
   editingEquipReportId = null;
+  usageState = [];
   document.getElementById("equipReportForm").reset();
   setCombo("cb_e_checker", "");
+  document.getElementById("e_usage").innerHTML = "";
   document.getElementById("e_diff").value = "";
   document.getElementById("equipReportContext").innerHTML = '<div class="empty-row">請從下方清單點選「填寫回報」開始</div>';
   document.getElementById("equipReportSubmitBtn").disabled = true;
@@ -876,11 +924,19 @@ function loadEquipReportRecord(id){
   if(!rec) return;
   editingEquipReportId = id;
 
+  const prev = (rec.report && rec.report.usage) || [];
+  usageState = (rec.types||[]).map(type=>{
+    const p = prev.find(x=>x.type===type);
+    return p ? {type, present:!!p.present, hours:p.hours||0} : {type, present:false, hours:8};
+  });
+
   document.getElementById("equipReportContext").innerHTML = `<div class="context-box">
     <strong>${esc(MASTER.currentSite)}</strong>　${esc(rec.date)}・${esc(rec.vendor)}　類型：${esc((rec.types||[]).join("、"))}　需求數量：${fmt(rec.requiredQty)}　申請人：${esc(rec.applicant)}
   </div>`;
 
   const rep = rec.report || {};
+  document.getElementById("e_zeroUse").checked = !!rep.zeroUse;
+  renderUsage();
   document.getElementById("e_actualHours").value = rep.actualHours != null ? rep.actualHours : 0;
   updateEquipDiff();
   document.getElementById("e_signReturnDate").value = rep.signReturnDate || "";
@@ -916,7 +972,9 @@ function renderEquipList(){
     ${list.map(x=>{
       const rep = x.report;
       const reported = x.status==="已回報" && rep;
-      const statusTag = reported ? '<span class="tag ok">已回報</span>' : '<span class="tag warn">待回報</span>';
+      const statusTag = reported
+        ? (rep.zeroUse ? '<span class="tag bad">0時數</span>' : '<span class="tag ok">已回報</span>')
+        : '<span class="tag warn">待回報</span>';
       const diffTag = !reported ? "—" : (rep.diff===0 ? '<span class="tag ok">相符</span>' : '<span class="tag bad">'+fmt(rep.diff)+'</span>');
       const reportBtnLabel = reported ? "編輯回報" : "填寫回報";
       return `<tr>
@@ -1073,14 +1131,17 @@ const REPORT_DEFS = {
   },
   equipment: {
     title:"機具紀錄",
-    headers:["出工日期","機具廠商","機具類型","型號","工作內容","工作地點","責任廠商","預計使用時數(需求數量)","申請人","狀態","簽單繳回日","機具實際工作使用時數","差異","簽單責任工程師","根基自辦","廠商代辦"],
+    headers:["出工日期","機具廠商","機具類型","型號","工作內容","工作地點","責任廠商","預計使用時數(需求數量)","申請人","狀態","簽單繳回日","機具實際工作使用時數","差異","0使用確認","機具使用明細","簽單責任工程師","根基自辦","廠商代辦"],
     rows: ()=>cur().equipment.map(x=>{
       const rep = x.report || {};
       const reported = x.status==="已回報" && x.report;
+      const usageDetail = (rep.usage||[]).filter(u=>u.present)
+        .map(u=>`${u.type}(${fmt(u.hours)}h)`).join("、");
       return [
         x.date, x.vendor, (x.types||[]).join("、"), x.model, x.content,
         (x.locations||[]).join("、"), x.vendor, fmt(x.requiredQty), x.applicant, x.status,
         rep.signReturnDate||"", reported?fmt(rep.actualHours):"", reported?fmt(rep.diff):"",
+        rep.zeroUse?"V":"", usageDetail,
         rep.checker||"", rep.selfDone||"", rep.vendorDone||""
       ];
     })
@@ -1130,6 +1191,52 @@ function exportCSV(key){
 }
 
 /* ==========================================================
+   管理員模式：清空／批次設定僅限管理員；一般使用者仍可透過
+   表單搜尋欄位「＋ 新增選項」新增資料。密碼由 config.local.js
+   的 adminPin 提供（程式碼庫預設為範例值 0000）。
+   注意：此為前端層級的防誤觸設計，非真正的資安防線；正式的
+   帳號權限控管需搭配後端服務。
+   ========================================================== */
+const ADMIN_PIN = (LOCAL.adminPin != null) ? String(LOCAL.adminPin) : "0000";
+
+function isAdmin(){ return sessionStorage.getItem("dm_admin") === "1"; }
+
+function initAdmin(){
+  document.getElementById("adminToggleBtn").addEventListener("click", ()=>{
+    if(isAdmin()){
+      sessionStorage.removeItem("dm_admin");
+      toast("已登出管理員模式");
+    }else{
+      const pin = prompt("請輸入管理員密碼：");
+      if(pin === null) return;
+      if(String(pin) === ADMIN_PIN){
+        sessionStorage.setItem("dm_admin", "1");
+        toast("已進入管理員模式");
+      }else{
+        toast("密碼錯誤");
+      }
+    }
+    applyAdminUI();
+  });
+}
+
+function applyAdminUI(){
+  const admin = isAdmin();
+  const status = document.getElementById("adminStatus");
+  status.textContent = admin ? "管理員" : "一般使用者";
+  status.className = admin ? "tag ok" : "tag warn";
+  document.getElementById("adminToggleBtn").textContent = admin ? "登出管理員" : "管理員登入";
+
+  document.getElementById("cfg_sites").readOnly = !admin;
+  Object.keys(SITE_CFG_MAP).forEach(id=>{
+    document.getElementById(id).readOnly = !admin;
+  });
+  document.getElementById("saveSettings").style.display = admin ? "" : "none";
+  document.getElementById("resetSettings").style.display = admin ? "" : "none";
+  document.getElementById("dangerZone").style.display = admin ? "" : "none";
+}
+
+/* ==========================================================
    設定（工地清單為全域；其餘基礎資料屬於目前工地）
    ========================================================== */
 const SITE_CFG_MAP = {
@@ -1139,15 +1246,17 @@ const SITE_CFG_MAP = {
 
 function renderSettings(){
   document.getElementById("cfg_sites").value = MASTER.sites.join("\n");
-  document.getElementById("siteConfigTitle").textContent = `目前工地基礎資料：${MASTER.currentSite}`;
+  document.getElementById("siteConfigTitle").childNodes[0].textContent = `目前工地基礎資料：${MASTER.currentSite}`;
   const c = cur().config;
   Object.entries(SITE_CFG_MAP).forEach(([id,key])=>{
     document.getElementById(id).value = (c[key]||[]).join("\n");
   });
+  applyAdminUI();
 }
 
 function initSettings(){
   document.getElementById("saveSettings").addEventListener("click", ()=>{
+    if(!isAdmin()){ toast("僅限管理員操作"); return; }
     const siteLines = document.getElementById("cfg_sites").value.split("\n").map(s=>s.trim()).filter(Boolean);
     if(siteLines.length) MASTER.sites = Array.from(new Set(siteLines));
     saveMaster();
@@ -1163,6 +1272,7 @@ function initSettings(){
   });
 
   document.getElementById("resetSettings").addEventListener("click", ()=>{
+    if(!isAdmin()){ toast("僅限管理員操作"); return; }
     if(!confirm(`確定要將「${MASTER.currentSite}」的基礎資料還原為預設值嗎？（紀錄不受影響）`)) return;
     cur().config = defaultSiteConfig();
     saveCur();
@@ -1171,6 +1281,7 @@ function initSettings(){
   });
 
   document.getElementById("clearSiteData").addEventListener("click", ()=>{
+    if(!isAdmin()){ toast("僅限管理員操作"); return; }
     if(!confirm(`確定要清空「${MASTER.currentSite}」的所有點工/機具紀錄嗎？此操作無法復原。（基礎資料清單保留）`)) return;
     const store = cur();
     store.labor = [];
@@ -1182,6 +1293,7 @@ function initSettings(){
   });
 
   document.getElementById("clearAllData").addEventListener("click", ()=>{
+    if(!isAdmin()){ toast("僅限管理員操作"); return; }
     if(!confirm("確定要清空全部工地的所有資料嗎？此操作無法復原。")) return;
     Object.keys(localStorage).filter(k=>k===MASTER_KEY || k.startsWith("dm_site_v6::")).forEach(k=>localStorage.removeItem(k));
     location.reload();
@@ -1225,6 +1337,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
   initEquipApplyForm();
   initEquipReportForm();
   initReportTabs();
+  initAdmin();
   initSettings();
   renderAll();
 });

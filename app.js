@@ -10,16 +10,19 @@
    廠商代辦／現場查核回饋；機具出工列控 → 簽單繳回日／機具實際
    工作使用時數／差異／簽單責任工程師／根基自辦／廠商代辦。
 
-   注意：以下 DEFAULT_CONFIG 僅為範例佔位資料，實際工地／分包商
-   ／人員名單請於「設定」頁面輸入，資料僅存於各自瀏覽器的
-   localStorage，不會寫回本程式碼庫。
+   注意：以下 DEFAULT_CONFIG 僅為範例佔位資料。實際工地／分包商
+   ／人員名單請放在 config.local.js（已列入 .gitignore，不會被
+   推上程式碼庫），格式為：
+     window.LOCAL_CONFIG = { sites:[...], vendors:[...], ... };
+   地端開啟時會自動以 LOCAL_CONFIG 取代下方範例值作為預設清單；
+   之後於「設定」頁面的修改則存於各自瀏覽器的 localStorage。
    ========================================================== */
 
 const STORAGE_KEY = "site_audit_v5";
 const ADD_NEW = "__ADD_NEW__";
 const ALL_SITES = "__ALL__";
 
-const DEFAULT_CONFIG = {
+const GENERIC_CONFIG = {
   sites: ["工地A", "工地B", "工地C"],
   vendors: ["分包商A", "分包商B"],
   locations: ["一樓", "二樓", "三樓", "室外廣場", "地下室", "料場", "其他"],
@@ -27,6 +30,10 @@ const DEFAULT_CONFIG = {
   equipTypes: ["吊車", "挖土機", "堆高機", "洗車台", "發電機", "其他"],
   people: ["王小明", "李小華", "陳大文"]
 };
+
+const DEFAULT_CONFIG = (typeof window !== "undefined" && window.LOCAL_CONFIG)
+  ? Object.assign({}, GENERIC_CONFIG, window.LOCAL_CONFIG)
+  : GENERIC_CONFIG;
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 
@@ -50,6 +57,16 @@ let STATE = loadState() || seedSampleData();
 if(!STATE.config) STATE.config = structuredClone(DEFAULT_CONFIG);
 if(!STATE.labor) STATE.labor = [];
 if(!STATE.equipment) STATE.equipment = [];
+
+// 若儲存的清單仍是內建範例佔位值，且本機有 config.local.js，
+// 則升級為本機真實名單（僅覆蓋仍為範例值的類別，已自訂者不動）
+if(typeof window !== "undefined" && window.LOCAL_CONFIG){
+  Object.keys(window.LOCAL_CONFIG).forEach(key=>{
+    if(JSON.stringify(STATE.config[key]) === JSON.stringify(GENERIC_CONFIG[key])){
+      STATE.config[key] = structuredClone(DEFAULT_CONFIG[key]);
+    }
+  });
+}
 
 function save(){
   localStorage.setItem(STORAGE_KEY, JSON.stringify(STATE));

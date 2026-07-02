@@ -2,6 +2,10 @@
 
 版本異動摘要。完整背景與設計決策請見 [`docs/milestones/`](docs/milestones/README.md)。
 
+## [節點 09] 2026-07-02 — Netlify 部署與私密名單注入
+- 新增 netlify.toml 與 scripts/build-config.mjs：建置時從環境變數 LOCAL_CONFIG_JS 產生 config.local.js
+- 真實名單不進 GitHub；Netlify 整站密碼保護
+
 ## [節點 08] 2026-07-02 — 機具父子覆核與管理員模式（v7）
 - 機具回報改為父子覆核：逐台勾選到場並填實際使用時數、0 使用確認路徑、防呆警告
 - 移除現場清點計時器（10 分鐘倒數）

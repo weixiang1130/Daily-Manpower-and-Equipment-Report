@@ -1,0 +1,5 @@
+# Netlify 部署設定
+# 建置時由環境變數 LOCAL_CONFIG_JS 產生 config.local.js（真實名單不進 GitHub）
+[build]
+  command = "node scripts/build-config.mjs"
+  publish = "."

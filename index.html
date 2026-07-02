@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>點工機具稽核系統</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">稽</span>
+    <div class="brand-text">
+      <div class="brand-title">點工 ‧ 機具稽核系統</div>
+      <div class="brand-sub">不預告抽查・申請時選定工地・申請與回報分開填寫</div>
+    </div>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button class="tab active" data-tab="dashboard">總覽</button>
+  <button class="tab" data-tab="labor">點工申請/回報</button>
+  <button class="tab" data-tab="equipment">機具申請/回報</button>
+  <button class="tab" data-tab="history">歷程報表</button>
+  <button class="tab" data-tab="settings">設定</button>
+</nav>
+
+<main id="app">
+
+  <!-- ============ 總覽 ============ -->
+  <section id="tab-dashboard" class="tab-panel active">
+    <div class="panel">
+      <div class="panel-head"><h2>整體概況（全部工地）</h2></div>
+      <div class="grid-cards" id="dashCards"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>各工地列控總覽</h2>
+        <p class="hint">點選工地名稱可直接跳轉並篩選該工地的點工／機具清單。</p>
+      </div>
+      <div id="siteBreakdown" class="table-wrap"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>待繳回簽單提醒</h2>
+      </div>
+      <div id="dueList" class="list-simple"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>最近出工回報紀錄</h2>
+      </div>
+      <div id="recentAudits" class="list-simple"></div>
+    </div>
+  </section>
+
+  <!-- ============ 點工申請/回報（大頁籤，下分申請／回報兩模組） ============ -->
+  <section id="tab-labor" class="tab-panel">
+    <div class="subtabs">
+      <button class="subtab active" data-sub="labor-apply">申請</button>
+      <button class="subtab" data-sub="labor-report">回報</button>
+    </div>
+
+    <!-- ---- 申請模組 ---- -->
+    <div id="sub-labor-apply" class="sub-panel active">
+      <div class="panel highlight">
+        <div class="panel-head">
+          <h2 id="laborApplyTitle">新增點工申請</h2>
+          <p class="hint">由申請人（工程師）填寫，建立當日叫工。</p>
+        </div>
+
+        <form id="laborApplyForm" class="form-grid">
+          <div class="field field-wide">
+            <label>工地</label>
+            <select id="l_site" required></select>
+          </div>
+          <div class="field">
+            <label>出工日期</label>
+            <input type="date" id="l_date" required>
+          </div>
+          <div class="field">
+            <label>分包商</label>
+            <select id="l_vendor" required></select>
+          </div>
+          <div class="field">
+            <label>需求工數</label>
+            <div class="stepper">
+              <button type="button" class="step-btn" data-target="l_required" data-delta="-1">－</button>
+              <input type="number" id="l_required" min="0" value="1" required>
+              <button type="button" class="step-btn" data-target="l_required" data-delta="1">＋</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>申請人（工程師）</label>
+            <select id="l_applicant" required></select>
+          </div>
+
+          <div class="field field-wide">
+            <label>工作地點</label>
+            <select id="l_locations_picker"></select>
+            <div class="tag-list" id="l_locations_tags"></div>
+          </div>
+
+          <div class="field field-wide">
+            <label>工作內容類別</label>
+            <select id="l_categories_picker"></select>
+            <div class="tag-list" id="l_categories_tags"></div>
+            <input type="text" id="l_categoryNote" class="note-input" placeholder="其他工作內容補充（選填，簡短即可）">
+          </div>
+
+          <div class="field field-wide actions">
+            <button type="submit" class="btn-primary" id="laborApplySubmitBtn">送出點工申請</button>
+            <button type="button" class="btn-ghost" id="laborApplyNewBtn" style="display:none;">＋ 新增另一筆（取消編輯）</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- ---- 回報模組 ---- -->
+    <div id="sub-labor-report" class="sub-panel">
+      <div class="panel highlight">
+        <div class="panel-head">
+          <h2>出工回報</h2>
+          <p class="hint">由回報工程師填寫，欄位對應查核表「點工出工列控」。請先從下方清單點「填寫回報」選擇要回報的紀錄。</p>
+        </div>
+
+        <div id="laborReportContext" class="report-context">
+          <div class="empty-row">請從下方清單點選「填寫回報」開始</div>
+        </div>
+
+        <form id="laborReportForm" class="form-grid">
+          <div class="field field-wide">
+            <label>三道查核依據（逐項勾選確認）</label>
+            <div class="chip-group">
+              <label class="chip"><input type="checkbox" id="l_check_face"><span>✔ 人臉辨識紀錄相符</span></label>
+              <label class="chip"><input type="checkbox" id="l_check_card"><span>✔ 白卡進出紀錄相符</span></label>
+              <label class="chip"><input type="checkbox" id="l_check_toolbox"><span>✔ 工具箱會議親筆簽名相符</span></label>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>現場清點計時（10分鐘，協助點算人數）</label>
+            <div class="timer-box">
+              <span id="timerDisplay">10:00</span>
+              <button type="button" id="timerStart" class="btn-secondary">開始清點</button>
+              <button type="button" id="timerReset" class="btn-ghost">重設</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>簽單實際出工數</label>
+            <div class="stepper">
+              <button type="button" class="step-btn" data-target="l_actual" data-delta="-1">－</button>
+              <input type="number" id="l_actual" min="0" value="0">
+              <button type="button" class="step-btn" data-target="l_actual" data-delta="1">＋</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>差異（自動計算）</label>
+            <input type="text" id="l_diff" readonly class="readonly-field">
+          </div>
+          <div class="field">
+            <label>簽單繳回日</label>
+            <input type="date" id="l_signReturnDate">
+          </div>
+
+          <div class="field field-wide">
+            <label>簽單責任工程師</label>
+            <select id="l_engineer" required></select>
+          </div>
+
+          <div class="field field-wide">
+            <label>實際工作時數（白天）</label>
+            <input type="text" id="l_dayHours" class="note-input" placeholder="例：8:00-17:00(8小時)*3">
+          </div>
+          <div class="field field-wide">
+            <label>實際加班時數（晚上）</label>
+            <input type="text" id="l_nightHours" class="note-input" placeholder="例：17:00-20:00(3小時)*2">
+          </div>
+          <div class="field">
+            <label>根基自辦</label>
+            <input type="text" id="l_selfDone" placeholder="例：2工">
+          </div>
+          <div class="field">
+            <label>廠商代辦</label>
+            <input type="text" id="l_vendorDone" placeholder="例：頤達扣2工，扣款4200">
+          </div>
+
+          <div class="field field-wide">
+            <label>現場查核回饋（限20字內，僅需簡短註記）</label>
+            <textarea id="l_conclusion" maxlength="30" rows="2" placeholder="例：現場人員到齊，工作內容相符"></textarea>
+            <div class="char-count"><span id="l_conclusionCount">0</span>/30 字</div>
+          </div>
+
+          <div class="field field-wide actions">
+            <button type="submit" class="btn-primary" id="laborReportSubmitBtn" disabled>儲存回報</button>
+            <button type="button" class="btn-ghost" id="laborReportCancelBtn">清空 / 取消</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>點工清單</h2>
+        <div class="list-filter">
+          <label>篩選工地</label>
+          <select id="laborListFilter"></select>
+        </div>
+      </div>
+      <div id="laborList" class="table-wrap"></div>
+    </div>
+  </section>
+
+  <!-- ============ 機具申請/回報（大頁籤，下分申請／回報兩模組） ============ -->
+  <section id="tab-equipment" class="tab-panel">
+    <div class="subtabs">
+      <button class="subtab active" data-sub="equip-apply">申請</button>
+      <button class="subtab" data-sub="equip-report">回報</button>
+    </div>
+
+    <!-- ---- 申請模組 ---- -->
+    <div id="sub-equip-apply" class="sub-panel active">
+      <div class="panel highlight">
+        <div class="panel-head">
+          <h2 id="equipApplyTitle">新增機具申請</h2>
+          <p class="hint">由申請人（工程師）填寫，建立機具需求。</p>
+        </div>
+
+        <form id="equipApplyForm" class="form-grid">
+          <div class="field field-wide">
+            <label>工地</label>
+            <select id="e_site" required></select>
+          </div>
+          <div class="field">
+            <label>需求日期</label>
+            <input type="date" id="e_date" required>
+          </div>
+          <div class="field">
+            <label>機具廠商</label>
+            <select id="e_vendor" required></select>
+          </div>
+          <div class="field">
+            <label>申請人（工程師）</label>
+            <select id="e_applicant" required></select>
+          </div>
+          <div class="field">
+            <label>型號</label>
+            <input type="text" id="e_model" placeholder="例：120T">
+          </div>
+
+          <div class="field field-wide">
+            <label>機具類型</label>
+            <select id="e_type_picker"></select>
+            <div class="tag-list" id="e_type_tags"></div>
+          </div>
+
+          <div class="field">
+            <label>需求數量</label>
+            <div class="stepper">
+              <button type="button" class="step-btn" data-target="e_requiredQty" data-delta="-1">－</button>
+              <input type="number" id="e_requiredQty" min="0" value="1" required>
+              <button type="button" class="step-btn" data-target="e_requiredQty" data-delta="1">＋</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>是否為合約廠商</label>
+            <div class="chip-group">
+              <label class="chip radio"><input type="radio" name="e_contract" value="是" checked><span>是</span></label>
+              <label class="chip radio"><input type="radio" name="e_contract" value="否"><span>否</span></label>
+            </div>
+          </div>
+
+          <div class="field field-wide">
+            <label>工作地點</label>
+            <select id="e_locations_picker"></select>
+            <div class="tag-list" id="e_locations_tags"></div>
+          </div>
+          <div class="field field-wide">
+            <label>工作內容</label>
+            <input type="text" id="e_content" class="note-input" placeholder="例：吊掛物料、開挖等，簡短即可">
+          </div>
+
+          <div class="field field-wide actions">
+            <button type="submit" class="btn-primary" id="equipApplySubmitBtn">送出機具申請</button>
+            <button type="button" class="btn-ghost" id="equipApplyNewBtn" style="display:none;">＋ 新增另一筆（取消編輯）</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- ---- 回報模組 ---- -->
+    <div id="sub-equip-report" class="sub-panel">
+      <div class="panel highlight">
+        <div class="panel-head">
+          <h2>機具回報</h2>
+          <p class="hint">由回報工程師填寫，欄位對應查核表「機具出工列控」。請先從下方清單點「填寫回報」選擇要回報的紀錄。</p>
+        </div>
+
+        <div id="equipReportContext" class="report-context">
+          <div class="empty-row">請從下方清單點選「填寫回報」開始</div>
+        </div>
+
+        <form id="equipReportForm" class="form-grid">
+          <div class="field">
+            <label>機具實際工作使用時數</label>
+            <div class="stepper">
+              <button type="button" class="step-btn" data-target="e_actualHours" data-delta="-1">－</button>
+              <input type="number" id="e_actualHours" min="0" value="0">
+              <button type="button" class="step-btn" data-target="e_actualHours" data-delta="1">＋</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>差異（自動計算）</label>
+            <input type="text" id="e_diff" readonly class="readonly-field">
+          </div>
+
+          <div class="field">
+            <label>簽單繳回日</label>
+            <input type="date" id="e_signReturnDate">
+          </div>
+          <div class="field">
+            <label>簽單責任工程師</label>
+            <select id="e_checker" required></select>
+          </div>
+
+          <div class="field">
+            <label>根基自辦</label>
+            <input type="text" id="e_selfDone" placeholder="選填">
+          </div>
+          <div class="field">
+            <label>廠商代辦</label>
+            <input type="text" id="e_vendorDone" placeholder="選填">
+          </div>
+
+          <div class="field field-wide actions">
+            <button type="submit" class="btn-primary" id="equipReportSubmitBtn" disabled>儲存回報</button>
+            <button type="button" class="btn-ghost" id="equipReportCancelBtn">清空 / 取消</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>機具清單</h2>
+        <div class="list-filter">
+          <label>篩選工地</label>
+          <select id="equipListFilter"></select>
+        </div>
+      </div>
+      <div id="equipList" class="table-wrap"></div>
+    </div>
+  </section>
+
+  <!-- ============ 歷程報表 ============ -->
+  <section id="tab-history" class="tab-panel">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>歷程報表</h2>
+        <p class="hint">可依工地篩選並匯出 CSV，欄位對應既有 Excel 查核表，方便直接彙整回報。</p>
+      </div>
+      <div class="report-tabs" id="reportTabs">
+        <button class="rtab active" data-r="labor">點工紀錄</button>
+        <button class="rtab" data-r="equipment">機具紀錄</button>
+      </div>
+      <div class="list-filter">
+        <label>篩選工地</label>
+        <select id="reportSiteFilter"></select>
+      </div>
+      <div class="report-actions">
+        <button id="exportBtn" class="btn-secondary">匯出 CSV</button>
+      </div>
+      <div id="reportTable" class="table-wrap"></div>
+    </div>
+  </section>
+
+  <!-- ============ 設定 ============ -->
+  <section id="tab-settings" class="tab-panel">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>專案設定（每個工地可自訂固定選單）</h2>
+        <p class="hint">修改後將立即套用於所有表單的下拉選單。每行一個項目。也可直接在表單下拉選單最下方點「＋ 新增選項」快速新增。</p>
+      </div>
+      <div class="form-grid">
+        <div class="field field-wide">
+          <label>工地清單</label>
+          <textarea id="cfg_sites" rows="4"></textarea>
+        </div>
+        <div class="field field-wide">
+          <label>分包商清單</label>
+          <textarea id="cfg_vendors" rows="4"></textarea>
+        </div>
+        <div class="field field-wide">
+          <label>工作地點清單</label>
+          <textarea id="cfg_locations" rows="4"></textarea>
+        </div>
+        <div class="field field-wide">
+          <label>工作內容類別清單</label>
+          <textarea id="cfg_categories" rows="4"></textarea>
+        </div>
+        <div class="field field-wide">
+          <label>機具類型清單</label>
+          <textarea id="cfg_equipTypes" rows="4"></textarea>
+        </div>
+        <div class="field field-wide">
+          <label>人員名單（工程師）</label>
+          <textarea id="cfg_people" rows="4"></textarea>
+        </div>
+        <div class="field field-wide actions">
+          <button id="saveSettings" class="btn-primary">儲存設定</button>
+          <button id="resetSettings" class="btn-ghost">還原預設值</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel danger-zone">
+      <div class="panel-head"><h2>資料管理</h2></div>
+      <p class="hint">本系統資料暫存於本機瀏覽器（尚未接後端資料庫），如需清空重來請使用下方按鈕。</p>
+      <button id="clearAllData" class="btn-danger">清空所有紀錄</button>
+    </div>
+  </section>
+
+</main>
+
+<div id="toast" class="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

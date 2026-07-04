@@ -2,6 +2,12 @@
 
 版本異動摘要。完整背景與設計決策請見 [`docs/milestones/`](docs/milestones/README.md)。
 
+## [節點 10] 2026-07-03 — 共用資料庫與填錯工地防呆（v8）
+- 業務資料改存雲端共用資料庫（Netlify Functions + Blobs，/api/data）——所有人即時共編，取代各自的 localStorage
+- 寫入採 await-first（雲端成功才清表單），失敗保留輸入內容提示重試
+- 防呆三道：開站選工地攔截頁、表單常駐工地徽章、申請送出前工地確認視窗
+- 頁首新增「↻ 重新整理」，切換頁籤時自動靜默更新
+
 ## [節點 09] 2026-07-02 — Netlify 部署與私密名單注入
 - 新增 netlify.toml 與 scripts/build-config.mjs：建置時從環境變數 LOCAL_CONFIG_JS 產生 config.local.js
 - 真實名單不進 GitHub；Netlify 整站密碼保護

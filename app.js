@@ -1,28 +1,23 @@
 /* ==========================================================
-   點工機具稽核系統 - 前端原型 v6
-   資料以 localStorage 暫存（單機示範用，之後可換接後端 API）
+   點工機具稽核系統 - 前端 v8（共用資料庫版）
 
-   v6 重點：
-   1. 多工地完全隔離：每個工地一把獨立的 localStorage key
-      （dm_site_v6::<工地名>），基礎資料（分包商/人員/地點…）
-      與紀錄（點工/機具）互不共用；頁首切換工地即切換資料環境。
-   2. 點工申請(父) / 回報覆核(子)：申請單含「預計進場人員名單」，
-      回報時逐人勾選到場並填實際出工數(可含小數)與加班時數；
-      全無人出工需勾「0工確認」後以 0 工寫入。
-   3. 智慧搜尋下拉（combobox）：分包商/申請人/工程師/工作地點/
-      點工人員皆可輸入模糊搜尋，搜不到時選單底部「＋ 新增選項」
-      直接寫入目前工地的基礎資料。
-   4. 防呆警告：出工數與加班時數配置異常時彈出警告（可仍送出）。
+   v8 重點：
+   1. 資料改存雲端共用資料庫（Netlify Functions + Blobs，
+      API：/api/data）——所有使用者讀寫同一份資料，任何人的
+      填報其他人重新整理後都看得到；不再使用 localStorage 存
+      業務資料（僅 sessionStorage 記住本分頁的工地與管理員狀態）。
+   2. 填錯工地防呆（三道）：
+      a. 每次開啟頁面必須先在攔截頁明確選定工地
+      b. 申請/回報表單面板常駐醒目的目前工地徽章
+      c. 送出「申請」前彈出工地確認視窗
+   3. 同筆紀錄若兩人同時編輯為後寫者覆蓋（last-write-wins）；
+      不同紀錄互不影響（每筆獨立儲存）。
 
-   注意：以下 GENERIC_CONFIG 僅為範例佔位資料。實際工地／分包商
-   ／人員名單請放在 config.local.js（已列入 .gitignore，不會被
-   推上程式碼庫），格式為：
-     window.LOCAL_CONFIG = { sites:[...], vendors:[...], people:[...] };
-   vendors 會作為每個工地建立時的預設分包商名單。
+   注意：以下 GENERIC_CONFIG 僅為範例佔位資料。實際名單由
+   config.local.js 提供（地端手動放置；Netlify 部署時由環境
+   變數 LOCAL_CONFIG_JS 於建置時產生），不進入程式碼庫。
    ========================================================== */
 
-const MASTER_KEY = "dm_master_v6";
-const SITE_KEY = s => "dm_site_v6::" + s;
 const ADD_NEW = "__ADD_NEW__";
 
 const GENERIC_CONFIG = {
@@ -36,6 +31,10 @@ const GENERIC_CONFIG = {
 
 const LOCAL = (typeof window !== "undefined" && window.LOCAL_CONFIG) ? window.LOCAL_CONFIG : {};
 
+let MASTER = { sites: [], currentSite: null };
+let SITE_CACHE = {};
+let READY = false;
+
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function esc(s){
   return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -43,26 +42,37 @@ function esc(s){
 function isoDate(d){ return d.toISOString().slice(0,10); }
 function fmt(n){ const v = Math.round((Number(n)||0)*100)/100; return String(v); }
 
-/* ==========================================================
-   儲存層：master（工地清單＋目前工地）＋ 每工地獨立 store
-   ========================================================== */
-let MASTER = loadMaster();
-const SITE_CACHE = {};
-
-function loadMaster(){
-  try{
-    const raw = localStorage.getItem(MASTER_KEY);
-    if(raw){
-      const m = JSON.parse(raw);
-      if(Array.isArray(m.sites) && m.sites.length) return m;
-    }
-  }catch(e){}
-  const sites = (LOCAL.sites && LOCAL.sites.length ? LOCAL.sites : GENERIC_CONFIG.sites).slice();
-  return { sites, currentSite: sites[0] };
+function toast(msg){
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(()=>t.classList.remove("show"), 2600);
 }
-function saveMaster(){
-  if(!MASTER.sites.includes(MASTER.currentSite)) MASTER.currentSite = MASTER.sites[0];
-  localStorage.setItem(MASTER_KEY, JSON.stringify(MASTER));
+
+/* ==========================================================
+   API 層（共用資料庫）
+   ========================================================== */
+async function api(method, body, query){
+  const qs = query ? "?" + new URLSearchParams(query).toString() : "";
+  const res = await fetch("/api/data" + qs, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if(!res.ok) throw new Error("API " + res.status);
+  return res.json();
+}
+
+const apiSaveMaster = () => api("POST", { op:"master", sites: MASTER.sites });
+const apiSaveConfig = (site) => api("POST", { op:"config", site, config: SITE_CACHE[site].config });
+const apiSaveRecord = (kind, rec) => api("POST", { op:"record", site: MASTER.currentSite, kind, record: rec });
+const apiDeleteRecord = (kind, id) => api("POST", { op:"deleteRecord", site: MASTER.currentSite, kind, id });
+
+function sortRecords(store){
+  const byNewest = (a,b)=> String(b.id).localeCompare(String(a.id));
+  store.labor.sort(byNewest);
+  store.equipment.sort(byNewest);
 }
 
 function defaultSiteConfig(){
@@ -75,34 +85,114 @@ function defaultSiteConfig(){
     workers: []
   };
 }
+function cur(){ return SITE_CACHE[MASTER.currentSite]; }
 
-function loadSiteStore(site){
-  if(SITE_CACHE[site]) return SITE_CACHE[site];
-  let store = null;
+function anyEditing(){
+  return !!(editingLaborApplyId || editingLaborReportId || editingEquipApplyId || editingEquipReportId);
+}
+
+/* ==========================================================
+   啟動：載入共用資料庫 → 選工地攔截頁
+   ========================================================== */
+function showLoading(msg){
+  const el = document.getElementById("appLoading");
+  if(msg === false){ el.hidden = true; return; }
+  document.getElementById("appLoadingMsg").textContent = msg || "正在連線共用資料庫…";
+  el.hidden = false;
+}
+
+async function boot(){
+  showLoading("正在連線共用資料庫…");
   try{
-    const raw = localStorage.getItem(SITE_KEY(site));
-    if(raw) store = JSON.parse(raw);
-  }catch(e){}
-  if(!store) store = { config: defaultSiteConfig(), labor: [], equipment: [] };
-  if(!store.config) store.config = defaultSiteConfig();
-  Object.keys(defaultSiteConfig()).forEach(k=>{ if(!Array.isArray(store.config[k])) store.config[k] = []; });
-  if(!store.labor) store.labor = [];
-  if(!store.equipment) store.equipment = [];
-  SITE_CACHE[site] = store;
-  return store;
-}
-function saveSite(site){
-  localStorage.setItem(SITE_KEY(site), JSON.stringify(SITE_CACHE[site]));
-}
-function cur(){ return loadSiteStore(MASTER.currentSite); }
-function saveCur(){ saveSite(MASTER.currentSite); }
+    const data = await api("GET", null, { scope: "all" });
 
-function toast(msg){
-  const t = document.getElementById("toast");
-  t.textContent = msg;
-  t.classList.add("show");
-  clearTimeout(toast._t);
-  toast._t = setTimeout(()=>t.classList.remove("show"), 2600);
+    if(data.master && Array.isArray(data.master.sites) && data.master.sites.length){
+      MASTER.sites = data.master.sites;
+    }else{
+      MASTER.sites = (LOCAL.sites && LOCAL.sites.length ? LOCAL.sites : GENERIC_CONFIG.sites).slice();
+      await apiSaveMaster();
+    }
+
+    SITE_CACHE = {};
+    const seedJobs = [];
+    for(const site of MASTER.sites){
+      const st = (data.stores && data.stores[site]) || {};
+      SITE_CACHE[site] = {
+        config: st.config || null,
+        labor: st.labor || [],
+        equipment: st.equipment || []
+      };
+      sortRecords(SITE_CACHE[site]);
+      if(!SITE_CACHE[site].config){
+        SITE_CACHE[site].config = defaultSiteConfig();
+        seedJobs.push(apiSaveConfig(site));
+      }
+    }
+    if(seedJobs.length) await Promise.all(seedJobs);
+
+    showLoading(false);
+
+    const remembered = sessionStorage.getItem("dm_site");
+    if(remembered && MASTER.sites.includes(remembered)){
+      enterSite(remembered);
+    }else{
+      showSiteGate();
+    }
+  }catch(e){
+    showLoading(false);
+    document.getElementById("appFatal").hidden = false;
+  }
+}
+
+function showSiteGate(){
+  const grid = document.getElementById("siteGateGrid");
+  grid.innerHTML = MASTER.sites.map(s=>`<button type="button" class="gate-btn" data-site="${esc(s)}">${esc(s)}</button>`).join("");
+  grid.querySelectorAll(".gate-btn").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      document.getElementById("siteGate").hidden = true;
+      enterSite(btn.dataset.site);
+    });
+  });
+  document.getElementById("siteGate").hidden = false;
+}
+
+function enterSite(site){
+  MASTER.currentSite = site;
+  sessionStorage.setItem("dm_site", site);
+  READY = true;
+  renderAll();
+}
+
+/* 重新整理：從共用資料庫重新載入全部資料 */
+async function refreshData(silent){
+  if(anyEditing()){
+    if(!silent) toast("表單編輯中，請先送出或取消再重新整理");
+    return;
+  }
+  if(!silent) showLoading("重新整理中…");
+  try{
+    const data = await api("GET", null, { scope: "all" });
+    if(data.master && data.master.sites && data.master.sites.length) MASTER.sites = data.master.sites;
+    for(const site of MASTER.sites){
+      const st = (data.stores && data.stores[site]) || {};
+      SITE_CACHE[site] = {
+        config: st.config || SITE_CACHE[site]?.config || defaultSiteConfig(),
+        labor: st.labor || [],
+        equipment: st.equipment || []
+      };
+      sortRecords(SITE_CACHE[site]);
+    }
+    if(!MASTER.sites.includes(MASTER.currentSite)){
+      MASTER.currentSite = MASTER.sites[0];
+      sessionStorage.setItem("dm_site", MASTER.currentSite);
+    }
+    renderAll();
+    if(!silent) toast("已載入最新資料");
+  }catch(e){
+    if(!silent) toast("⚠ 重新整理失敗，請檢查網路");
+  }finally{
+    if(!silent) showLoading(false);
+  }
 }
 
 /* ==========================================================
@@ -116,24 +206,32 @@ function renderSitePicker(){
 }
 function switchSiteContext(site, silent){
   MASTER.currentSite = site;
-  saveMaster();
+  sessionStorage.setItem("dm_site", site);
   resetLaborApplyForm();
   resetLaborReportForm();
   resetEquipApplyForm();
   resetEquipReportForm();
   renderAll();
   if(!silent) toast(`已切換至：${site}`);
+  refreshData(true);
+}
+function renderSiteChips(){
+  document.querySelectorAll("[data-site-chip]").forEach(el=>{
+    el.textContent = "📍 " + (MASTER.currentSite || "");
+  });
 }
 
 /* ---------------- Top-level / Sub Tabs ---------------- */
 function initTabs(){
   document.querySelectorAll(".tabs > .tab").forEach(btn=>{
     btn.addEventListener("click", ()=>{
+      if(!READY) return;
       document.querySelectorAll(".tabs > .tab").forEach(b=>b.classList.remove("active"));
       document.querySelectorAll("#app > .tab-panel").forEach(p=>p.classList.remove("active"));
       btn.classList.add("active");
       document.getElementById("tab-"+btn.dataset.tab).classList.add("active");
-      if(btn.dataset.tab === "dashboard") renderDashboard();
+      if(btn.dataset.tab === "dashboard"){ renderDashboard(); refreshData(true); }
+      if(btn.dataset.tab === "labor" || btn.dataset.tab === "equipment"){ refreshData(true); }
       if(btn.dataset.tab === "history") renderReport(currentReport);
       if(btn.dataset.tab === "settings") renderSettings();
     });
@@ -170,7 +268,7 @@ function initCombobox(rootId, pool, placeholder, opts={}){
   const list = root.querySelector(".cb-list");
   COMBO[rootId] = { pool, input, list, multi: opts.multi || null, onChange: opts.onChange || null };
 
-  const options = ()=> (cur().config[pool] || []);
+  const options = ()=> (cur() && cur().config[pool]) || [];
 
   function render(){
     const raw = input.value.trim();
@@ -243,8 +341,9 @@ function addPoolOption(pool, v){
   if(!Array.isArray(c[pool])) c[pool] = [];
   if(!c[pool].includes(v)){
     c[pool].push(v);
-    saveCur();
-    toast(`已新增至本工地資料庫：${v}`);
+    apiSaveConfig(MASTER.currentSite)
+      .then(()=>toast(`已新增至本工地共用資料庫：${v}`))
+      .catch(()=>toast(`⚠ 「${v}」雲端儲存失敗，請按重新整理後再試`));
   }
 }
 function getCombo(rootId){ return COMBO[rootId] ? COMBO[rootId].input.value.trim() : ""; }
@@ -317,6 +416,7 @@ function initSelectTagPicker(pickerId, fieldId){
 }
 
 function renderOptionPools(){
+  if(!cur()) return;
   const c = cur().config;
   fillSelect("l_categories_picker", c.categories, "點選以新增工作內容類別", "categories");
   fillSelect("e_type_picker", c.equipTypes, "點選以新增機具類型", "equipTypes");
@@ -352,21 +452,25 @@ function initLaborApplyForm(){
   document.getElementById("l_date").valueAsDate = new Date(Date.now()+86400000);
   document.getElementById("laborApplyNewBtn").addEventListener("click", resetLaborApplyForm);
 
-  document.getElementById("laborApplyForm").addEventListener("submit", e=>{
+  document.getElementById("laborApplyForm").addEventListener("submit", async e=>{
     e.preventDefault();
     const vendor = requireCombo("cb_l_vendor", "分包商");
     if(vendor === null) return;
     const applicant = requireCombo("cb_l_applicant", "申請人");
     if(applicant === null) return;
     const required = parseFloat(document.getElementById("l_required").value) || 0;
+    const date = document.getElementById("l_date").value;
+
+    // 防呆：送出前確認工地
+    const okSite = confirm(`⚠ 工地確認\n\n本筆點工申請將寫入共用資料庫的工地：\n「${MASTER.currentSite}」\n\n${date}・${vendor}・需求 ${fmt(required)} 工・申請人 ${applicant}\n\n工地正確嗎？`);
+    if(!okSite) return;
 
     const store = cur();
     const existing = editingLaborApplyId ? store.labor.find(r=>r.id===editingLaborApplyId) : null;
 
     const rec = {
       id: editingLaborApplyId || uid(),
-      date: document.getElementById("l_date").value,
-      vendor, applicant, required,
+      date, vendor, applicant, required,
       workers: tagState.l_workers.slice(),
       locations: tagState.l_locations.slice(),
       categories: tagState.l_categories.slice(),
@@ -375,15 +479,21 @@ function initLaborApplyForm(){
       report: existing ? existing.report : null
     };
 
-    if(editingLaborApplyId){
-      const idx = store.labor.findIndex(r=>r.id===editingLaborApplyId);
+    try{
+      await apiSaveRecord("labor", rec);
+    }catch(err){
+      toast("⚠ 雲端儲存失敗，資料未送出，請檢查網路後再按一次送出");
+      return;
+    }
+
+    if(existing){
+      const idx = store.labor.findIndex(r=>r.id===rec.id);
       store.labor[idx] = rec;
-      toast("申請資料已更新");
+      toast("申請資料已更新（所有人皆可看到）");
     }else{
       store.labor.unshift(rec);
-      toast("點工申請已送出，待現場回報覆核");
+      toast("點工申請已送出至共用資料庫，待現場回報覆核");
     }
-    saveCur();
     resetLaborApplyForm();
     renderDashboard();
   });
@@ -404,7 +514,7 @@ function resetLaborApplyForm(){
   document.getElementById("laborApplyTitle").textContent = "新增點工申請";
   document.getElementById("laborApplySubmitBtn").textContent = "送出點工申請";
   document.getElementById("laborApplyNewBtn").style.display = "none";
-  renderLaborList();
+  if(READY) renderLaborList();
 }
 
 function loadLaborApplyRecord(id){
@@ -430,7 +540,7 @@ function loadLaborApplyRecord(id){
 }
 
 /* ==========================================================
-   點工 — 回報覆核（子層，承繼父層人員名單逐人勾選）
+   點工 — 回報覆核（子層）
    ========================================================== */
 let editingLaborReportId = null;
 let attState = [];
@@ -460,7 +570,7 @@ function initLaborReportForm(){
     syncTotalsFromAttendance();
   });
 
-  document.getElementById("laborReportForm").addEventListener("submit", e=>{
+  document.getElementById("laborReportForm").addEventListener("submit", async e=>{
     e.preventDefault();
     if(!editingLaborReportId){ toast("請先從清單選擇要回報的紀錄"); return; }
     const store = cur();
@@ -492,25 +602,35 @@ function initLaborReportForm(){
       if(!ok) return;
     }
 
-    rec.report = {
-      reportedAt: isoDate(new Date()),
-      engineer,
-      checkFace: document.getElementById("l_check_face").checked,
-      checkCard: document.getElementById("l_check_card").checked,
-      checkToolbox: document.getElementById("l_check_toolbox").checked,
-      attendance: attState.map(a=>({name:a.name, present:a.present, work:a.present?a.work:0, ot:a.present?a.ot:0})),
-      actual, totalOT,
-      diff: actual - rec.required,
-      zeroWork,
-      signReturnDate: document.getElementById("l_signReturnDate").value,
-      selfDone: document.getElementById("l_selfDone").value.trim(),
-      vendorDone: document.getElementById("l_vendorDone").value.trim(),
-      conclusion: document.getElementById("l_conclusion").value.trim()
-    };
-    rec.status = "已回報";
+    const updated = Object.assign({}, rec, {
+      status: "已回報",
+      report: {
+        reportedAt: isoDate(new Date()),
+        engineer,
+        checkFace: document.getElementById("l_check_face").checked,
+        checkCard: document.getElementById("l_check_card").checked,
+        checkToolbox: document.getElementById("l_check_toolbox").checked,
+        attendance: attState.map(a=>({name:a.name, present:a.present, work:a.present?a.work:0, ot:a.present?a.ot:0})),
+        actual, totalOT,
+        diff: actual - rec.required,
+        zeroWork,
+        signReturnDate: document.getElementById("l_signReturnDate").value,
+        selfDone: document.getElementById("l_selfDone").value.trim(),
+        vendorDone: document.getElementById("l_vendorDone").value.trim(),
+        conclusion: document.getElementById("l_conclusion").value.trim()
+      }
+    });
 
-    saveCur();
-    toast(zeroWork ? "已以 0 工寫入回報" : "已儲存回報");
+    try{
+      await apiSaveRecord("labor", updated);
+    }catch(err){
+      toast("⚠ 雲端儲存失敗，回報未送出，請檢查網路後再按一次送出");
+      return;
+    }
+
+    const idx = store.labor.findIndex(r=>r.id===updated.id);
+    store.labor[idx] = updated;
+    toast(zeroWork ? "已以 0 工寫入共用資料庫" : "回報已儲存至共用資料庫");
     resetLaborReportForm();
     renderDashboard();
   });
@@ -592,7 +712,7 @@ function resetLaborReportForm(){
   document.getElementById("l_conclusionCount").textContent = "0";
   document.getElementById("laborReportContext").innerHTML = '<div class="empty-row">請從下方清單點選「填寫回報」開始</div>';
   document.getElementById("laborReportSubmitBtn").disabled = true;
-  renderLaborList();
+  if(READY) renderLaborList();
 }
 
 function loadLaborReportRecord(id){
@@ -632,13 +752,18 @@ function loadLaborReportRecord(id){
   document.getElementById("tab-labor").scrollIntoView({behavior:"smooth", block:"start"});
 }
 
-function deleteLaborRecord(id){
-  if(!confirm("確定要刪除這筆點工紀錄（含其回報）嗎？此操作無法復原。")) return;
+async function deleteLaborRecord(id){
+  if(!confirm("確定要刪除這筆點工紀錄（含其回報）嗎？此操作影響所有使用者且無法復原。")) return;
+  try{
+    await apiDeleteRecord("labor", id);
+  }catch(err){
+    toast("⚠ 雲端刪除失敗，請檢查網路後再試");
+    return;
+  }
   const store = cur();
   store.labor = store.labor.filter(r=>r.id!==id);
   if(editingLaborApplyId===id) resetLaborApplyForm();
   if(editingLaborReportId===id) resetLaborReportForm();
-  saveCur();
   toast("已刪除");
   renderLaborList();
   renderDashboard();
@@ -692,7 +817,7 @@ function initEquipApplyForm(){
   document.getElementById("e_date").valueAsDate = new Date(Date.now()+86400000);
   document.getElementById("equipApplyNewBtn").addEventListener("click", resetEquipApplyForm);
 
-  document.getElementById("equipApplyForm").addEventListener("submit", e=>{
+  document.getElementById("equipApplyForm").addEventListener("submit", async e=>{
     e.preventDefault();
     const vendor = requireCombo("cb_e_vendor", "機具廠商");
     if(vendor === null) return;
@@ -700,15 +825,19 @@ function initEquipApplyForm(){
     if(applicant === null) return;
     const types = tagState.e_type.slice();
     if(!types.length){ toast("請選擇機具類型"); return; }
-
     const requiredQty = parseFloat(document.getElementById("e_requiredQty").value) || 0;
+    const date = document.getElementById("e_date").value;
+
+    // 防呆：送出前確認工地
+    const okSite = confirm(`⚠ 工地確認\n\n本筆機具申請將寫入共用資料庫的工地：\n「${MASTER.currentSite}」\n\n${date}・${vendor}・${types.join("、")}・需求 ${fmt(requiredQty)}\n\n工地正確嗎？`);
+    if(!okSite) return;
+
     const store = cur();
     const existing = editingEquipApplyId ? store.equipment.find(r=>r.id===editingEquipApplyId) : null;
 
     const rec = {
       id: editingEquipApplyId || uid(),
-      date: document.getElementById("e_date").value,
-      vendor, applicant, types,
+      date, vendor, applicant, types,
       model: document.getElementById("e_model").value.trim(),
       requiredQty,
       contracted: document.querySelector('input[name="e_contract"]:checked').value,
@@ -718,15 +847,21 @@ function initEquipApplyForm(){
       report: existing ? existing.report : null
     };
 
-    if(editingEquipApplyId){
-      const idx = store.equipment.findIndex(r=>r.id===editingEquipApplyId);
+    try{
+      await apiSaveRecord("equipment", rec);
+    }catch(err){
+      toast("⚠ 雲端儲存失敗，資料未送出，請檢查網路後再按一次送出");
+      return;
+    }
+
+    if(existing){
+      const idx = store.equipment.findIndex(r=>r.id===rec.id);
       store.equipment[idx] = rec;
-      toast("申請資料已更新");
+      toast("申請資料已更新（所有人皆可看到）");
     }else{
       store.equipment.unshift(rec);
-      toast("機具申請已送出，待現場回報");
+      toast("機具申請已送出至共用資料庫，待現場回報");
     }
-    saveCur();
     resetEquipApplyForm();
     renderDashboard();
   });
@@ -746,7 +881,7 @@ function resetEquipApplyForm(){
   document.getElementById("equipApplyTitle").textContent = "新增機具申請";
   document.getElementById("equipApplySubmitBtn").textContent = "送出機具申請";
   document.getElementById("equipApplyNewBtn").style.display = "none";
-  renderEquipList();
+  if(READY) renderEquipList();
 }
 
 function loadEquipApplyRecord(id){
@@ -773,7 +908,7 @@ function loadEquipApplyRecord(id){
 }
 
 /* ==========================================================
-   機具 — 回報
+   機具 — 回報覆核
    ========================================================== */
 let editingEquipReportId = null;
 let usageState = [];
@@ -801,7 +936,7 @@ function initEquipReportForm(){
     syncTotalsFromUsage();
   });
 
-  document.getElementById("equipReportForm").addEventListener("submit", e=>{
+  document.getElementById("equipReportForm").addEventListener("submit", async e=>{
     e.preventDefault();
     if(!editingEquipReportId){ toast("請先從清單選擇要回報的紀錄"); return; }
     const store = cur();
@@ -832,21 +967,31 @@ function initEquipReportForm(){
       if(!ok) return;
     }
 
-    rec.report = {
-      reportedAt: isoDate(new Date()),
-      checker,
-      usage: usageState.map(u=>({type:u.type, present:u.present, hours:u.present?u.hours:0})),
-      actualHours,
-      diff: actualHours - rec.requiredQty,
-      zeroUse,
-      signReturnDate: document.getElementById("e_signReturnDate").value,
-      selfDone: document.getElementById("e_selfDone").value.trim(),
-      vendorDone: document.getElementById("e_vendorDone").value.trim()
-    };
-    rec.status = "已回報";
+    const updated = Object.assign({}, rec, {
+      status: "已回報",
+      report: {
+        reportedAt: isoDate(new Date()),
+        checker,
+        usage: usageState.map(u=>({type:u.type, present:u.present, hours:u.present?u.hours:0})),
+        actualHours,
+        diff: actualHours - rec.requiredQty,
+        zeroUse,
+        signReturnDate: document.getElementById("e_signReturnDate").value,
+        selfDone: document.getElementById("e_selfDone").value.trim(),
+        vendorDone: document.getElementById("e_vendorDone").value.trim()
+      }
+    });
 
-    saveCur();
-    toast(zeroUse ? "已以 0 時數寫入回報" : "已儲存回報");
+    try{
+      await apiSaveRecord("equipment", updated);
+    }catch(err){
+      toast("⚠ 雲端儲存失敗，回報未送出，請檢查網路後再按一次送出");
+      return;
+    }
+
+    const idx = store.equipment.findIndex(r=>r.id===updated.id);
+    store.equipment[idx] = updated;
+    toast(zeroUse ? "已以 0 時數寫入共用資料庫" : "回報已儲存至共用資料庫");
     resetEquipReportForm();
     renderDashboard();
   });
@@ -916,7 +1061,7 @@ function resetEquipReportForm(){
   document.getElementById("e_diff").value = "";
   document.getElementById("equipReportContext").innerHTML = '<div class="empty-row">請從下方清單點選「填寫回報」開始</div>';
   document.getElementById("equipReportSubmitBtn").disabled = true;
-  renderEquipList();
+  if(READY) renderEquipList();
 }
 
 function loadEquipReportRecord(id){
@@ -949,13 +1094,18 @@ function loadEquipReportRecord(id){
   document.getElementById("tab-equipment").scrollIntoView({behavior:"smooth", block:"start"});
 }
 
-function deleteEquipRecord(id){
-  if(!confirm("確定要刪除這筆機具紀錄（含其回報）嗎？此操作無法復原。")) return;
+async function deleteEquipRecord(id){
+  if(!confirm("確定要刪除這筆機具紀錄（含其回報）嗎？此操作影響所有使用者且無法復原。")) return;
+  try{
+    await apiDeleteRecord("equipment", id);
+  }catch(err){
+    toast("⚠ 雲端刪除失敗，請檢查網路後再試");
+    return;
+  }
   const store = cur();
   store.equipment = store.equipment.filter(r=>r.id!==id);
   if(editingEquipApplyId===id) resetEquipApplyForm();
   if(editingEquipReportId===id) resetEquipReportForm();
-  saveCur();
   toast("已刪除");
   renderEquipList();
   renderDashboard();
@@ -1000,7 +1150,7 @@ function renderEquipList(){
 }
 
 /* ==========================================================
-   總覽（跨全部工地彙總；各工地資料各自讀取，維持隔離）
+   總覽（跨全部工地彙總，資料來自共用資料庫快取）
    ========================================================== */
 function isThisMonth(dateStr){
   if(!dateStr) return false;
@@ -1010,9 +1160,11 @@ function isThisMonth(dateStr){
 }
 
 function renderDashboard(){
+  if(!READY) return;
   let allLabor = [], allEquip = [];
   MASTER.sites.forEach(site=>{
-    const s = loadSiteStore(site);
+    const s = SITE_CACHE[site];
+    if(!s) return;
     s.labor.forEach(r=>allLabor.push({site, r}));
     s.equipment.forEach(x=>allEquip.push({site, x}));
   });
@@ -1066,7 +1218,7 @@ function renderDashboard(){
 function renderSiteBreakdown(){
   const el = document.getElementById("siteBreakdown");
   const rows = MASTER.sites.map(site=>{
-    const s = loadSiteStore(site);
+    const s = SITE_CACHE[site] || {labor:[], equipment:[]};
     const lPending = s.labor.filter(r=>r.status!=="已回報").length;
     const ePending = s.equipment.filter(x=>x.status!=="已回報").length;
     const reportedM = s.labor.filter(r=>r.status==="已回報" && r.report && isThisMonth(r.report.reportedAt));
@@ -1161,6 +1313,7 @@ function initReportTabs(){
 }
 
 function renderReport(key){
+  if(!READY) return;
   const def = REPORT_DEFS[key];
   const rows = def.rows();
   const el = document.getElementById("reportTable");
@@ -1191,11 +1344,7 @@ function exportCSV(key){
 }
 
 /* ==========================================================
-   管理員模式：清空／批次設定僅限管理員；一般使用者仍可透過
-   表單搜尋欄位「＋ 新增選項」新增資料。密碼由 config.local.js
-   的 adminPin 提供（程式碼庫預設為範例值 0000）。
-   注意：此為前端層級的防誤觸設計，非真正的資安防線；正式的
-   帳號權限控管需搭配後端服務。
+   管理員模式（前端層級防誤觸；密碼來自 config.local.js 的 adminPin）
    ========================================================== */
 const ADMIN_PIN = (LOCAL.adminPin != null) ? String(LOCAL.adminPin) : "0000";
 
@@ -1245,6 +1394,7 @@ const SITE_CFG_MAP = {
 };
 
 function renderSettings(){
+  if(!READY) return;
   document.getElementById("cfg_sites").value = MASTER.sites.join("\n");
   document.getElementById("siteConfigTitle").childNodes[0].textContent = `目前工地基礎資料：${MASTER.currentSite}`;
   const c = cur().config;
@@ -1255,54 +1405,87 @@ function renderSettings(){
 }
 
 function initSettings(){
-  document.getElementById("saveSettings").addEventListener("click", ()=>{
+  document.getElementById("saveSettings").addEventListener("click", async ()=>{
     if(!isAdmin()){ toast("僅限管理員操作"); return; }
     const siteLines = document.getElementById("cfg_sites").value.split("\n").map(s=>s.trim()).filter(Boolean);
     if(siteLines.length) MASTER.sites = Array.from(new Set(siteLines));
-    saveMaster();
 
     const c = cur().config;
     Object.entries(SITE_CFG_MAP).forEach(([id,key])=>{
       const lines = document.getElementById(id).value.split("\n").map(s=>s.trim()).filter(Boolean);
       c[key] = Array.from(new Set(lines));
     });
-    saveCur();
+
+    try{
+      const jobs = [apiSaveMaster(), apiSaveConfig(MASTER.currentSite)];
+      for(const site of MASTER.sites){
+        if(!SITE_CACHE[site]){
+          SITE_CACHE[site] = { config: defaultSiteConfig(), labor: [], equipment: [] };
+          jobs.push(apiSaveConfig(site));
+        }
+      }
+      await Promise.all(jobs);
+    }catch(err){
+      toast("⚠ 設定雲端儲存失敗，請檢查網路後再試");
+      return;
+    }
+    if(!MASTER.sites.includes(MASTER.currentSite)){
+      MASTER.currentSite = MASTER.sites[0];
+      sessionStorage.setItem("dm_site", MASTER.currentSite);
+    }
     renderAll();
-    toast("設定已儲存");
+    toast("設定已儲存至共用資料庫");
   });
 
-  document.getElementById("resetSettings").addEventListener("click", ()=>{
+  document.getElementById("resetSettings").addEventListener("click", async ()=>{
     if(!isAdmin()){ toast("僅限管理員操作"); return; }
-    if(!confirm(`確定要將「${MASTER.currentSite}」的基礎資料還原為預設值嗎？（紀錄不受影響）`)) return;
+    if(!confirm(`確定要將「${MASTER.currentSite}」的基礎資料還原為預設值嗎？（紀錄不受影響，影響所有使用者）`)) return;
     cur().config = defaultSiteConfig();
-    saveCur();
+    try{
+      await apiSaveConfig(MASTER.currentSite);
+    }catch(err){
+      toast("⚠ 雲端儲存失敗，請檢查網路後再試");
+      return;
+    }
     renderAll();
     toast("已還原目前工地的預設清單");
   });
 
-  document.getElementById("clearSiteData").addEventListener("click", ()=>{
+  document.getElementById("clearSiteData").addEventListener("click", async ()=>{
     if(!isAdmin()){ toast("僅限管理員操作"); return; }
-    if(!confirm(`確定要清空「${MASTER.currentSite}」的所有點工/機具紀錄嗎？此操作無法復原。（基礎資料清單保留）`)) return;
-    const store = cur();
-    store.labor = [];
-    store.equipment = [];
-    saveCur();
+    if(!confirm(`確定要清空「${MASTER.currentSite}」的所有點工/機具紀錄嗎？\n\n⚠ 此操作影響所有使用者且無法復原。（基礎資料清單保留）`)) return;
+    try{
+      await api("POST", { op:"clearSite", site: MASTER.currentSite });
+    }catch(err){
+      toast("⚠ 雲端清除失敗，請檢查網路後再試");
+      return;
+    }
+    cur().labor = [];
+    cur().equipment = [];
     resetLaborApplyForm(); resetLaborReportForm(); resetEquipApplyForm(); resetEquipReportForm();
     renderAll();
     toast("已清空目前工地的紀錄");
   });
 
-  document.getElementById("clearAllData").addEventListener("click", ()=>{
+  document.getElementById("clearAllData").addEventListener("click", async ()=>{
     if(!isAdmin()){ toast("僅限管理員操作"); return; }
-    if(!confirm("確定要清空全部工地的所有資料嗎？此操作無法復原。")) return;
-    Object.keys(localStorage).filter(k=>k===MASTER_KEY || k.startsWith("dm_site_v6::")).forEach(k=>localStorage.removeItem(k));
+    if(!confirm("確定要清空全部工地的所有資料嗎？\n\n⚠ 此操作影響所有使用者且無法復原。")) return;
+    try{
+      await api("POST", { op:"clearAll" });
+    }catch(err){
+      toast("⚠ 雲端清除失敗，請檢查網路後再試");
+      return;
+    }
+    sessionStorage.removeItem("dm_site");
     location.reload();
   });
 }
 
 /* ---------------- render everything ---------------- */
 function renderAll(){
+  if(!READY) return;
   renderSitePicker();
+  renderSiteChips();
   renderOptionPools();
   renderLaborList();
   renderEquipList();
@@ -1313,7 +1496,6 @@ function renderAll(){
 
 /* ---------------- init ---------------- */
 document.addEventListener("DOMContentLoaded", ()=>{
-  saveMaster();
   initTabs();
   initSubTabs();
   initTagRemoveHandler();
@@ -1339,5 +1521,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
   initReportTabs();
   initAdmin();
   initSettings();
-  renderAll();
+  document.getElementById("refreshBtn").addEventListener("click", ()=>refreshData(false));
+
+  boot();
 });

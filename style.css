@@ -311,6 +311,56 @@ tr.current-site-row td{background:#f4faf8;}
   border-width:1px;opacity:0.85;
 }
 
+/* ---------- 全頁遮罩（載入／錯誤／選工地） ---------- */
+.overlay{
+  position:fixed;inset:0;z-index:200;
+  background:rgba(10,47,44,0.88);
+  display:flex;align-items:center;justify-content:center;
+  padding:20px;
+}
+.overlay[hidden]{display:none;}
+.overlay-card{
+  background:#fff;border-radius:16px;padding:30px 34px;
+  max-width:560px;width:100%;text-align:center;
+  display:flex;flex-direction:column;gap:14px;align-items:center;
+  font-size:15px;color:var(--ink-900);
+  box-shadow:0 24px 60px rgba(0,0,0,0.35);
+}
+.overlay-card h2{margin:0;font-size:19px;color:var(--teal-800);}
+.spinner{
+  width:38px;height:38px;border-radius:50%;
+  border:4px solid var(--teal-100);border-top-color:var(--teal-600);
+  animation:spin 0.9s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg);}}
+
+.gate-card{max-width:640px;text-align:left;align-items:stretch;max-height:86vh;overflow-y:auto;}
+.gate-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.gate-btn{
+  padding:13px 14px;border-radius:10px;border:1.5px solid var(--line);
+  background:#fff;font-size:14px;font-weight:700;color:var(--teal-800);
+  cursor:pointer;text-align:left;
+}
+.gate-btn:hover{background:var(--teal-600);border-color:var(--teal-600);color:#fff;}
+@media (max-width:560px){.gate-grid{grid-template-columns:1fr;}}
+
+/* ---------- 目前工地徽章（防呆） ---------- */
+.site-chip{
+  display:inline-block;padding:5px 14px;border-radius:999px;
+  background:var(--amber-500);color:var(--teal-900);
+  font-size:13px;font-weight:800;white-space:nowrap;
+}
+.site-chip:empty{display:none;}
+
+/* ---------- 重新整理按鈕 ---------- */
+.topbar-right{display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
+.refresh-btn{
+  padding:8px 14px;border-radius:8px;font-size:13px;font-weight:700;
+  background:rgba(255,255,255,0.14);color:#fff;
+  border:1.5px solid rgba(255,255,255,0.45);cursor:pointer;
+}
+.refresh-btn:hover{background:rgba(255,255,255,0.28);}
+
 /* ---------- 管理員模式 ---------- */
 .admin-bar{display:flex;align-items:center;gap:12px;}
 .admin-only-badge{

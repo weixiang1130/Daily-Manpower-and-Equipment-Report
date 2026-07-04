@@ -15,14 +15,17 @@
 
 ## 技術棧
 
-純前端 HTML / CSS / JavaScript（無框架、無需建置工具），資料以瀏覽器 `localStorage` 暫存。可直接以任何靜態伺服器（或直接雙擊 `index.html`）開啟使用。
+前端為原生 HTML / CSS / JavaScript（無框架）；資料存於雲端共用資料庫（Netlify Functions + Netlify Blobs，API 路徑 `/api/data`），所有使用者讀寫同一份資料。整站以 Edge Function Basic Auth 保護。
 
 ```
-index.html        主要頁面結構
-style.css         版面與元件樣式
-app.js            應用邏輯（資料模型、渲染、互動）
-config.local.js   （選用，地端）真實工地/分包商/人員名單，不入版控
-docs/             專案文件與迭代紀錄
+index.html                     主要頁面結構
+style.css                      版面與元件樣式
+app.js                         應用邏輯（資料模型、渲染、互動）
+config.local.js                （選用，地端）真實名單，不入版控；Netlify 由環境變數產生
+netlify/functions/api.mjs      共用資料庫 API（Blobs 讀寫）
+netlify/edge-functions/auth.ts 整站 Basic Auth
+scripts/build-config.mjs       建置時由環境變數產生 config.local.js
+docs/                          專案文件與迭代紀錄
 ```
 
 ## 開發／預覽
@@ -40,4 +43,6 @@ python -m http.server 8791
 
 ## 已知限制
 
-資料目前僅存於單一瀏覽器的 `localStorage`（各工地邏輯隔離），尚未接後端資料庫，多人/多裝置協作情境下彼此看不到對方輸入的資料；「承辦人員」新增選項的權限目前無登入控管、等同全開放。若要多人協作與角色權限，需擴充後端服務（詳見 [`docs/milestones/07-parent-child-multisite-isolation.md`](docs/milestones/07-parent-child-multisite-isolation.md) 的已知限制段落）。
+- 資料存於雲端共用資料庫（Netlify Functions + Blobs），所有使用者即時共編；同一筆紀錄若兩人同時編輯為後寫者覆蓋（last-write-wins），且不留「誰修改」的軌跡——需要稽核軌跡時建議升級至含使用者驗證的後端（如 Supabase）
+- 本機以純靜態伺服器開啟時無 API，會顯示「無法連線」畫面；本機開發請用 `netlify dev` 或直接以部署網址測試
+- 管理員模式為前端層級防誤觸，非資安防線（詳見 [`docs/milestones/08-equip-parent-child-admin-mode.md`](docs/milestones/08-equip-parent-child-admin-mode.md)）

@@ -8,17 +8,46 @@
 </head>
 <body>
 
+<!-- 載入中 -->
+<div id="appLoading" class="overlay">
+  <div class="overlay-card">
+    <div class="spinner"></div>
+    <div id="appLoadingMsg">正在連線共用資料庫…</div>
+  </div>
+</div>
+
+<!-- 連線失敗 -->
+<div id="appFatal" class="overlay" hidden>
+  <div class="overlay-card">
+    <div style="font-size:32px;">⚠</div>
+    <div>無法連線共用資料庫，請確認網路後重試。</div>
+    <button type="button" class="btn-primary" onclick="location.reload()">重新載入</button>
+  </div>
+</div>
+
+<!-- 選擇工地（防呆：每次開啟都要明確選定） -->
+<div id="siteGate" class="overlay" hidden>
+  <div class="overlay-card gate-card">
+    <h2>請選擇本次要填報的工地</h2>
+    <p class="hint">所有人共用同一個資料庫；為避免填錯工地，每次開啟都需明確選定。之後仍可由右上角切換。</p>
+    <div id="siteGateGrid" class="gate-grid"></div>
+  </div>
+</div>
+
 <header class="topbar">
   <div class="brand">
     <span class="brand-mark">稽</span>
     <div class="brand-text">
       <div class="brand-title">點工 ‧ 機具稽核系統</div>
-      <div class="brand-sub">各工地資料完全隔離・切換工地即切換資料庫</div>
+      <div class="brand-sub">共用資料庫・所有人即時看到彼此的填報</div>
     </div>
   </div>
-  <div class="site-picker">
-    <label>目前工地</label>
-    <select id="currentSite"></select>
+  <div class="topbar-right">
+    <button type="button" id="refreshBtn" class="refresh-btn" title="重新載入共用資料庫的最新資料">↻ 重新整理</button>
+    <div class="site-picker">
+      <label>目前工地</label>
+      <select id="currentSite"></select>
+    </div>
   </div>
 </header>
 
@@ -74,6 +103,7 @@
       <div class="panel highlight">
         <div class="panel-head">
           <h2 id="laborApplyTitle">新增點工申請</h2>
+          <span class="site-chip" data-site-chip></span>
           <p class="hint">由申請人（工程師）填寫，建立當日叫工（父層單據）。所有搜尋欄位可直接輸入文字模糊搜尋；找不到選項時點選單底部「＋ 新增選項」即可加入本工地資料庫。</p>
         </div>
 
@@ -127,6 +157,7 @@
       <div class="panel highlight">
         <div class="panel-head">
           <h2>出工回報覆核</h2>
+          <span class="site-chip" data-site-chip></span>
           <p class="hint">由回報工程師填寫（子層，直接承繼申請單資料）。逐人勾選確認到場後填寫實際出工數與加班時數；若當日完全無人出工，勾選「0 工確認」後仍可送出。</p>
         </div>
 
@@ -217,6 +248,7 @@
       <div class="panel highlight">
         <div class="panel-head">
           <h2 id="equipApplyTitle">新增機具申請</h2>
+          <span class="site-chip" data-site-chip></span>
           <p class="hint">由申請人（工程師）填寫，建立機具需求。搜尋欄位可直接輸入文字模糊搜尋，找不到時可即時新增。</p>
         </div>
 
@@ -283,6 +315,7 @@
       <div class="panel highlight">
         <div class="panel-head">
           <h2>機具回報覆核</h2>
+          <span class="site-chip" data-site-chip></span>
           <p class="hint">由回報工程師填寫（子層，直接承繼申請單資料）。逐台機具勾選確認到場後填寫實際工作使用時數；若機具完全未到場／未使用，勾選「0 使用確認」後仍可送出。</p>
         </div>
 
@@ -424,7 +457,7 @@
 
     <div class="panel danger-zone" id="dangerZone">
       <div class="panel-head"><h2>資料管理<span class="admin-only-badge">管理員</span></h2></div>
-      <p class="hint">本系統資料暫存於本機瀏覽器（尚未接後端資料庫）。各工地資料獨立儲存。清空操作無法復原，請謹慎使用。</p>
+      <p class="hint">⚠ 本系統資料存於「共用資料庫」（Netlify Blobs），清空操作會影響<strong>所有使用者</strong>看到的資料且無法復原，請格外謹慎。</p>
       <div class="actions">
         <button id="clearSiteData" class="btn-danger btn-danger-sm">清空目前工地的紀錄</button>
         <button id="clearAllData" class="btn-danger btn-danger-sm">清空全部工地資料</button>

@@ -14,9 +14,42 @@
 import { getStore } from "@netlify/blobs";
 
 const store = () => getStore({ name: "audit-data", consistency: "strong" });
-const cfgKey = s => "cfg:" + encodeURIComponent(s);
-const recKey = (s, kind, id) => `rec:${encodeURIComponent(s)}:${kind}:${id}`;
+
+/* 工地名以 base64url 編碼進 key：Blobs 的 list(prefix) 會在伺服器端
+   解碼 % 序列，encodeURIComponent 產生的前綴因此比對不到；base64url
+   字元集（A-Za-z0-9_-）不含 % 與 :，前綴比對與 split(":") 都安全。 */
+const b64e = s => Buffer.from(s, "utf8").toString("base64url");
+const b64d = s => Buffer.from(s, "base64url").toString("utf8");
+const decodeSeg = seg => seg.includes("%") ? decodeURIComponent(seg) : b64d(seg);
+
+const cfgKey = s => "cfg:" + b64e(s);
+const recKey = (s, kind, id) => `rec:${b64e(s)}:${kind}:${id}`;
 const KINDS = ["labor", "equipment"];
+
+/* 一次性遷移：把早期以 encodeURIComponent 建立的 %-key 改寫為
+   base64url key（含 cfg 與 rec）。全部遷移完成後即為 no-op。 */
+async function migrateLegacyKeys(s){
+  const [recList, cfgList] = await Promise.all([
+    s.list({ prefix: "rec:" }),
+    s.list({ prefix: "cfg:" })
+  ]);
+  const legacy = [...recList.blobs, ...cfgList.blobs].filter(b => b.key.split(":")[1] && b.key.split(":")[1].includes("%"));
+  if(!legacy.length) return false;
+  await Promise.all(legacy.map(async b => {
+    const parts = b.key.split(":");
+    const site = decodeURIComponent(parts[1]);
+    const newKey = parts[0] === "cfg"
+      ? cfgKey(site)
+      : `rec:${b64e(site)}:${parts.slice(2).join(":")}`;
+    const data = await s.get(b.key, { type: "json" });
+    if(data != null){
+      const existing = await s.get(newKey, { type: "json" });
+      if(existing == null) await s.setJSON(newKey, data);
+    }
+    await s.delete(b.key);
+  }));
+  return true;
+}
 
 const json = (data, status = 200) => new Response(JSON.stringify(data), {
   status, headers: { "content-type": "application/json; charset=utf-8" }
@@ -33,7 +66,7 @@ function authorized(req){
 async function readSite(s, site){
   const [config, listed] = await Promise.all([
     s.get(cfgKey(site), { type: "json" }),
-    s.list({ prefix: "rec:" + encodeURIComponent(site) + ":" })
+    s.list({ prefix: "rec:" + b64e(site) + ":" })
   ]);
   const recs = await Promise.all(listed.blobs.map(b => s.get(b.key, { type: "json" })));
   const out = { config, labor: [], equipment: [] };
@@ -52,6 +85,8 @@ export default async (req) => {
   const url = new URL(req.url);
 
   if(req.method === "GET"){
+    await migrateLegacyKeys(s);
+
     const site = url.searchParams.get("site");
     if(site) return json(await readSite(s, site));
 
@@ -66,7 +101,7 @@ export default async (req) => {
     sites.forEach((site, i) => { stores[site] = { config: cfgs[i], labor: [], equipment: [] }; });
     listed.blobs.forEach((b, i) => {
       const parts = b.key.split(":");
-      const site = decodeURIComponent(parts[1]);
+      const site = decodeSeg(parts[1]);
       const kind = parts[2];
       if(!stores[site]) stores[site] = { config: null, labor: [], equipment: [] };
       if(recs[i] && KINDS.includes(kind)) stores[site][kind].push(recs[i]);
@@ -102,7 +137,7 @@ export default async (req) => {
 
       case "clearSite": {
         if(!body.site) return json({ error: "site required" }, 400);
-        const listed = await s.list({ prefix: "rec:" + encodeURIComponent(body.site) + ":" });
+        const listed = await s.list({ prefix: "rec:" + b64e(body.site) + ":" });
         await Promise.all(listed.blobs.map(b => s.delete(b.key)));
         return json({ ok: true, deleted: listed.blobs.length });
       }

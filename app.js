@@ -293,7 +293,7 @@ function initCombobox(rootId, pool, placeholder, opts={}){
   root.innerHTML = `<input type="text" class="cb-input" placeholder="${esc(placeholder)}" autocomplete="off"><div class="cb-list" hidden></div>`;
   const input = root.querySelector(".cb-input");
   const list = root.querySelector(".cb-list");
-  COMBO[rootId] = { pool, input, list, multi: opts.multi || null, onChange: opts.onChange || null };
+  COMBO[rootId] = { pool, input, list, multi: opts.multi || null, onChange: opts.onChange || null, onPick: opts.onPick || null };
 
   const options = ()=> (cur() && cur().config[pool]) || [];
 
@@ -319,6 +319,13 @@ function initCombobox(rootId, pool, placeholder, opts={}){
 
   function choose(v){
     const cfg = COMBO[rootId];
+    if(cfg.onPick){
+      // 動作型選擇：選取即回呼並清空輸入框（用於回報頁現場補人）
+      input.value = "";
+      list.hidden = true;
+      cfg.onPick(v);
+      return;
+    }
     if(cfg.multi){
       if(!tagState[cfg.multi].includes(v)){
         tagState[cfg.multi].push(v);
@@ -590,6 +597,15 @@ async function loadLaborApplyRecord(id){
 let editingLaborReportId = null;
 let attState = [];
 
+/* 數字欄位取值：空白回 null（與 0 區分），其餘轉數字 */
+function numFieldVal(id){
+  const v = document.getElementById(id).value.trim();
+  return v === "" ? null : (parseFloat(v) || 0);
+}
+function setNumField(id, v){
+  document.getElementById(id).value = (v === null || v === undefined) ? "" : v;
+}
+
 function initLaborReportForm(){
   bindCharCounter("l_conclusion","l_conclusionCount");
   document.getElementById("laborReportCancelBtn").addEventListener("click", resetLaborReportForm);
@@ -612,6 +628,13 @@ function initLaborReportForm(){
     if(Number.isNaN(i)) return;
     if(el.classList.contains("att-work")) attState[i].work = parseFloat(el.value)||0;
     if(el.classList.contains("att-ot")) attState[i].ot = parseFloat(el.value)||0;
+    syncTotalsFromAttendance();
+  });
+  attBox.addEventListener("click", e=>{
+    const btn = e.target.closest(".att-remove");
+    if(!btn) return;
+    attState.splice(parseInt(btn.dataset.i,10), 1);
+    renderAttendance();
     syncTotalsFromAttendance();
   });
 
@@ -655,13 +678,19 @@ function initLaborReportForm(){
         checkFace: document.getElementById("l_check_face").checked,
         checkCard: document.getElementById("l_check_card").checked,
         checkToolbox: document.getElementById("l_check_toolbox").checked,
-        attendance: attState.map(a=>({name:a.name, present:a.present, work:a.present?a.work:0, ot:a.present?a.ot:0})),
+        attendance: attState
+          .filter(a=>!(a.added && !a.present))   // 現場補入但未勾到場的列不寫入
+          .map(a=>({name:a.name, present:a.present, work:a.present?a.work:0, ot:a.present?a.ot:0, added:!!a.added})),
         actual, totalOT,
         diff: actual - rec.required,
         zeroWork,
         signReturnDate: document.getElementById("l_signReturnDate").value,
-        selfDone: document.getElementById("l_selfDone").value.trim(),
-        vendorDone: document.getElementById("l_vendorDone").value.trim(),
+        selfDoneWork: numFieldVal("l_selfWork"),
+        selfDoneHours: numFieldVal("l_selfHours"),
+        selfDoneNote: document.getElementById("l_selfNote").value.trim(),
+        vendorDoneWork: numFieldVal("l_vendorWork"),
+        vendorDoneHours: numFieldVal("l_vendorHours"),
+        vendorDoneNote: document.getElementById("l_vendorNote").value.trim(),
         conclusion: document.getElementById("l_conclusion").value.trim()
       }
     });
@@ -711,19 +740,37 @@ function collectLaborWarnings(att, actual, totalOT, zeroWork){
 function renderAttendance(){
   const box = document.getElementById("l_attendance");
   const zero = document.getElementById("l_zeroWork").checked;
+  // 有逐人名單時，總數欄改為自動加總（唯讀）；無名單時開放手填
+  const lock = attState.length > 0;
+  ["l_actual","l_totalOT"].forEach(id=>{
+    const el = document.getElementById(id);
+    el.readOnly = lock;
+    el.classList.toggle("readonly-field", lock);
+  });
   if(!attState.length){
-    box.innerHTML = '<div class="empty-row">此申請單未填寫預計進場人員名單，請直接於下方輸入簽單實際出工數</div>';
+    box.innerHTML = '<div class="empty-row">此申請單未填寫預計進場人員名單——可於下方「補入出工人員」逐人記錄，或直接輸入簽單實際出工數</div>';
     return;
   }
   box.classList.toggle("disabled", zero);
   box.innerHTML = attState.map((a,i)=>`
     <div class="att-row ${a.present?'present':''}">
-      <label class="att-check"><input type="checkbox" data-i="${i}" ${a.present?'checked':''} ${zero?'disabled':''}><span>${esc(a.name)}</span></label>
+      <label class="att-check"><input type="checkbox" data-i="${i}" ${a.present?'checked':''} ${zero?'disabled':''}><span>${esc(a.name)}${a.added?' <em class="att-added-tag">補</em>':''}</span></label>
       <div class="att-fields" ${a.present?'':'style="visibility:hidden;"'}>
         <label>出工數<input type="number" class="att-work" data-i="${i}" step="0.5" min="0" value="${a.work}" ${zero?'disabled':''}></label>
         <label>加班時數<input type="number" class="att-ot" data-i="${i}" step="0.5" min="0" value="${a.ot}" ${zero?'disabled':''}></label>
       </div>
+      ${a.added?`<button type="button" class="att-remove" data-i="${i}" title="移除此補入人員">×</button>`:''}
     </div>`).join("");
+}
+
+/* 回報頁現場補人：申請單名單外的人員也能逐人記出工＋加班 */
+function addAttendancePerson(name){
+  if(!editingLaborReportId){ toast("請先從清單選擇要回報的紀錄"); return; }
+  if(document.getElementById("l_zeroWork").checked){ toast("已勾選 0 工確認，請先取消再補入人員"); return; }
+  if(attState.some(a=>a.name===name)){ toast(`「${name}」已在出工人員名單中`); return; }
+  attState.push({ name, present:true, work:1, ot:0, added:true });
+  renderAttendance();
+  syncTotalsFromAttendance();
 }
 
 function syncTotalsFromAttendance(){
@@ -779,6 +826,12 @@ async function loadLaborReportRecord(id){
     const p = prev.find(x=>x.name===name);
     return p ? {name, present:!!p.present, work:p.work||0, ot:p.ot||0} : {name, present:false, work:1, ot:0};
   });
+  // 之前回報時現場補入的人員（不在申請名單內）也要帶回
+  prev.forEach(p=>{
+    if(!attState.some(a=>a.name===p.name)){
+      attState.push({name:p.name, present:!!p.present, work:p.work||0, ot:p.ot||0, added:true});
+    }
+  });
 
   document.getElementById("laborReportContext").innerHTML = `<div class="context-box">
     <strong>${esc(MASTER.currentSite)}</strong>　${esc(rec.date)}・${esc(rec.vendor)}　需求工數：${fmt(rec.required)}　申請人：${esc(rec.applicant)}
@@ -796,8 +849,13 @@ async function loadLaborReportRecord(id){
   updateLaborDiff();
   document.getElementById("l_signReturnDate").value = rep.signReturnDate || "";
   setCombo("cb_l_engineer", rep.engineer || "");
-  document.getElementById("l_selfDone").value = rep.selfDone || "";
-  document.getElementById("l_vendorDone").value = rep.vendorDone || "";
+  setNumField("l_selfWork", rep.selfDoneWork);
+  setNumField("l_selfHours", rep.selfDoneHours);
+  // 舊版單一文字欄（selfDone/vendorDone）的內容歸入備註
+  document.getElementById("l_selfNote").value = rep.selfDoneNote || rep.selfDone || "";
+  setNumField("l_vendorWork", rep.vendorDoneWork);
+  setNumField("l_vendorHours", rep.vendorDoneHours);
+  document.getElementById("l_vendorNote").value = rep.vendorDoneNote || rep.vendorDone || "";
   document.getElementById("l_conclusion").value = rep.conclusion || "";
   document.getElementById("l_conclusionCount").textContent = (rep.conclusion||"").length;
   document.getElementById("laborReportSubmitBtn").disabled = false;
@@ -1054,8 +1112,12 @@ function initEquipReportForm(){
         diff: actualHours - rec.requiredQty,
         zeroUse,
         signReturnDate: document.getElementById("e_signReturnDate").value,
-        selfDone: document.getElementById("e_selfDone").value.trim(),
-        vendorDone: document.getElementById("e_vendorDone").value.trim()
+        selfDoneWork: numFieldVal("e_selfWork"),
+        selfDoneHours: numFieldVal("e_selfHours"),
+        selfDoneNote: document.getElementById("e_selfNote").value.trim(),
+        vendorDoneWork: numFieldVal("e_vendorWork"),
+        vendorDoneHours: numFieldVal("e_vendorHours"),
+        vendorDoneNote: document.getElementById("e_vendorNote").value.trim()
       }
     });
 
@@ -1096,6 +1158,10 @@ function collectEquipWarnings(usage, actualHours, zeroUse){
 function renderUsage(){
   const box = document.getElementById("e_usage");
   const zero = document.getElementById("e_zeroUse").checked;
+  const lock = usageState.length > 0;
+  const hoursEl = document.getElementById("e_actualHours");
+  hoursEl.readOnly = lock;
+  hoursEl.classList.toggle("readonly-field", lock);
   if(!usageState.length){
     box.innerHTML = '<div class="empty-row">此申請單未填寫機具類型，請直接於下方輸入實際使用時數</div>';
     return;
@@ -1172,8 +1238,12 @@ async function loadEquipReportRecord(id){
   updateEquipDiff();
   document.getElementById("e_signReturnDate").value = rep.signReturnDate || "";
   setCombo("cb_e_checker", rep.checker || "");
-  document.getElementById("e_selfDone").value = rep.selfDone || "";
-  document.getElementById("e_vendorDone").value = rep.vendorDone || "";
+  setNumField("e_selfWork", rep.selfDoneWork);
+  setNumField("e_selfHours", rep.selfDoneHours);
+  document.getElementById("e_selfNote").value = rep.selfDoneNote || rep.selfDone || "";
+  setNumField("e_vendorWork", rep.vendorDoneWork);
+  setNumField("e_vendorHours", rep.vendorDoneHours);
+  document.getElementById("e_vendorNote").value = rep.vendorDoneNote || rep.vendorDone || "";
   document.getElementById("equipReportSubmitBtn").disabled = false;
 
   switchSubTab("tab-equipment", "equip-report");
@@ -1351,6 +1421,13 @@ function renderSiteBreakdown(){
    ========================================================== */
 let currentReport = "labor";
 let reportFrom = "", reportTo = "";
+let reportVendor = "", reportCat = "";
+
+function matchReportVendor(r){ return !reportVendor || r.vendor === reportVendor; }
+function matchReportCat(r, kind){
+  if(!reportCat) return true;
+  return kind === "labor" ? (r.categories||[]).includes(reportCat) : (r.types||[]).includes(reportCat);
+}
 
 function inReportRange(d){
   if(!reportFrom && !reportTo) return true;
@@ -1372,11 +1449,24 @@ function attendanceDetail(rep){
     .map(a=>`${a.name}(${fmt(a.work)}工${a.ot?`/加班${fmt(a.ot)}h`:""})`).join("、");
 }
 
+/* 自辦/代辦欄位：新結構（工數/時數/備註）優先，舊版單一文字歸入備註 */
+function doneCols(rep){
+  return [
+    rep.selfDoneWork != null ? fmt(rep.selfDoneWork) : "",
+    rep.selfDoneHours != null ? fmt(rep.selfDoneHours) : "",
+    rep.selfDoneNote || rep.selfDone || "",
+    rep.vendorDoneWork != null ? fmt(rep.vendorDoneWork) : "",
+    rep.vendorDoneHours != null ? fmt(rep.vendorDoneHours) : "",
+    rep.vendorDoneNote || rep.vendorDone || ""
+  ];
+}
+
 const REPORT_DEFS = {
   labor: {
     title:"點工紀錄",
-    headers:["出工日期","廠商","需求工數","預計進場人員","工作內容","工作地點","申請人","狀態","人臉紀錄","白卡紀錄","工具箱紀錄","簽單繳回日","簽單實際出工數","差異","0工確認","簽單責任工程師","實際加班時數(晚上)","出工人員明細","根基自辦","廠商代辦","現場查核回饋"],
-    rows: ()=>cur().labor.filter(r=>inReportRange(r.date)).map(r=>{
+    headers:["出工日期","廠商","需求工數","預計進場人員","工作內容","工作地點","申請人","狀態","人臉紀錄","白卡紀錄","工具箱紀錄","簽單繳回日","簽單實際出工數","差異","0工確認","簽單責任工程師","實際加班時數(晚上)","出工人員明細","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註","現場查核回饋"],
+    records: ()=>cur().labor.filter(r=>inReportRange(r.date) && matchReportVendor(r) && matchReportCat(r,"labor")),
+    rows(){ return this.records().map(r=>{
       const rep = r.report || {};
       const reported = r.status==="已回報" && r.report;
       return [
@@ -1386,15 +1476,15 @@ const REPORT_DEFS = {
         rep.checkFace?"V":"", rep.checkCard?"V":"", rep.checkToolbox?"V":"",
         rep.signReturnDate||"", reported?fmt(rep.actual):"", reported?fmt(rep.diff):"",
         rep.zeroWork?"V":"",
-        rep.engineer||"", reported?fmt(rep.totalOT):"", attendanceDetail(rep),
-        rep.selfDone||"", rep.vendorDone||"", rep.conclusion||""
-      ];
-    })
+        rep.engineer||"", reported?fmt(rep.totalOT):"", attendanceDetail(rep)
+      ].concat(doneCols(rep), [rep.conclusion||""]);
+    }); }
   },
   equipment: {
     title:"機具紀錄",
-    headers:["出工日期","機具廠商","機具類型","型號","工作內容","工作地點","責任廠商","預計使用時數(需求數量)","申請人","狀態","簽單繳回日","機具實際工作使用時數","差異","0使用確認","機具使用明細","簽單責任工程師","根基自辦","廠商代辦"],
-    rows: ()=>cur().equipment.filter(x=>inReportRange(x.date)).map(x=>{
+    headers:["出工日期","機具廠商","機具類型","型號","工作內容","工作地點","責任廠商","預計使用時數(需求數量)","申請人","狀態","簽單繳回日","機具實際工作使用時數","差異","0使用確認","機具使用明細","簽單責任工程師","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註"],
+    records: ()=>cur().equipment.filter(x=>inReportRange(x.date) && matchReportVendor(x) && matchReportCat(x,"equipment")),
+    rows(){ return this.records().map(x=>{
       const rep = x.report || {};
       const reported = x.status==="已回報" && x.report;
       const usageDetail = (rep.usage||[]).filter(u=>u.present)
@@ -1404,11 +1494,54 @@ const REPORT_DEFS = {
         (x.locations||[]).join("、"), x.vendor, fmt(x.requiredQty), x.applicant, x.status,
         rep.signReturnDate||"", reported?fmt(rep.actualHours):"", reported?fmt(rep.diff):"",
         rep.zeroUse?"V":"", usageDetail,
-        rep.checker||"", rep.selfDone||"", rep.vendorDone||""
-      ];
-    })
+        rep.checker||""
+      ].concat(doneCols(rep));
+    }); }
   }
 };
+
+/* ==========================================================
+   計價彙總：依廠商分組（僅統計已回報單），供承辦快速對計價
+   ========================================================== */
+function buildPricingSummary(kind){
+  const recs = REPORT_DEFS[kind].records().filter(r=>r.status==="已回報" && r.report);
+  const groups = {};
+  recs.forEach(r=>{
+    const key = r.vendor || "（未填廠商）";
+    const g = groups[key] || (groups[key] = {vendor:key, count:0, zero:0, work:0, ot:0, hours:0, selfW:0, selfH:0, vendW:0, vendH:0, cats:new Set()});
+    const rep = r.report;
+    g.count++;
+    if(kind === "labor"){
+      if(rep.zeroWork) g.zero++;
+      g.work += rep.actual || 0;
+      g.ot += rep.totalOT || 0;
+      (r.categories||[]).forEach(c=>g.cats.add(c));
+    }else{
+      if(rep.zeroUse) g.zero++;
+      g.hours += rep.actualHours || 0;
+      (r.types||[]).forEach(t=>g.cats.add(t));
+    }
+    g.selfW += rep.selfDoneWork || 0;
+    g.selfH += rep.selfDoneHours || 0;
+    g.vendW += rep.vendorDoneWork || 0;
+    g.vendH += rep.vendorDoneHours || 0;
+  });
+  return Object.values(groups).sort((a,b)=>a.vendor.localeCompare(b.vendor,"zh-Hant"));
+}
+
+function pricingSummaryTable(kind){
+  const gs = buildPricingSummary(kind);
+  if(kind === "labor"){
+    return {
+      headers:["廠商","已回報單數","0工單數","總出工數","總加班時數","根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","工作內容"],
+      rows: gs.map(g=>[g.vendor, g.count, g.zero, fmt(g.work), fmt(g.ot), fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、")])
+    };
+  }
+  return {
+    headers:["機具廠商","已回報單數","0使用單數","總實際使用時數","根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","機具類型"],
+    rows: gs.map(g=>[g.vendor, g.count, g.zero, fmt(g.hours), fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、")])
+  };
+}
 
 function initReportTabs(){
   document.querySelectorAll(".rtab").forEach(btn=>{
@@ -1416,10 +1549,21 @@ function initReportTabs(){
       document.querySelectorAll(".rtab").forEach(b=>b.classList.remove("active"));
       btn.classList.add("active");
       currentReport = btn.dataset.r;
+      reportCat = "";           // 點工/機具的內容池不同，切換頁籤時重置內容篩選
+      document.getElementById("reportCat").value = "";
       renderReport(currentReport);
     });
   });
   document.getElementById("exportBtn").addEventListener("click", ()=>exportCSV(currentReport));
+  document.getElementById("exportSummaryBtn").addEventListener("click", ()=>exportSummaryCSV(currentReport));
+  document.getElementById("reportVendor").addEventListener("change", e=>{
+    reportVendor = e.target.value;
+    renderReport(currentReport);
+  });
+  document.getElementById("reportCat").addEventListener("change", e=>{
+    reportCat = e.target.value;
+    renderReport(currentReport);
+  });
 
   const fromEl = document.getElementById("reportFrom");
   const toEl = document.getElementById("reportTo");
@@ -1441,23 +1585,56 @@ function initReportTabs(){
   });
 }
 
+/* 篩選下拉選項：由目前工地該類紀錄的實際值彙集（含期間外，方便先選條件再選期間） */
+function populateReportFilters(key){
+  const vendSel = document.getElementById("reportVendor");
+  const catSel = document.getElementById("reportCat");
+  const recs = key==="labor" ? cur().labor : cur().equipment;
+  const vendors = [...new Set(recs.map(r=>r.vendor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
+  const cats = [...new Set(recs.flatMap(r=>(key==="labor" ? r.categories : r.types) || []))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
+  const vendLabel = key==="labor" ? "全部廠商" : "全部機具廠商";
+  const catLabel = key==="labor" ? "全部工作內容" : "全部機具類型";
+  vendSel.innerHTML = `<option value="">${esc(vendLabel)}</option>` + vendors.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join("");
+  catSel.innerHTML = `<option value="">${esc(catLabel)}</option>` + cats.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("");
+  if(vendors.includes(reportVendor)) vendSel.value = reportVendor; else { reportVendor = ""; vendSel.value = ""; }
+  if(cats.includes(reportCat)) catSel.value = reportCat; else { reportCat = ""; catSel.value = ""; }
+}
+
 function renderReport(key){
   if(!READY) return;
+  populateReportFilters(key);
   const def = REPORT_DEFS[key];
   const rows = def.rows();
   const cnt = document.getElementById("reportCount");
-  if(cnt) cnt.textContent = `共 ${rows.length} 筆` + ((reportFrom||reportTo) ? `（${reportFrom||"起"} ~ ${reportTo||"今"}）` : "");
+  const filterTags = [
+    (reportFrom||reportTo) ? `${reportFrom||"起"} ~ ${reportTo||"今"}` : "",
+    reportVendor, reportCat
+  ].filter(Boolean).join("・");
+  if(cnt) cnt.textContent = `共 ${rows.length} 筆` + (filterTags ? `（${filterTags}）` : "");
   const el = document.getElementById("reportTable");
-  if(!rows.length){ el.innerHTML = '<div class="empty-row">此區間內尚無「'+esc(def.title)+'」資料</div>'; return; }
-  el.innerHTML = `<table><thead><tr>${def.headers.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead>
-    <tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${esc(c===undefined||c===null?"":c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  if(!rows.length){ el.innerHTML = '<div class="empty-row">此條件內尚無「'+esc(def.title)+'」資料</div>'; }
+  else{
+    el.innerHTML = `<table><thead><tr>${def.headers.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead>
+      <tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${esc(c===undefined||c===null?"":c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  }
+  renderPricingSummary(key);
 }
 
-function exportCSV(key){
-  const def = REPORT_DEFS[key];
-  const rows = def.rows();
-  if(!rows.length){ toast("目前沒有可匯出的資料"); return; }
-  const csvLines = [def.headers.join(",")].concat(
+function renderPricingSummary(key){
+  const el = document.getElementById("reportSummary");
+  if(!el) return;
+  const sum = pricingSummaryTable(key);
+  if(!sum.rows.length){
+    el.innerHTML = '<div class="summary-title">計價彙總（依廠商，僅統計已回報單）</div><div class="empty-row">此條件內尚無已回報資料可彙總</div>';
+    return;
+  }
+  el.innerHTML = `<div class="summary-title">計價彙總（依廠商，僅統計已回報單）</div>
+    <div class="table-wrap"><table><thead><tr>${sum.headers.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead>
+    <tbody>${sum.rows.map(r=>`<tr>${r.map(c=>`<td>${esc(c===undefined||c===null?"":c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+}
+
+function downloadCSV(headers, rows, filename){
+  const csvLines = [headers.join(",")].concat(
     rows.map(r=>r.map(c=>{
       const v = (c===undefined||c===null?"":String(c)).replace(/"/g,'""');
       return /[,\n"]/.test(v) ? `"${v}"` : v;
@@ -1468,11 +1645,32 @@ function exportCSV(key){
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  const rangeTag = (reportFrom || reportTo) ? `_${reportFrom||"起"}至${reportTo||"今"}` : "";
-  a.download = `${MASTER.currentSite}_${def.title}${rangeTag}_${localDate()}.csv`;
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
   toast("CSV 已匯出");
+}
+
+function exportFilterTag(){
+  const parts = [];
+  if(reportFrom || reportTo) parts.push(`${reportFrom||"起"}至${reportTo||"今"}`);
+  if(reportVendor) parts.push(reportVendor);
+  if(reportCat) parts.push(reportCat);
+  return parts.length ? "_" + parts.join("_") : "";
+}
+
+function exportCSV(key){
+  const def = REPORT_DEFS[key];
+  const rows = def.rows();
+  if(!rows.length){ toast("目前沒有可匯出的資料"); return; }
+  downloadCSV(def.headers, rows, `${MASTER.currentSite}_${def.title}${exportFilterTag()}_${localDate()}.csv`);
+}
+
+function exportSummaryCSV(key){
+  const def = REPORT_DEFS[key];
+  const sum = pricingSummaryTable(key);
+  if(!sum.rows.length){ toast("此條件內尚無已回報資料可彙總"); return; }
+  downloadCSV(sum.headers, sum.rows, `${MASTER.currentSite}_${def.title}計價彙總${exportFilterTag()}_${localDate()}.csv`);
 }
 
 /* ==========================================================
@@ -1656,6 +1854,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
   initCombobox("cb_l_applicant", "people", "輸入以搜尋申請人");
   initCombobox("cb_l_engineer", "people", "輸入以搜尋簽單責任工程師");
   initCombobox("cb_l_workers", "workers", "輸入以搜尋/新增點工人員，選取後加入名單", {multi:"l_workers", onChange: syncRequiredFromWorkers});
+  initCombobox("cb_l_att_add", "workers", "補入出工人員：輸入姓名搜尋/新增，選取後加入上方覆核名單", {onPick: addAttendancePerson});
   initCombobox("cb_l_locations", "locations", "輸入以搜尋工作地點", {multi:"l_locations"});
   initCombobox("cb_e_vendor", "vendors", "輸入以搜尋機具廠商");
   initCombobox("cb_e_applicant", "people", "輸入以搜尋申請人");

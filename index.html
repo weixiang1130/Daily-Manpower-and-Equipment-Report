@@ -384,8 +384,18 @@
         <button class="rtab active" data-r="labor">點工紀錄</button>
         <button class="rtab" data-r="equipment">機具紀錄</button>
       </div>
+      <div class="report-filter">
+        <label>期間篩選</label>
+        <input type="date" id="reportFrom">
+        <span class="range-sep">~</span>
+        <input type="date" id="reportTo">
+        <button type="button" id="rangeThisMonth" class="btn-mini btn-edit">本月</button>
+        <button type="button" id="rangeLastMonth" class="btn-mini btn-edit">上月</button>
+        <button type="button" id="rangeAll" class="btn-mini">全部</button>
+      </div>
       <div class="report-actions">
         <button id="exportBtn" class="btn-secondary">匯出 CSV</button>
+        <span id="reportCount" class="report-count"></span>
       </div>
       <div id="reportTable" class="table-wrap"></div>
     </div>
@@ -447,6 +457,10 @@
           <label>點工人員名單（預計進場人員池）</label>
           <textarea id="cfg_workers" rows="4"></textarea>
         </div>
+        <div class="field field-wide">
+          <label>計價鎖定日期（此日期「含」以前的單據，非管理員不可新增/修改/刪除；留空＝不鎖定）</label>
+          <input type="date" id="cfg_lockDate" style="max-width:220px;">
+        </div>
         <div class="field field-wide actions">
           <button id="saveSettings" class="btn-primary">儲存設定</button>
           <button id="resetSettings" class="btn-ghost">還原目前工地為預設值</button>
@@ -458,6 +472,7 @@
       <div class="panel-head"><h2>資料管理<span class="admin-only-badge">管理員</span></h2></div>
       <p class="hint">⚠ 本系統資料存於「共用資料庫」（Netlify Blobs），清空操作會影響<strong>所有使用者</strong>看到的資料且無法復原，請格外謹慎。</p>
       <div class="actions">
+        <button id="backupBtn" class="btn-secondary btn-sm">下載完整備份（JSON）</button>
         <button id="clearSiteData" class="btn-danger btn-danger-sm">清空目前工地的紀錄</button>
         <button id="clearAllData" class="btn-danger btn-danger-sm">清空全部工地資料</button>
       </div>

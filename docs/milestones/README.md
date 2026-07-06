@@ -14,6 +14,7 @@
 | [08](08-equip-parent-child-admin-mode.md) | 機具父子覆核與管理員模式（v7） | 機具回報逐台勾選、移除清點計時器、管理員密碼保護清空/批次設定、縮小危險按鈕 |
 | [09](09-netlify-deployment.md) | Netlify 部署與私密名單注入 | 環境變數建置時產生 config.local.js、整站密碼保護、GitHub 保持去識別化 |
 | [10](10-shared-database.md) | 共用資料庫與填錯工地防呆（v8） | Netlify Blobs 雲端共編（所有人看到同一份資料）、開站選工地攔截頁、工地徽章、送出前工地確認 |
+| [11](11-concurrency-pricing-safeguards.md) | 共編保險絲與計價保障（v9） | 時區日期修正、編輯前抓最新、版本衝突409、選項伺服器合併、報表期間篩選、已回報刪除保護、鎖單、備份下載 |
 
 ## 如何新增下一個節點
 

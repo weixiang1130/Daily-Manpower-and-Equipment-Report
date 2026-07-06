@@ -39,7 +39,12 @@ function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(
 function esc(s){
   return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
-function isoDate(d){ return d.toISOString().slice(0,10); }
+/* 以「本地時區」取日期字串——toISOString 是 UTC，台灣早上 8 點前
+   會被記成前一天，直接影響按月計價的歸屬 */
+function localDate(d = new Date()){
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+}
 function fmt(n){ const v = Math.round((Number(n)||0)*100)/100; return String(v); }
 
 function toast(msg){
@@ -60,14 +65,35 @@ async function api(method, body, query){
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined
   });
-  if(!res.ok) throw new Error("API " + res.status);
+  if(!res.ok){
+    const err = new Error("API " + res.status);
+    err.status = res.status;
+    throw err;
+  }
   return res.json();
 }
 
 const apiSaveMaster = () => api("POST", { op:"master", sites: MASTER.sites });
 const apiSaveConfig = (site) => api("POST", { op:"config", site, config: SITE_CACHE[site].config });
-const apiSaveRecord = (kind, rec) => api("POST", { op:"record", site: MASTER.currentSite, kind, record: rec });
+const apiSaveRecord = (kind, rec, baseV) => api("POST", { op:"record", site: MASTER.currentSite, kind, record: rec, baseV: baseV || 0 });
 const apiDeleteRecord = (kind, id) => api("POST", { op:"deleteRecord", site: MASTER.currentSite, kind, id });
+
+/* 重新抓取單一工地的最新資料（開啟編輯前呼叫，避免用到舊資料） */
+async function refetchSite(site){
+  const st = await api("GET", null, { site });
+  SITE_CACHE[site] = {
+    config: st.config || (SITE_CACHE[site] && SITE_CACHE[site].config) || defaultSiteConfig(),
+    labor: st.labor || [],
+    equipment: st.equipment || []
+  };
+  sortRecords(SITE_CACHE[site]);
+}
+
+/* 鎖單：config.lockDate（含）以前的單據，非管理員不可增修刪 */
+function isLockedDate(dateStr){
+  const lock = cur() && cur().config.lockDate;
+  return !!(lock && dateStr && dateStr <= lock && !isAdmin());
+}
 
 function sortRecords(store){
   const byNewest = (a,b)=> String(b.id).localeCompare(String(a.id));
@@ -82,7 +108,8 @@ function defaultSiteConfig(){
     categories: GENERIC_CONFIG.categories.slice(),
     equipTypes: GENERIC_CONFIG.equipTypes.slice(),
     people: (LOCAL.people && LOCAL.people.length ? LOCAL.people : GENERIC_CONFIG.people).slice(),
-    workers: []
+    workers: [],
+    lockDate: ""
   };
 }
 function cur(){ return SITE_CACHE[MASTER.currentSite]; }
@@ -341,8 +368,12 @@ function addPoolOption(pool, v){
   if(!Array.isArray(c[pool])) c[pool] = [];
   if(!c[pool].includes(v)){
     c[pool].push(v);
-    apiSaveConfig(MASTER.currentSite)
-      .then(()=>toast(`已新增至本工地共用資料庫：${v}`))
+    // 伺服器端合併單一選項，兩人同時新增不會互相覆蓋
+    api("POST", { op:"addOption", site: MASTER.currentSite, pool, value: v })
+      .then(resp=>{
+        if(resp && Array.isArray(resp.pool)) c[pool] = resp.pool;
+        toast(`已新增至本工地共用資料庫：${v}`);
+      })
       .catch(()=>toast(`⚠ 「${v}」雲端儲存失敗，請按重新整理後再試`));
   }
 }
@@ -461,6 +492,11 @@ function initLaborApplyForm(){
     const required = parseFloat(document.getElementById("l_required").value) || 0;
     const date = document.getElementById("l_date").value;
 
+    if(isLockedDate(date)){
+      toast(`此日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員操作`);
+      return;
+    }
+
     // 防呆：送出前確認工地
     const okSite = confirm(`⚠ 工地確認\n\n本筆點工申請將寫入共用資料庫的工地：\n「${MASTER.currentSite}」\n\n${date}・${vendor}・需求 ${fmt(required)} 工・申請人 ${applicant}\n\n工地正確嗎？`);
     if(!okSite) return;
@@ -480,8 +516,15 @@ function initLaborApplyForm(){
     };
 
     try{
-      await apiSaveRecord("labor", rec);
+      const resp = await apiSaveRecord("labor", rec, existing ? existing.v : 0);
+      rec.v = resp.v; rec.updatedAt = resp.updatedAt;
     }catch(err){
+      if(err.status === 409){
+        toast("⚠ 此單剛被其他人修改或刪除，您的變更未儲存；已重新載入最新內容，請確認後再編輯");
+        await refetchSite(MASTER.currentSite).catch(()=>{});
+        resetLaborApplyForm();
+        return;
+      }
       toast("⚠ 雲端儲存失敗，資料未送出，請檢查網路後再按一次送出");
       return;
     }
@@ -517,9 +560,11 @@ function resetLaborApplyForm(){
   if(READY) renderLaborList();
 }
 
-function loadLaborApplyRecord(id){
+async function loadLaborApplyRecord(id){
+  try{ await refetchSite(MASTER.currentSite); }catch(e){ toast("⚠ 無法載入最新資料，請檢查網路後再試"); return; }
   const rec = cur().labor.find(r=>r.id===id);
-  if(!rec) return;
+  if(!rec){ toast("此紀錄已被其他人刪除"); renderAll(); return; }
+  if(isLockedDate(rec.date)){ toast(`此單日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員修改`); renderLaborList(); return; }
   editingLaborApplyId = id;
 
   document.getElementById("l_date").value = rec.date;
@@ -605,7 +650,7 @@ function initLaborReportForm(){
     const updated = Object.assign({}, rec, {
       status: "已回報",
       report: {
-        reportedAt: isoDate(new Date()),
+        reportedAt: localDate(),
         engineer,
         checkFace: document.getElementById("l_check_face").checked,
         checkCard: document.getElementById("l_check_card").checked,
@@ -622,8 +667,15 @@ function initLaborReportForm(){
     });
 
     try{
-      await apiSaveRecord("labor", updated);
+      const resp = await apiSaveRecord("labor", updated, rec.v || 0);
+      updated.v = resp.v; updated.updatedAt = resp.updatedAt;
     }catch(err){
+      if(err.status === 409){
+        toast("⚠ 此單剛被其他人修改或刪除，您的回報未儲存；已重新載入最新內容，請重新填寫");
+        await refetchSite(MASTER.currentSite).catch(()=>{});
+        resetLaborReportForm();
+        return;
+      }
       toast("⚠ 雲端儲存失敗，回報未送出，請檢查網路後再按一次送出");
       return;
     }
@@ -715,9 +767,11 @@ function resetLaborReportForm(){
   if(READY) renderLaborList();
 }
 
-function loadLaborReportRecord(id){
+async function loadLaborReportRecord(id){
+  try{ await refetchSite(MASTER.currentSite); }catch(e){ toast("⚠ 無法載入最新資料，請檢查網路後再試"); return; }
   const rec = cur().labor.find(r=>r.id===id);
-  if(!rec) return;
+  if(!rec){ toast("此紀錄已被其他人刪除"); renderAll(); return; }
+  if(isLockedDate(rec.date)){ toast(`此單日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員修改`); renderLaborList(); return; }
   editingLaborReportId = id;
 
   const prev = (rec.report && rec.report.attendance) || [];
@@ -753,6 +807,15 @@ function loadLaborReportRecord(id){
 }
 
 async function deleteLaborRecord(id){
+  const rec = cur().labor.find(r=>r.id===id);
+  if(rec && rec.status === "已回報" && !isAdmin()){
+    toast("已回報的單據是計價依據，僅限管理員刪除");
+    return;
+  }
+  if(rec && isLockedDate(rec.date)){
+    toast(`此單日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員刪除`);
+    return;
+  }
   if(!confirm("確定要刪除這筆點工紀錄（含其回報）嗎？此操作影響所有使用者且無法復原。")) return;
   try{
     await apiDeleteRecord("labor", id);
@@ -828,6 +891,11 @@ function initEquipApplyForm(){
     const requiredQty = parseFloat(document.getElementById("e_requiredQty").value) || 0;
     const date = document.getElementById("e_date").value;
 
+    if(isLockedDate(date)){
+      toast(`此日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員操作`);
+      return;
+    }
+
     // 防呆：送出前確認工地
     const okSite = confirm(`⚠ 工地確認\n\n本筆機具申請將寫入共用資料庫的工地：\n「${MASTER.currentSite}」\n\n${date}・${vendor}・${types.join("、")}・需求 ${fmt(requiredQty)}\n\n工地正確嗎？`);
     if(!okSite) return;
@@ -848,8 +916,15 @@ function initEquipApplyForm(){
     };
 
     try{
-      await apiSaveRecord("equipment", rec);
+      const resp = await apiSaveRecord("equipment", rec, existing ? existing.v : 0);
+      rec.v = resp.v; rec.updatedAt = resp.updatedAt;
     }catch(err){
+      if(err.status === 409){
+        toast("⚠ 此單剛被其他人修改或刪除，您的變更未儲存；已重新載入最新內容，請確認後再編輯");
+        await refetchSite(MASTER.currentSite).catch(()=>{});
+        resetEquipApplyForm();
+        return;
+      }
       toast("⚠ 雲端儲存失敗，資料未送出，請檢查網路後再按一次送出");
       return;
     }
@@ -884,9 +959,11 @@ function resetEquipApplyForm(){
   if(READY) renderEquipList();
 }
 
-function loadEquipApplyRecord(id){
+async function loadEquipApplyRecord(id){
+  try{ await refetchSite(MASTER.currentSite); }catch(e){ toast("⚠ 無法載入最新資料，請檢查網路後再試"); return; }
   const rec = cur().equipment.find(r=>r.id===id);
-  if(!rec) return;
+  if(!rec){ toast("此紀錄已被其他人刪除"); renderAll(); return; }
+  if(isLockedDate(rec.date)){ toast(`此單日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員修改`); renderEquipList(); return; }
   editingEquipApplyId = id;
 
   document.getElementById("e_date").value = rec.date;
@@ -970,7 +1047,7 @@ function initEquipReportForm(){
     const updated = Object.assign({}, rec, {
       status: "已回報",
       report: {
-        reportedAt: isoDate(new Date()),
+        reportedAt: localDate(),
         checker,
         usage: usageState.map(u=>({type:u.type, present:u.present, hours:u.present?u.hours:0})),
         actualHours,
@@ -983,8 +1060,15 @@ function initEquipReportForm(){
     });
 
     try{
-      await apiSaveRecord("equipment", updated);
+      const resp = await apiSaveRecord("equipment", updated, rec.v || 0);
+      updated.v = resp.v; updated.updatedAt = resp.updatedAt;
     }catch(err){
+      if(err.status === 409){
+        toast("⚠ 此單剛被其他人修改或刪除，您的回報未儲存；已重新載入最新內容，請重新填寫");
+        await refetchSite(MASTER.currentSite).catch(()=>{});
+        resetEquipReportForm();
+        return;
+      }
       toast("⚠ 雲端儲存失敗，回報未送出，請檢查網路後再按一次送出");
       return;
     }
@@ -1064,9 +1148,11 @@ function resetEquipReportForm(){
   if(READY) renderEquipList();
 }
 
-function loadEquipReportRecord(id){
+async function loadEquipReportRecord(id){
+  try{ await refetchSite(MASTER.currentSite); }catch(e){ toast("⚠ 無法載入最新資料，請檢查網路後再試"); return; }
   const rec = cur().equipment.find(r=>r.id===id);
-  if(!rec) return;
+  if(!rec){ toast("此紀錄已被其他人刪除"); renderAll(); return; }
+  if(isLockedDate(rec.date)){ toast(`此單日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員修改`); renderEquipList(); return; }
   editingEquipReportId = id;
 
   const prev = (rec.report && rec.report.usage) || [];
@@ -1095,6 +1181,15 @@ function loadEquipReportRecord(id){
 }
 
 async function deleteEquipRecord(id){
+  const rec = cur().equipment.find(r=>r.id===id);
+  if(rec && rec.status === "已回報" && !isAdmin()){
+    toast("已回報的單據是計價依據，僅限管理員刪除");
+    return;
+  }
+  if(rec && isLockedDate(rec.date)){
+    toast(`此單日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員刪除`);
+    return;
+  }
   if(!confirm("確定要刪除這筆機具紀錄（含其回報）嗎？此操作影響所有使用者且無法復原。")) return;
   try{
     await apiDeleteRecord("equipment", id);
@@ -1255,6 +1350,21 @@ function renderSiteBreakdown(){
    歷程報表 + CSV 匯出（目前工地）
    ========================================================== */
 let currentReport = "labor";
+let reportFrom = "", reportTo = "";
+
+function inReportRange(d){
+  if(!reportFrom && !reportTo) return true;
+  if(!d) return false;
+  if(reportFrom && d < reportFrom) return false;
+  if(reportTo && d > reportTo) return false;
+  return true;
+}
+function monthRange(offset){
+  const now = new Date();
+  const first = new Date(now.getFullYear(), now.getMonth()+offset, 1);
+  const last = new Date(now.getFullYear(), now.getMonth()+offset+1, 0);
+  return [localDate(first), localDate(last)];
+}
 
 function attendanceDetail(rep){
   if(!rep || !rep.attendance) return "";
@@ -1266,7 +1376,7 @@ const REPORT_DEFS = {
   labor: {
     title:"點工紀錄",
     headers:["出工日期","廠商","需求工數","預計進場人員","工作內容","工作地點","申請人","狀態","人臉紀錄","白卡紀錄","工具箱紀錄","簽單繳回日","簽單實際出工數","差異","0工確認","簽單責任工程師","實際加班時數(晚上)","出工人員明細","根基自辦","廠商代辦","現場查核回饋"],
-    rows: ()=>cur().labor.map(r=>{
+    rows: ()=>cur().labor.filter(r=>inReportRange(r.date)).map(r=>{
       const rep = r.report || {};
       const reported = r.status==="已回報" && r.report;
       return [
@@ -1284,7 +1394,7 @@ const REPORT_DEFS = {
   equipment: {
     title:"機具紀錄",
     headers:["出工日期","機具廠商","機具類型","型號","工作內容","工作地點","責任廠商","預計使用時數(需求數量)","申請人","狀態","簽單繳回日","機具實際工作使用時數","差異","0使用確認","機具使用明細","簽單責任工程師","根基自辦","廠商代辦"],
-    rows: ()=>cur().equipment.map(x=>{
+    rows: ()=>cur().equipment.filter(x=>inReportRange(x.date)).map(x=>{
       const rep = x.report || {};
       const reported = x.status==="已回報" && x.report;
       const usageDetail = (rep.usage||[]).filter(u=>u.present)
@@ -1310,14 +1420,35 @@ function initReportTabs(){
     });
   });
   document.getElementById("exportBtn").addEventListener("click", ()=>exportCSV(currentReport));
+
+  const fromEl = document.getElementById("reportFrom");
+  const toEl = document.getElementById("reportTo");
+  const syncRange = ()=>{
+    reportFrom = fromEl.value || "";
+    reportTo = toEl.value || "";
+    renderReport(currentReport);
+  };
+  fromEl.addEventListener("change", syncRange);
+  toEl.addEventListener("change", syncRange);
+  document.getElementById("rangeThisMonth").addEventListener("click", ()=>{
+    [fromEl.value, toEl.value] = monthRange(0); syncRange();
+  });
+  document.getElementById("rangeLastMonth").addEventListener("click", ()=>{
+    [fromEl.value, toEl.value] = monthRange(-1); syncRange();
+  });
+  document.getElementById("rangeAll").addEventListener("click", ()=>{
+    fromEl.value = ""; toEl.value = ""; syncRange();
+  });
 }
 
 function renderReport(key){
   if(!READY) return;
   const def = REPORT_DEFS[key];
   const rows = def.rows();
+  const cnt = document.getElementById("reportCount");
+  if(cnt) cnt.textContent = `共 ${rows.length} 筆` + ((reportFrom||reportTo) ? `（${reportFrom||"起"} ~ ${reportTo||"今"}）` : "");
   const el = document.getElementById("reportTable");
-  if(!rows.length){ el.innerHTML = '<div class="empty-row">目前工地尚無「'+esc(def.title)+'」資料</div>'; return; }
+  if(!rows.length){ el.innerHTML = '<div class="empty-row">此區間內尚無「'+esc(def.title)+'」資料</div>'; return; }
   el.innerHTML = `<table><thead><tr>${def.headers.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead>
     <tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${esc(c===undefined||c===null?"":c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
 }
@@ -1337,7 +1468,8 @@ function exportCSV(key){
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${MASTER.currentSite}_${def.title}_${new Date().toISOString().slice(0,10)}.csv`;
+  const rangeTag = (reportFrom || reportTo) ? `_${reportFrom||"起"}至${reportTo||"今"}` : "";
+  a.download = `${MASTER.currentSite}_${def.title}${rangeTag}_${localDate()}.csv`;
   a.click();
   URL.revokeObjectURL(url);
   toast("CSV 已匯出");
@@ -1380,6 +1512,7 @@ function applyAdminUI(){
   Object.keys(SITE_CFG_MAP).forEach(id=>{
     document.getElementById(id).readOnly = !admin;
   });
+  document.getElementById("cfg_lockDate").disabled = !admin;
   document.getElementById("saveSettings").style.display = admin ? "" : "none";
   document.getElementById("resetSettings").style.display = admin ? "" : "none";
   document.getElementById("dangerZone").style.display = admin ? "" : "none";
@@ -1401,6 +1534,7 @@ function renderSettings(){
   Object.entries(SITE_CFG_MAP).forEach(([id,key])=>{
     document.getElementById(id).value = (c[key]||[]).join("\n");
   });
+  document.getElementById("cfg_lockDate").value = c.lockDate || "";
   applyAdminUI();
 }
 
@@ -1415,6 +1549,7 @@ function initSettings(){
       const lines = document.getElementById(id).value.split("\n").map(s=>s.trim()).filter(Boolean);
       c[key] = Array.from(new Set(lines));
     });
+    c.lockDate = document.getElementById("cfg_lockDate").value || "";
 
     try{
       const jobs = [apiSaveMaster(), apiSaveConfig(MASTER.currentSite)];
@@ -1465,6 +1600,23 @@ function initSettings(){
     resetLaborApplyForm(); resetLaborReportForm(); resetEquipApplyForm(); resetEquipReportForm();
     renderAll();
     toast("已清空目前工地的紀錄");
+  });
+
+  document.getElementById("backupBtn").addEventListener("click", async ()=>{
+    if(!isAdmin()){ toast("僅限管理員操作"); return; }
+    try{
+      const data = await api("GET", null, { scope: "all" });
+      const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `點工機具_完整備份_${localDate()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast("備份已下載，請妥善保存");
+    }catch(e){
+      toast("⚠ 備份下載失敗，請檢查網路");
+    }
   });
 
   document.getElementById("clearAllData").addEventListener("click", async ()=>{

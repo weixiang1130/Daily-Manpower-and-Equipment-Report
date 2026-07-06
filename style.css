@@ -409,7 +409,18 @@ tr.clickable:hover td{background:var(--teal-100);}
   background:#fff;font-size:13px;font-weight:700;color:var(--ink-600);cursor:pointer;
 }
 .rtab.active{background:var(--teal-600);border-color:var(--teal-600);color:#fff;}
-.report-actions{margin-bottom:12px;}
+.report-actions{margin-bottom:12px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
+.report-count{font-size:13px;font-weight:700;color:var(--teal-700);}
+
+/* ---------- 報表期間篩選 ---------- */
+.report-filter{
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  margin-bottom:12px;padding:10px 14px;
+  background:var(--teal-100);border-radius:10px;
+}
+.report-filter label{font-size:13px;font-weight:700;color:var(--teal-800);}
+.report-filter input[type=date]{width:160px;padding:7px 10px;font-size:13.5px;}
+.range-sep{color:var(--ink-400);font-weight:700;}
 
 /* ---------- Toast ---------- */
 .toast{

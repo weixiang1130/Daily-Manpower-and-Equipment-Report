@@ -130,11 +130,42 @@ export default async (req) => {
         await s.setJSON(cfgKey(body.site), body.config);
         return json({ ok: true });
 
-      case "record":
+      case "record": {
         if(!body.site || !KINDS.includes(body.kind) || !body.record || !body.record.id)
           return json({ error: "site/kind/record required" }, 400);
-        await s.setJSON(recKey(body.site, body.kind, body.record.id), body.record);
-        return json({ ok: true });
+        /* 樂觀並發控制：baseV 為客戶端載入時的版本。版本不符代表
+           這筆單在你編輯期間被其他人改過（或已被刪除），回 409
+           讓前端提示重新載入，避免無聲覆蓋他人內容。 */
+        const key = recKey(body.site, body.kind, body.record.id);
+        const existing = await s.get(key, { type: "json" });
+        const baseV = Number(body.baseV) || 0;
+        if(existing && (Number(existing.v) || 0) !== baseV)
+          return json({ error: "conflict", reason: "modified" }, 409);
+        if(!existing && baseV > 0)
+          return json({ error: "conflict", reason: "deleted" }, 409);
+        const rec = Object.assign({}, body.record, {
+          v: baseV + 1,
+          updatedAt: new Date().toISOString()
+        });
+        await s.setJSON(key, rec);
+        return json({ ok: true, v: rec.v, updatedAt: rec.updatedAt });
+      }
+
+      case "addOption": {
+        /* 選項新增改由伺服器端合併，避免兩人同時新增時整包互相覆蓋 */
+        const POOLS = ["vendors","locations","categories","equipTypes","people","workers"];
+        if(!body.site || !POOLS.includes(body.pool) || !body.value || typeof body.value !== "string")
+          return json({ error: "site/pool/value required" }, 400);
+        const ck = cfgKey(body.site);
+        const cfg = (await s.get(ck, { type: "json" })) || {};
+        if(!Array.isArray(cfg[body.pool])) cfg[body.pool] = [];
+        const val = body.value.trim();
+        if(val && !cfg[body.pool].includes(val)){
+          cfg[body.pool].push(val);
+          await s.setJSON(ck, cfg);
+        }
+        return json({ ok: true, pool: cfg[body.pool] });
+      }
 
       case "deleteRecord":
         if(!body.site || !KINDS.includes(body.kind) || !body.id) return json({ error: "site/kind/id required" }, 400);

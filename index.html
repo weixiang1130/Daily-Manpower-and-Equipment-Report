@@ -177,6 +177,8 @@
           <div class="field field-wide">
             <label>出工人員覆核（勾選到場者，並填寫實際出工數／加班時數）</label>
             <div id="l_attendance" class="attendance-box"></div>
+            <div class="combobox att-add-combo" id="cb_l_att_add"></div>
+            <p class="hint">申請名單漏了人？在上方搜尋補入，一樣逐人記出工與加班（補入者標示「補」，可按 × 移除）。</p>
           </div>
 
           <div class="field field-wide">
@@ -207,12 +209,28 @@
           </div>
 
           <div class="field">
-            <label>根基自辦</label>
-            <input type="text" id="l_selfDone" placeholder="例：2工">
+            <label>根基自辦（工數）</label>
+            <input type="number" id="l_selfWork" min="0" step="0.5" placeholder="選填">
           </div>
           <div class="field">
-            <label>廠商代辦</label>
-            <input type="text" id="l_vendorDone" placeholder="例：頤達扣2工，扣款4200">
+            <label>根基自辦（時數，小時）</label>
+            <input type="number" id="l_selfHours" min="0" step="0.5" placeholder="選填">
+          </div>
+          <div class="field field-wide">
+            <label>根基自辦備註</label>
+            <input type="text" id="l_selfNote" placeholder="選填：補充說明">
+          </div>
+          <div class="field">
+            <label>廠商代辦（工數）</label>
+            <input type="number" id="l_vendorWork" min="0" step="0.5" placeholder="選填">
+          </div>
+          <div class="field">
+            <label>廠商代辦（時數，小時）</label>
+            <input type="number" id="l_vendorHours" min="0" step="0.5" placeholder="選填">
+          </div>
+          <div class="field field-wide">
+            <label>廠商代辦備註</label>
+            <input type="text" id="l_vendorNote" placeholder="選填：例：○○公司扣2工，扣款4200">
           </div>
 
           <div class="field field-wide">
@@ -351,12 +369,28 @@
           </div>
 
           <div class="field">
-            <label>根基自辦</label>
-            <input type="text" id="e_selfDone" placeholder="選填">
+            <label>根基自辦（工數）</label>
+            <input type="number" id="e_selfWork" min="0" step="0.5" placeholder="選填">
           </div>
           <div class="field">
-            <label>廠商代辦</label>
-            <input type="text" id="e_vendorDone" placeholder="選填">
+            <label>根基自辦（時數，小時）</label>
+            <input type="number" id="e_selfHours" min="0" step="0.5" placeholder="選填">
+          </div>
+          <div class="field field-wide">
+            <label>根基自辦備註</label>
+            <input type="text" id="e_selfNote" placeholder="選填：補充說明">
+          </div>
+          <div class="field">
+            <label>廠商代辦（工數）</label>
+            <input type="number" id="e_vendorWork" min="0" step="0.5" placeholder="選填">
+          </div>
+          <div class="field">
+            <label>廠商代辦（時數，小時）</label>
+            <input type="number" id="e_vendorHours" min="0" step="0.5" placeholder="選填">
+          </div>
+          <div class="field field-wide">
+            <label>廠商代辦備註</label>
+            <input type="text" id="e_vendorNote" placeholder="選填：例：扣款、代辦事項說明">
           </div>
 
           <div class="field field-wide actions">
@@ -393,11 +427,18 @@
         <button type="button" id="rangeLastMonth" class="btn-mini btn-edit">上月</button>
         <button type="button" id="rangeAll" class="btn-mini">全部</button>
       </div>
+      <div class="report-filter">
+        <label>條件篩選</label>
+        <select id="reportVendor" class="report-select"><option value="">全部廠商</option></select>
+        <select id="reportCat" class="report-select"><option value="">全部工作內容</option></select>
+      </div>
       <div class="report-actions">
-        <button id="exportBtn" class="btn-secondary">匯出 CSV</button>
+        <button id="exportBtn" class="btn-secondary">匯出明細 CSV</button>
+        <button id="exportSummaryBtn" class="btn-secondary">匯出計價彙總 CSV</button>
         <span id="reportCount" class="report-count"></span>
       </div>
       <div id="reportTable" class="table-wrap"></div>
+      <div id="reportSummary" class="report-summary"></div>
     </div>
   </section>
 

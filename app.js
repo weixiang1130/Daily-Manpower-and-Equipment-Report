@@ -907,9 +907,9 @@ function renderLaborList(){
         <td>${reported ? esc(rep.engineer||"—") : "—"}</td>
         <td>${reported ? esc(rep.conclusion||"—") : "—"}</td>
         <td class="row-actions">
-          <button type="button" class="btn-mini btn-edit" data-id="${r.id}">編輯申請</button>
-          <button type="button" class="btn-mini btn-report" data-id="${r.id}">${reportBtnLabel}</button>
-          <button type="button" class="btn-mini btn-del" data-id="${r.id}">刪除</button>
+          <button type="button" class="btn-mini btn-edit" data-id="${esc(r.id)}">編輯申請</button>
+          <button type="button" class="btn-mini btn-report" data-id="${esc(r.id)}">${reportBtnLabel}</button>
+          <button type="button" class="btn-mini btn-del" data-id="${esc(r.id)}">刪除</button>
         </td>
       </tr>`;
     }).join("")}
@@ -1292,9 +1292,9 @@ function renderEquipList(){
         <td>${reported ? esc(rep.signReturnDate||"—") : "—"}</td>
         <td>${reported ? esc(rep.checker||"—") : "—"}</td>
         <td class="row-actions">
-          <button type="button" class="btn-mini btn-edit" data-id="${x.id}">編輯申請</button>
-          <button type="button" class="btn-mini btn-report" data-id="${x.id}">${reportBtnLabel}</button>
-          <button type="button" class="btn-mini btn-del" data-id="${x.id}">刪除</button>
+          <button type="button" class="btn-mini btn-edit" data-id="${esc(x.id)}">編輯申請</button>
+          <button type="button" class="btn-mini btn-report" data-id="${esc(x.id)}">${reportBtnLabel}</button>
+          <button type="button" class="btn-mini btn-del" data-id="${esc(x.id)}">刪除</button>
         </td>
       </tr>`;
     }).join("")}
@@ -1649,11 +1649,15 @@ function renderPricingSummary(key){
 }
 
 function downloadCSV(headers, rows, filename){
+  const cell = c=>{
+    let v = (c===undefined||c===null?"":String(c));
+    // 防 CSV 公式注入：非純數字卻以 = + - @ 開頭的儲存格，前置 ' 讓 Excel 視為文字
+    if(/^[=+\-@]/.test(v) && !/^[+-]?\d+(\.\d+)?$/.test(v)) v = "'" + v;
+    v = v.replace(/"/g,'""');
+    return /[,\n"]/.test(v) ? `"${v}"` : v;
+  };
   const csvLines = [headers.join(",")].concat(
-    rows.map(r=>r.map(c=>{
-      const v = (c===undefined||c===null?"":String(c)).replace(/"/g,'""');
-      return /[,\n"]/.test(v) ? `"${v}"` : v;
-    }).join(","))
+    rows.map(r=>r.map(cell).join(","))
   );
   const csv = "﻿" + csvLines.join("\n");
   const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});

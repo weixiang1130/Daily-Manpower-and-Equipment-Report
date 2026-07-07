@@ -133,6 +133,10 @@ export default async (req) => {
       case "record": {
         if(!body.site || !KINDS.includes(body.kind) || !body.record || !body.record.id)
           return json({ error: "site/kind/record required" }, 400);
+        /* id 僅允許安全字元：防止惡意 id 造成前端屬性注入（XSS）
+           或含 : / % 的 id 破壞 Blobs key 結構（uid() 產生的 id 為純 base36） */
+        if(!/^[A-Za-z0-9_-]{1,64}$/.test(String(body.record.id)))
+          return json({ error: "invalid record id" }, 400);
         /* 樂觀並發控制：baseV 為客戶端載入時的版本。版本不符代表
            這筆單在你編輯期間被其他人改過（或已被刪除），回 409
            讓前端提示重新載入，避免無聲覆蓋他人內容。 */
@@ -169,6 +173,8 @@ export default async (req) => {
 
       case "deleteRecord":
         if(!body.site || !KINDS.includes(body.kind) || !body.id) return json({ error: "site/kind/id required" }, 400);
+        if(!/^[A-Za-z0-9_-]{1,64}$/.test(String(body.id)))
+          return json({ error: "invalid record id" }, 400);
         await s.delete(recKey(body.site, body.kind, body.id));
         return json({ ok: true });
 

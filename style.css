@@ -445,6 +445,11 @@ tr.clickable:hover td{background:var(--teal-100);}
 }
 .att-remove:hover{background:#fbeaea;}
 
+/* ---------- 工種覆核列（v11） ---------- */
+.tr-name{
+  font-weight:800;color:var(--teal-800);font-size:15px;min-width:96px;
+}
+
 /* ---------- Toast ---------- */
 .toast{
   position:fixed;left:50%;bottom:24px;transform:translate(-50%,20px);

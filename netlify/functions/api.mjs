@@ -153,7 +153,7 @@ export default async (req) => {
 
       case "addOption": {
         /* 選項新增改由伺服器端合併，避免兩人同時新增時整包互相覆蓋 */
-        const POOLS = ["vendors","locations","categories","equipTypes","people","workers"];
+        const POOLS = ["vendors","locations","categories","equipTypes","people","workers","laborTypes"];
         if(!body.site || !POOLS.includes(body.pool) || !body.value || typeof body.value !== "string")
           return json({ error: "site/pool/value required" }, 400);
         const ck = cfgKey(body.site);

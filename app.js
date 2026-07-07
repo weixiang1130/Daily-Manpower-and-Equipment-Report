@@ -26,7 +26,8 @@ const GENERIC_CONFIG = {
   locations: ["一樓", "二樓", "三樓", "室外廣場", "地下室", "料場", "其他"],
   categories: ["搬料", "掃地/環境5S", "打石", "整地", "安衛設施維護", "鋼筋作業", "模板作業", "吊掛作業", "其他"],
   equipTypes: ["吊車", "挖土機", "堆高機", "洗車台", "發電機", "其他"],
-  people: ["王小明", "李小華", "陳大文"]
+  people: ["王小明", "李小華", "陳大文"],
+  laborTypes: ["粗工", "技術工", "打石工", "其他"]
 };
 
 const LOCAL = (typeof window !== "undefined" && window.LOCAL_CONFIG) ? window.LOCAL_CONFIG : {};
@@ -99,6 +100,10 @@ function sortRecords(store){
   const byNewest = (a,b)=> String(b.id).localeCompare(String(a.id));
   store.labor.sort(byNewest);
   store.equipment.sort(byNewest);
+  // 既有工地的 config 可能缺少後來新增的名單池（v11 工種），載入時補預設值
+  if(store.config && (!Array.isArray(store.config.laborTypes) || !store.config.laborTypes.length)){
+    store.config.laborTypes = GENERIC_CONFIG.laborTypes.slice();
+  }
 }
 
 function defaultSiteConfig(){
@@ -109,6 +114,7 @@ function defaultSiteConfig(){
     equipTypes: GENERIC_CONFIG.equipTypes.slice(),
     people: (LOCAL.people && LOCAL.people.length ? LOCAL.people : GENERIC_CONFIG.people).slice(),
     workers: [],
+    laborTypes: GENERIC_CONFIG.laborTypes.slice(),
     lockDate: ""
   };
 }
@@ -286,7 +292,7 @@ function switchMainTab(tabId){
    智慧搜尋下拉（Combobox）：模糊搜尋＋「＋新增選項」
    ========================================================== */
 const COMBO = {};
-const tagState = { l_workers:[], l_locations:[], l_categories:[], e_locations:[], e_type:[] };
+const tagState = { l_locations:[], l_categories:[], e_locations:[], e_type:[] };
 
 function initCombobox(rootId, pool, placeholder, opts={}){
   const root = document.getElementById(rootId);
@@ -415,7 +421,6 @@ function initTagRemoveHandler(){
     const f = btn.dataset.field;
     tagState[f] = (tagState[f]||[]).filter(v=>v!==btn.dataset.value);
     renderTags(f);
-    if(f === "l_workers") syncRequiredFromWorkers();
   });
 }
 
@@ -482,10 +487,6 @@ function setStepper(){
    ========================================================== */
 let editingLaborApplyId = null;
 
-function syncRequiredFromWorkers(){
-  document.getElementById("l_required").value = tagState.l_workers.length;
-}
-
 function initLaborApplyForm(){
   document.getElementById("l_date").valueAsDate = new Date(Date.now()+86400000);
   document.getElementById("laborApplyNewBtn").addEventListener("click", resetLaborApplyForm);
@@ -514,7 +515,7 @@ function initLaborApplyForm(){
     const rec = {
       id: editingLaborApplyId || uid(),
       date, vendor, applicant, required,
-      workers: tagState.l_workers.slice(),
+      workers: existing ? (existing.workers || []) : [],   // v11：申請不再填人員名單（工程師不會知道點工姓名）；保留舊單資料
       locations: tagState.l_locations.slice(),
       categories: tagState.l_categories.slice(),
       categoryNote: document.getElementById("l_categoryNote").value.trim(),
@@ -558,7 +559,6 @@ function resetLaborApplyForm(){
   document.getElementById("l_required").value = 0;
   setCombo("cb_l_vendor", "");
   setCombo("cb_l_applicant", "");
-  setTags("l_workers", []);
   setTags("l_locations", []);
   setTags("l_categories", []);
   document.getElementById("laborApplyTitle").textContent = "新增點工申請";
@@ -578,7 +578,6 @@ async function loadLaborApplyRecord(id){
   setCombo("cb_l_vendor", rec.vendor);
   setCombo("cb_l_applicant", rec.applicant);
   document.getElementById("l_required").value = rec.required;
-  setTags("l_workers", rec.workers);
   setTags("l_locations", rec.locations);
   setTags("l_categories", rec.categories);
   document.getElementById("l_categoryNote").value = rec.categoryNote || "";
@@ -595,7 +594,7 @@ async function loadLaborApplyRecord(id){
    點工 — 回報覆核（子層）
    ========================================================== */
 let editingLaborReportId = null;
-let attState = [];
+let typeState = [];   // v11：逐工種覆核列 [{type, work, ot2, otOver}]
 
 /* 數字欄位取值：空白回 null（與 0 區分），其餘轉數字 */
 function numFieldVal(id){
@@ -612,30 +611,22 @@ function initLaborReportForm(){
   document.getElementById("l_actual").addEventListener("input", updateLaborDiff);
   document.getElementById("l_zeroWork").addEventListener("change", onZeroWorkToggle);
 
-  const attBox = document.getElementById("l_attendance");
-  attBox.addEventListener("change", e=>{
-    const cb = e.target.closest("input[type=checkbox][data-i]");
-    if(!cb) return;
-    const i = parseInt(cb.dataset.i,10);
-    attState[i].present = cb.checked;
-    if(cb.checked && !(attState[i].work > 0)) attState[i].work = 1;
-    renderAttendance();
-    syncTotalsFromAttendance();
-  });
-  attBox.addEventListener("input", e=>{
+  const typeBox = document.getElementById("l_typeRows");
+  typeBox.addEventListener("input", e=>{
     const el = e.target;
     const i = parseInt(el.dataset.i,10);
-    if(Number.isNaN(i)) return;
-    if(el.classList.contains("att-work")) attState[i].work = parseFloat(el.value)||0;
-    if(el.classList.contains("att-ot")) attState[i].ot = parseFloat(el.value)||0;
-    syncTotalsFromAttendance();
+    if(Number.isNaN(i) || !typeState[i]) return;
+    if(el.classList.contains("tr-work")) typeState[i].work = parseFloat(el.value)||0;
+    if(el.classList.contains("tr-ot2")) typeState[i].ot2 = parseFloat(el.value)||0;
+    if(el.classList.contains("tr-otover")) typeState[i].otOver = parseFloat(el.value)||0;
+    syncTotalsFromTypes();
   });
-  attBox.addEventListener("click", e=>{
+  typeBox.addEventListener("click", e=>{
     const btn = e.target.closest(".att-remove");
     if(!btn) return;
-    attState.splice(parseInt(btn.dataset.i,10), 1);
-    renderAttendance();
-    syncTotalsFromAttendance();
+    typeState.splice(parseInt(btn.dataset.i,10), 1);
+    renderTypeRows();
+    syncTotalsFromTypes();
   });
 
   document.getElementById("laborReportForm").addEventListener("submit", async e=>{
@@ -652,7 +643,9 @@ function initLaborReportForm(){
     }
 
     const actual = parseFloat(document.getElementById("l_actual").value) || 0;
-    const totalOT = parseFloat(document.getElementById("l_totalOT").value) || 0;
+    const ot2Total = parseFloat(document.getElementById("l_ot2").value) || 0;
+    const otOverTotal = parseFloat(document.getElementById("l_otOver").value) || 0;
+    const totalOT = ot2Total + otOverTotal;
     const zeroWork = document.getElementById("l_zeroWork").checked;
 
     if(actual === 0 && !zeroWork){
@@ -664,7 +657,7 @@ function initLaborReportForm(){
       return;
     }
 
-    const warnings = collectLaborWarnings(attState, actual, totalOT, zeroWork);
+    const warnings = collectLaborWarnings(typeState, actual, ot2Total, otOverTotal, zeroWork);
     if(warnings.length){
       const ok = confirm("⚠ 系統偵測到以下數據配置異常，請確認是否輸入錯誤：\n\n- " + warnings.join("\n- ") + "\n\n確認無誤仍要送出嗎？");
       if(!ok) return;
@@ -678,10 +671,10 @@ function initLaborReportForm(){
         checkFace: document.getElementById("l_check_face").checked,
         checkCard: document.getElementById("l_check_card").checked,
         checkToolbox: document.getElementById("l_check_toolbox").checked,
-        attendance: attState
-          .filter(a=>!(a.added && !a.present))   // 現場補入但未勾到場的列不寫入
-          .map(a=>({name:a.name, present:a.present, work:a.present?a.work:0, ot:a.present?a.ot:0, added:!!a.added})),
-        actual, totalOT,
+        // v11：改逐「工種」覆核（粗工/技術工/打石工…）；舊單的逐人 attendance 資料原樣保留
+        workTypes: zeroWork ? [] : typeState.map(t=>({type:t.type, work:t.work||0, ot2:t.ot2||0, otOver:t.otOver||0})),
+        attendance: (rec.report && rec.report.attendance) || [],
+        actual, ot2Total, otOverTotal, totalOT,
         diff: actual - rec.required,
         zeroWork,
         signReturnDate: document.getElementById("l_signReturnDate").value,
@@ -719,76 +712,79 @@ function initLaborReportForm(){
   resetLaborReportForm();
 }
 
-function collectLaborWarnings(att, actual, totalOT, zeroWork){
+function collectLaborWarnings(types, actual, ot2Total, otOverTotal, zeroWork){
   const w = [];
   if(zeroWork) return w;
-  att.filter(a=>a.present).forEach(a=>{
-    if(!(a.work > 0)) w.push(`${a.name}：已勾選到場，但實際出工數為 0`);
-    if(a.work > 0 && a.work <= 0.5 && a.ot > 4) w.push(`${a.name}：出工僅 ${fmt(a.work)} 工，加班卻達 ${fmt(a.ot)} 小時`);
-    if(a.ot > 8) w.push(`${a.name}：加班時數 ${fmt(a.ot)} 小時，超過 8 小時`);
-    if(a.work > 2) w.push(`${a.name}：單人單日出工數 ${fmt(a.work)} 工，高於常態`);
+  types.forEach(t=>{
+    if(!(t.work > 0)) w.push(`${t.type}：已加入工種，但出工數為 0`);
+    // 加班前 2 小時的上限＝人數 × 2 小時
+    if(t.work > 0 && t.ot2 > t.work * 2) w.push(`${t.type}：前 2 小時加班 ${fmt(t.ot2)} 小時，超過 出工數 ${fmt(t.work)} 工 × 2 小時的上限`);
+    if(t.work > 0 && (t.ot2 + t.otOver) > t.work * 8) w.push(`${t.type}：加班合計 ${fmt(t.ot2 + t.otOver)} 小時，相對出工數 ${fmt(t.work)} 工異常偏高`);
+    if(t.otOver > 0 && !(t.ot2 > 0)) w.push(`${t.type}：填了第 3 小時起的加班，但前 2 小時為 0（加班時數應先計入前 2 小時）`);
   });
-  const hasAtt = att.some(a=>a.present);
-  if(!hasAtt){
-    if(actual > 0 && actual <= 0.5 && totalOT > 4) w.push(`出工僅 ${fmt(actual)} 工，加班總時數卻達 ${fmt(totalOT)} 小時`);
-    if(totalOT > 8 && actual <= 1) w.push(`加班總時數 ${fmt(totalOT)} 小時相對出工數 ${fmt(actual)} 工異常偏高`);
+  if(actual > 0 && types.length === 0){
+    w.push("未填工種明細（粗工／技術工／打石工⋯）——建議逐工種記錄以利計價");
   }
+  const totalOT = ot2Total + otOverTotal;
+  if(actual > 0 && ot2Total > actual * 2) w.push(`前 2 小時加班總計 ${fmt(ot2Total)} 小時，超過 出工數 ${fmt(actual)} 工 × 2 小時的上限`);
   if(actual > 0 && totalOT > actual * 8) w.push(`加班總時數 ${fmt(totalOT)} 小時已超過出工數 ${fmt(actual)} 工的合理上限（每工 8 小時）`);
   return w;
 }
 
-function renderAttendance(){
-  const box = document.getElementById("l_attendance");
+function renderTypeRows(){
+  const box = document.getElementById("l_typeRows");
   const zero = document.getElementById("l_zeroWork").checked;
-  // 有逐人名單時，總數欄改為自動加總（唯讀）；無名單時開放手填
-  const lock = attState.length > 0;
-  ["l_actual","l_totalOT"].forEach(id=>{
+  // 有工種明細時，總數欄自動加總（唯讀）；無明細時開放手填（相容舊單）
+  const lock = typeState.length > 0;
+  ["l_actual","l_ot2","l_otOver"].forEach(id=>{
     const el = document.getElementById(id);
     el.readOnly = lock;
     el.classList.toggle("readonly-field", lock);
   });
-  if(!attState.length){
-    box.innerHTML = '<div class="empty-row">此申請單未填寫預計進場人員名單——可於下方「補入出工人員」逐人記錄，或直接輸入簽單實際出工數</div>';
+  if(!typeState.length){
+    box.innerHTML = '<div class="empty-row">尚未加入工種——請在下方選擇工種（粗工／技術工／打石工⋯）逐工種記錄；若當日完全無人出工，勾選「0 工確認」</div>';
     return;
   }
   box.classList.toggle("disabled", zero);
-  box.innerHTML = attState.map((a,i)=>`
-    <div class="att-row ${a.present?'present':''}">
-      <label class="att-check"><input type="checkbox" data-i="${i}" ${a.present?'checked':''} ${zero?'disabled':''}><span>${esc(a.name)}${a.added?' <em class="att-added-tag">補</em>':''}</span></label>
-      <div class="att-fields" ${a.present?'':'style="visibility:hidden;"'}>
-        <label>出工數<input type="number" class="att-work" data-i="${i}" step="0.5" min="0" value="${a.work}" ${zero?'disabled':''}></label>
-        <label>加班時數<input type="number" class="att-ot" data-i="${i}" step="0.5" min="0" value="${a.ot}" ${zero?'disabled':''}></label>
+  box.innerHTML = typeState.map((t,i)=>`
+    <div class="att-row present">
+      <span class="tr-name">${esc(t.type)}</span>
+      <div class="att-fields">
+        <label>出工數<input type="number" class="tr-work" data-i="${i}" step="0.5" min="0" value="${t.work}" ${zero?'disabled':''}></label>
+        <label>加班·前2小時<input type="number" class="tr-ot2" data-i="${i}" step="0.5" min="0" value="${t.ot2}" ${zero?'disabled':''}></label>
+        <label>加班·第3小時起<input type="number" class="tr-otover" data-i="${i}" step="0.5" min="0" value="${t.otOver}" ${zero?'disabled':''}></label>
       </div>
-      ${a.added?`<button type="button" class="att-remove" data-i="${i}" title="移除此補入人員">×</button>`:''}
+      <button type="button" class="att-remove" data-i="${i}" title="移除此工種">×</button>
     </div>`).join("");
 }
 
-/* 回報頁現場補人：申請單名單外的人員也能逐人記出工＋加班 */
-function addAttendancePerson(name){
+/* v11 回報改逐工種：選工種加入一列（工程師不需知道點工姓名） */
+function addTypeRow(type){
   if(!editingLaborReportId){ toast("請先從清單選擇要回報的紀錄"); return; }
-  if(document.getElementById("l_zeroWork").checked){ toast("已勾選 0 工確認，請先取消再補入人員"); return; }
-  if(attState.some(a=>a.name===name)){ toast(`「${name}」已在出工人員名單中`); return; }
-  attState.push({ name, present:true, work:1, ot:0, added:true });
-  renderAttendance();
-  syncTotalsFromAttendance();
+  if(document.getElementById("l_zeroWork").checked){ toast("已勾選 0 工確認，請先取消再加入工種"); return; }
+  if(typeState.some(t=>t.type===type)){ toast(`「${type}」已在覆核清單中，請直接修改該列數字`); return; }
+  typeState.push({ type, work:1, ot2:0, otOver:0 });
+  renderTypeRows();
+  syncTotalsFromTypes();
 }
 
-function syncTotalsFromAttendance(){
-  if(!attState.length) { updateLaborDiff(); return; }
-  const present = attState.filter(a=>a.present);
-  document.getElementById("l_actual").value = present.reduce((s,a)=>s+(a.work||0),0);
-  document.getElementById("l_totalOT").value = present.reduce((s,a)=>s+(a.ot||0),0);
+function syncTotalsFromTypes(){
+  if(!typeState.length) { updateLaborDiff(); return; }
+  document.getElementById("l_actual").value = typeState.reduce((s,t)=>s+(t.work||0),0);
+  document.getElementById("l_ot2").value = typeState.reduce((s,t)=>s+(t.ot2||0),0);
+  document.getElementById("l_otOver").value = typeState.reduce((s,t)=>s+(t.otOver||0),0);
   updateLaborDiff();
 }
 
 function onZeroWorkToggle(){
   const zero = document.getElementById("l_zeroWork").checked;
   if(zero){
-    attState.forEach(a=>{ a.present = false; });
+    typeState = [];
     document.getElementById("l_actual").value = 0;
-    document.getElementById("l_totalOT").value = 0;
+    document.getElementById("l_ot2").value = 0;
+    document.getElementById("l_otOver").value = 0;
   }
-  renderAttendance();
+  renderTypeRows();
   updateLaborDiff();
 }
 
@@ -803,10 +799,10 @@ function updateLaborDiff(){
 
 function resetLaborReportForm(){
   editingLaborReportId = null;
-  attState = [];
+  typeState = [];
   document.getElementById("laborReportForm").reset();
   setCombo("cb_l_engineer", "");
-  document.getElementById("l_attendance").innerHTML = "";
+  document.getElementById("l_typeRows").innerHTML = "";
   document.getElementById("l_diff").value = "";
   document.getElementById("l_conclusionCount").textContent = "0";
   document.getElementById("laborReportContext").innerHTML = '<div class="empty-row">請從下方清單點選「填寫回報」開始</div>';
@@ -821,17 +817,9 @@ async function loadLaborReportRecord(id){
   if(isLockedDate(rec.date)){ toast(`此單日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員修改`); renderLaborList(); return; }
   editingLaborReportId = id;
 
-  const prev = (rec.report && rec.report.attendance) || [];
-  attState = (rec.workers||[]).map(name=>{
-    const p = prev.find(x=>x.name===name);
-    return p ? {name, present:!!p.present, work:p.work||0, ot:p.ot||0} : {name, present:false, work:1, ot:0};
-  });
-  // 之前回報時現場補入的人員（不在申請名單內）也要帶回
-  prev.forEach(p=>{
-    if(!attState.some(a=>a.name===p.name)){
-      attState.push({name:p.name, present:!!p.present, work:p.work||0, ot:p.ot||0, added:true});
-    }
-  });
+  // v11：逐工種覆核；舊單（僅逐人 attendance）帶總數手填即可
+  const prevTypes = (rec.report && rec.report.workTypes) || [];
+  typeState = prevTypes.map(t=>({type:t.type, work:t.work||0, ot2:t.ot2||0, otOver:t.otOver||0}));
 
   document.getElementById("laborReportContext").innerHTML = `<div class="context-box">
     <strong>${esc(MASTER.currentSite)}</strong>　${esc(rec.date)}・${esc(rec.vendor)}　需求工數：${fmt(rec.required)}　申請人：${esc(rec.applicant)}
@@ -843,9 +831,12 @@ async function loadLaborReportRecord(id){
   document.getElementById("l_check_card").checked = !!rep.checkCard;
   document.getElementById("l_check_toolbox").checked = !!rep.checkToolbox;
   document.getElementById("l_zeroWork").checked = !!rep.zeroWork;
-  renderAttendance();
+  renderTypeRows();
   document.getElementById("l_actual").value = rep.actual != null ? rep.actual : 0;
-  document.getElementById("l_totalOT").value = rep.totalOT != null ? rep.totalOT : 0;
+  // 分段加班：新單帶 ot2/otOver；舊單（只有 totalOT）帶入前 2 小時欄供編輯
+  document.getElementById("l_ot2").value = rep.ot2Total != null ? rep.ot2Total : (rep.totalOT || 0);
+  document.getElementById("l_otOver").value = rep.otOverTotal != null ? rep.otOverTotal : 0;
+  if(typeState.length) syncTotalsFromTypes();
   updateLaborDiff();
   document.getElementById("l_signReturnDate").value = rep.signReturnDate || "";
   setCombo("cb_l_engineer", rep.engineer || "");
@@ -1443,10 +1434,22 @@ function monthRange(offset){
   return [localDate(first), localDate(last)];
 }
 
-function attendanceDetail(rep){
-  if(!rep || !rep.attendance) return "";
-  return rep.attendance.filter(a=>a.present)
-    .map(a=>`${a.name}(${fmt(a.work)}工${a.ot?`/加班${fmt(a.ot)}h`:""})`).join("、");
+/* 出工明細：v11 逐工種（粗工(2工/前2h:4h/逾2h:2h)）；舊單 fallback 逐人明細 */
+function laborDetail(rep){
+  if(!rep) return "";
+  if(Array.isArray(rep.workTypes) && rep.workTypes.length){
+    return rep.workTypes.map(t=>{
+      const parts = [`${fmt(t.work)}工`];
+      if(t.ot2) parts.push(`前2h:${fmt(t.ot2)}h`);
+      if(t.otOver) parts.push(`逾2h:${fmt(t.otOver)}h`);
+      return `${t.type}(${parts.join("/")})`;
+    }).join("、");
+  }
+  if(Array.isArray(rep.attendance)){
+    return rep.attendance.filter(a=>a.present)
+      .map(a=>`${a.name}(${fmt(a.work)}工${a.ot?`/加班${fmt(a.ot)}h`:""})`).join("、");
+  }
+  return "";
 }
 
 /* 自辦/代辦欄位：新結構（工數/時數/備註）優先，舊版單一文字歸入備註 */
@@ -1464,19 +1467,23 @@ function doneCols(rep){
 const REPORT_DEFS = {
   labor: {
     title:"點工紀錄",
-    headers:["出工日期","廠商","需求工數","預計進場人員","工作內容","工作地點","申請人","狀態","人臉紀錄","白卡紀錄","工具箱紀錄","簽單繳回日","簽單實際出工數","差異","0工確認","簽單責任工程師","實際加班時數(晚上)","出工人員明細","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註","現場查核回饋"],
+    headers:["出工日期","廠商","需求工數","工作內容","工作地點","申請人","狀態","人臉紀錄","白卡紀錄","工具箱紀錄","簽單繳回日","簽單實際出工數","差異","0工確認","簽單責任工程師","加班時數(前2小時)","加班時數(第3小時起)","加班總時數","出工明細(工種)","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註","現場查核回饋"],
     records: ()=>cur().labor.filter(r=>inReportRange(r.date) && matchReportVendor(r) && matchReportCat(r,"labor")),
     rows(){ return this.records().map(r=>{
       const rep = r.report || {};
       const reported = r.status==="已回報" && r.report;
       return [
-        r.date, r.vendor, fmt(r.required), (r.workers||[]).join("、"),
+        r.date, r.vendor, fmt(r.required),
         (r.categories||[]).join("、")+(r.categoryNote?"・"+r.categoryNote:""),
         (r.locations||[]).join("、"), r.applicant, r.status,
         rep.checkFace?"V":"", rep.checkCard?"V":"", rep.checkToolbox?"V":"",
         rep.signReturnDate||"", reported?fmt(rep.actual):"", reported?fmt(rep.diff):"",
         rep.zeroWork?"V":"",
-        rep.engineer||"", reported?fmt(rep.totalOT):"", attendanceDetail(rep)
+        rep.engineer||"",
+        reported ? (rep.ot2Total != null ? fmt(rep.ot2Total) : "") : "",
+        reported ? (rep.otOverTotal != null ? fmt(rep.otOverTotal) : "") : "",
+        reported ? fmt(rep.totalOT) : "",
+        laborDetail(rep)
       ].concat(doneCols(rep), [rep.conclusion||""]);
     }); }
   },
@@ -1508,13 +1515,15 @@ function buildPricingSummary(kind){
   const groups = {};
   recs.forEach(r=>{
     const key = r.vendor || "（未填廠商）";
-    const g = groups[key] || (groups[key] = {vendor:key, count:0, zero:0, work:0, ot:0, hours:0, selfW:0, selfH:0, vendW:0, vendH:0, cats:new Set()});
+    const g = groups[key] || (groups[key] = {vendor:key, count:0, zero:0, work:0, ot2:0, otOver:0, hours:0, selfW:0, selfH:0, vendW:0, vendH:0, cats:new Set()});
     const rep = r.report;
     g.count++;
     if(kind === "labor"){
       if(rep.zeroWork) g.zero++;
       g.work += rep.actual || 0;
-      g.ot += rep.totalOT || 0;
+      // 分段加班；舊單只有 totalOT 時計入前 2 小時段
+      g.ot2 += rep.ot2Total != null ? rep.ot2Total : (rep.totalOT || 0);
+      g.otOver += rep.otOverTotal || 0;
       (r.categories||[]).forEach(c=>g.cats.add(c));
     }else{
       if(rep.zeroUse) g.zero++;
@@ -1529,17 +1538,23 @@ function buildPricingSummary(kind){
   return Object.values(groups).sort((a,b)=>a.vendor.localeCompare(b.vendor,"zh-Hant"));
 }
 
+/* 彙總的期間標示（計價 CSV 需帶日期範圍） */
+function reportPeriodLabel(){
+  return (reportFrom || reportTo) ? `${reportFrom||"起"}~${reportTo||"今"}` : "全部期間";
+}
+
 function pricingSummaryTable(kind){
   const gs = buildPricingSummary(kind);
+  const period = reportPeriodLabel();
   if(kind === "labor"){
     return {
-      headers:["廠商","已回報單數","0工單數","總出工數","總加班時數","根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","工作內容"],
-      rows: gs.map(g=>[g.vendor, g.count, g.zero, fmt(g.work), fmt(g.ot), fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、")])
+      headers:["期間","廠商","已回報單數","0工單數","總出工數","加班時數(前2小時)","加班時數(第3小時起)","根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","工作內容"],
+      rows: gs.map(g=>[period, g.vendor, g.count, g.zero, fmt(g.work), fmt(g.ot2), fmt(g.otOver), fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、")])
     };
   }
   return {
-    headers:["機具廠商","已回報單數","0使用單數","總實際使用時數","根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","機具類型"],
-    rows: gs.map(g=>[g.vendor, g.count, g.zero, fmt(g.hours), fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、")])
+    headers:["期間","機具廠商","已回報單數","0使用單數","總實際使用時數","根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","機具類型"],
+    rows: gs.map(g=>[period, g.vendor, g.count, g.zero, fmt(g.hours), fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、")])
   };
 }
 
@@ -1721,7 +1736,7 @@ function applyAdminUI(){
    ========================================================== */
 const SITE_CFG_MAP = {
   cfg_vendors:"vendors", cfg_locations:"locations", cfg_categories:"categories",
-  cfg_equipTypes:"equipTypes", cfg_people:"people", cfg_workers:"workers"
+  cfg_equipTypes:"equipTypes", cfg_people:"people", cfg_laborTypes:"laborTypes"
 };
 
 function renderSettings(){
@@ -1853,8 +1868,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
   initCombobox("cb_l_vendor", "vendors", "輸入以搜尋分包商");
   initCombobox("cb_l_applicant", "people", "輸入以搜尋申請人");
   initCombobox("cb_l_engineer", "people", "輸入以搜尋簽單責任工程師");
-  initCombobox("cb_l_workers", "workers", "輸入以搜尋/新增點工人員，選取後加入名單", {multi:"l_workers", onChange: syncRequiredFromWorkers});
-  initCombobox("cb_l_att_add", "workers", "補入出工人員：輸入姓名搜尋/新增，選取後加入上方覆核名單", {onPick: addAttendancePerson});
+  initCombobox("cb_l_type_add", "laborTypes", "加入出工工種：輸入搜尋（粗工／技術工／打石工⋯），選取後加入覆核清單", {onPick: addTypeRow});
   initCombobox("cb_l_locations", "locations", "輸入以搜尋工作地點", {multi:"l_locations"});
   initCombobox("cb_e_vendor", "vendors", "輸入以搜尋機具廠商");
   initCombobox("cb_e_applicant", "people", "輸入以搜尋申請人");

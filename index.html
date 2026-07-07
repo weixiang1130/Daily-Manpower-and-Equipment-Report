@@ -120,14 +120,8 @@
             <div class="combobox" id="cb_l_applicant"></div>
           </div>
           <div class="field">
-            <label>需求工數（隨人員名單自動計算，可修改）</label>
+            <label>需求工數（本次申請的總工數，可含小數）</label>
             <input type="number" id="l_required" min="0" step="0.5" value="0" required>
-          </div>
-
-          <div class="field field-wide">
-            <label>預計進場人員名單（回報時將逐人勾選覆核）</label>
-            <div class="combobox" id="cb_l_workers"></div>
-            <div class="tag-list" id="l_workers_tags"></div>
           </div>
 
           <div class="field field-wide">
@@ -157,7 +151,7 @@
         <div class="panel-head">
           <h2>出工回報覆核</h2>
           <span class="site-chip" data-site-chip></span>
-          <p class="hint">由回報工程師填寫（子層，直接承繼申請單資料）。逐人勾選確認到場後填寫實際出工數與加班時數；若當日完全無人出工，勾選「0 工確認」後仍可送出。</p>
+          <p class="hint">由回報工程師填寫（子層，直接承繼申請單資料）。依「工種」（粗工／技術工／打石工⋯）填寫實際出工數與分段加班時數；若當日完全無人出工，勾選「0 工確認」後仍可送出。</p>
         </div>
 
         <div id="laborReportContext" class="report-context">
@@ -175,10 +169,10 @@
           </div>
 
           <div class="field field-wide">
-            <label>出工人員覆核（勾選到場者，並填寫實際出工數／加班時數）</label>
-            <div id="l_attendance" class="attendance-box"></div>
-            <div class="combobox att-add-combo" id="cb_l_att_add"></div>
-            <p class="hint">申請名單漏了人？在上方搜尋補入，一樣逐人記出工與加班（補入者標示「補」，可按 × 移除）。</p>
+            <label>出工工種覆核（逐工種填寫實際出工數與分段加班時數）</label>
+            <div id="l_typeRows" class="attendance-box"></div>
+            <div class="combobox att-add-combo" id="cb_l_type_add"></div>
+            <p class="hint">在上方搜尋加入工種（粗工／技術工／打石工⋯，清單沒有的可「＋新增選項」）。加班費率分段計價：「前 2 小時」與「第 3 小時起」請分開填。</p>
           </div>
 
           <div class="field field-wide">
@@ -195,9 +189,14 @@
           </div>
 
           <div class="field">
-            <label>實際加班時數（總計，小時）</label>
-            <input type="number" id="l_totalOT" min="0" step="0.5" value="0">
+            <label>加班時數－前 2 小時（總計）</label>
+            <input type="number" id="l_ot2" min="0" step="0.5" value="0">
           </div>
+          <div class="field">
+            <label>加班時數－第 3 小時起（總計）</label>
+            <input type="number" id="l_otOver" min="0" step="0.5" value="0">
+          </div>
+
           <div class="field">
             <label>簽單繳回日</label>
             <input type="date" id="l_signReturnDate">
@@ -495,8 +494,8 @@
           <textarea id="cfg_people" rows="4"></textarea>
         </div>
         <div class="field field-wide">
-          <label>點工人員名單（預計進場人員池）</label>
-          <textarea id="cfg_workers" rows="4"></textarea>
+          <label>出工工種清單（點工回報覆核用，例：粗工／技術工／打石工）</label>
+          <textarea id="cfg_laborTypes" rows="4"></textarea>
         </div>
         <div class="field field-wide">
           <label>計價鎖定日期（此日期「含」以前的單據，非管理員不可新增/修改/刪除；留空＝不鎖定）</label>

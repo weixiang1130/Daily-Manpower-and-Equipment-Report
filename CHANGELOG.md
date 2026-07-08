@@ -2,6 +2,12 @@
 
 版本異動摘要。完整背景與設計決策請見 [`docs/milestones/`](docs/milestones/README.md)。
 
+## [節點 15] 2026-07-07 — 可攜式伺服器與地端部署交付（IT handoff）
+- 新增 server/server.mjs：零依賴（Node 18+）可攜式伺服器——同一 API 合約＋靜態服務＋Basic Auth，前端無需修改即可脫離 Netlify 於公司伺服器運行
+- 新增 server/import-backup.mjs：管理員完整備份 JSON → 地端資料目錄的遷移工具
+- 新增 DEPLOYMENT.md：IT 部署手冊（環境需求、部署步驟、Netlify→地端切換與驗證清單、維運建議、已知限制）
+- 未經實機執行測試（開發機無 Node），已通過語法驗證與 API 合約逐案比對；部署前由 IT 於測試機驗證
+
 ## [節點 14] 2026-07-07 — 安全補強：CSV 公式注入與 record.id 跳脫（v11.1）
 - 匯出 CSV 中和以 = + - @ 開頭的非數字儲存格（前置 '），防 Excel 公式注入；純數字（如差異 -1）不受影響
 - 清單按鈕 data-id 改經 esc() 跳脫；API 端 record/deleteRecord 驗證 id 格式（^[A-Za-z0-9_-]{1,64}$），杜絕惡意 id 的儲存型 XSS 與 Blobs key 破壞

@@ -2,6 +2,11 @@
 
 版本異動摘要。完整背景與設計決策請見 [`docs/milestones/`](docs/milestones/README.md)。
 
+## [節點 16] 2026-07-07 — API 合約正式化與後端替換餘裕
+- 新增 docs/API-CONTRACT.md：前後端接縫合約 v1（7 操作規格、409 並發語意、欄位字典含版本演進、資料表建議、驗收方式）——未來按 IT 標準重寫資料後端的唯一依據，前端零修改
+- app.js API 位址可配置：config.local.js 可設 apiBase 覆寫（預設 /api/data 不變，零迴歸）
+- DEPLOYMENT.md 新增「未來改接公司標準後端」章節；變更紀律：動欄位先改合約文件
+
 ## [節點 15] 2026-07-07 — 可攜式伺服器與地端部署交付（IT handoff）
 - 新增 server/server.mjs：零依賴（Node 18+）可攜式伺服器——同一 API 合約＋靜態服務＋Basic Auth，前端無需修改即可脫離 Netlify 於公司伺服器運行
 - 新增 server/import-backup.mjs：管理員完整備份 JSON → 地端資料目錄的遷移工具

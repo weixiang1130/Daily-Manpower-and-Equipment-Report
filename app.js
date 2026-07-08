@@ -58,10 +58,19 @@ function toast(msg){
 
 /* ==========================================================
    API 層（共用資料庫）
+
+   ★ 前後端的唯一接縫：整個前端只透過本函式與後端溝通，
+     合約規格見 docs/API-CONTRACT.md。未來改接公司標準後端
+     （不同語言/資料庫）時，只要新後端實作同一份合約，前端
+     不需任何修改；若後端掛在不同路徑，於 config.local.js
+     設定 apiBase 即可（例：window.LOCAL_CONFIG = { apiBase:
+     "/kg-audit/api/data", ... }）。
    ========================================================== */
+const API_BASE = (LOCAL.apiBase && String(LOCAL.apiBase)) || "/api/data";
+
 async function api(method, body, query){
   const qs = query ? "?" + new URLSearchParams(query).toString() : "";
-  const res = await fetch("/api/data" + qs, {
+  const res = await fetch(API_BASE + qs, {
     method,
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined

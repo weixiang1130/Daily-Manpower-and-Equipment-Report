@@ -87,6 +87,15 @@ node server/server.mjs
 - 前端每次開站載入全部紀錄；資料累積數千筆後建議實施「月結封存」（將已鎖定月份移出 `DATA_DIR` 另存）
 - `SITE_AUTH_PASS` 未設定時**不啟用驗證**（fail-open，沿用雲端版設計）——正式環境務必設定並納入組態檢查
 
-## 7. 測試狀態聲明
+## 7. 未來改接公司標準後端（重寫資料層）
+
+若 IT 評估後決定不使用 `server/server.mjs`，而以公司標準技術（自選語言＋資料庫）重寫後端：
+
+- **只需實作一份合約**：[`docs/API-CONTRACT.md`](docs/API-CONTRACT.md) 完整定義了前後端唯一接縫（單一端點、7 個操作、409 並發語意、全部欄位字典、資料表設計建議與驗收方式）。新後端符合該合約，**前端 `app.js` 零修改**
+- **API 路徑可配置**：後端若掛在其他路徑（如 `/kg-audit/api/data`），在 `config.local.js` 加一行 `apiBase: "<路徑>"` 即可，不改程式
+- **驗收**：以現行前端直接跑本文件 §4 驗證清單＋雙瀏覽器並發 409 測試
+- 兩份參考實作（`netlify/functions/api.mjs`、`server/server.mjs`）行為一致，可作為重寫時的對照組
+
+## 8. 測試狀態聲明
 
 `server/server.mjs` 與 `import-backup.mjs` 撰寫當下開發機無 Node 環境，**僅通過語法驗證與對照 `netlify/functions/api.mjs` 的逐行合約比對，未經實機執行測試**。部署前請務必在測試機完整跑過第 4 節的驗證清單；如有問題請回報系統管理者。

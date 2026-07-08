@@ -18,6 +18,7 @@
 | [12](12-report-refinements-pricing-summary.md) | 回報補人、自辦/代辦結構化與計價彙總（v10） | 回報頁現場補入出工人員（逐人加班補缺口）、根基自辦/廠商代辦拆工數+時數+備註、報表廠商/工作內容篩選、計價彙總表與獨立匯出 |
 | [13](13-worktype-report-split-overtime.md) | 回報改逐工種、分段加班與彙總期間欄（v11） | 申請移除人員名單、回報逐工種（粗工/技術工/打石工）覆核、加班拆前2小時/第3小時起、彙總CSV加期間欄、舊單完整相容 |
 | [14](14-security-hardening.md) | 安全補強（v11.1） | CSV 公式注入中和（= + - @ 開頭前置 '）、record.id 前端跳脫＋伺服器端格式驗證 |
+| [15](15-portable-server-deployment.md) | 可攜式伺服器與地端部署交付 | server/ 零依賴 Node 伺服器（同 API 合約+靜態+Basic Auth）、備份 JSON 匯入工具、DEPLOYMENT.md 部署手冊 |
 
 ## 如何新增下一個節點
 

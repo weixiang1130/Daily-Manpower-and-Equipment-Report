@@ -19,9 +19,8 @@
 | [13](13-worktype-report-split-overtime.md) | 回報改逐工種、分段加班與彙總期間欄（v11） | 申請移除人員名單、回報逐工種（粗工/技術工/打石工）覆核、加班拆前2小時/第3小時起、彙總CSV加期間欄、舊單完整相容 |
 | [14](14-security-hardening.md) | 安全補強（v11.1） | CSV 公式注入中和（= + - @ 開頭前置 '）、record.id 前端跳脫＋伺服器端格式驗證 |
 | [15](15-portable-server-deployment.md) | 可攜式伺服器與地端部署交付 | server/ 零依賴 Node 伺服器（同 API 合約+靜態+Basic Auth）、備份 JSON 匯入工具、DEPLOYMENT.md 部署手冊 |
-| [16](16-api-contract-seam.md) | API 合約正式化與後端替換餘裕 | docs/API-CONTRACT.md 接縫合約（op/409/欄位字典/資料表建議）、apiBase 可配置——IT 重寫後端前端零修改 |
-| [17](17-remove-selfdone-unlimit-conclusion.md) | 移除根基自辦、回饋不限字數（v12） | 兩回報表單移除自辦三欄（舊資料承繼保留、報表欄不動）、查核回饋取消 30 字上限 |
 | [16](16-api-contract-seam.md) | API 合約正式化與後端替換餘裕 | docs/API-CONTRACT.md 接縫合約（op/409/欄位字典/資料表建議）、apiBase 可配置、IT 標準後端重寫的對接準備 |
+| [17](17-remove-selfdone-unlimit-conclusion.md) | 移除根基自辦、回饋不限字數（v12） | 兩回報表單移除自辦三欄（舊資料承繼保留、報表欄不動）、查核回饋取消 30 字上限 |
 
 ## 如何新增下一個節點
 

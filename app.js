@@ -474,11 +474,6 @@ function renderOptionPools(){
   fillSelect("e_type_picker", c.equipTypes, "點選以新增機具類型", "equipTypes");
 }
 
-function bindCharCounter(taId, countId){
-  const ta = document.getElementById(taId);
-  const cnt = document.getElementById(countId);
-  ta.addEventListener("input", ()=>{ cnt.textContent = ta.value.length; });
-}
 function setStepper(){
   document.querySelectorAll(".step-btn").forEach(btn=>{
     btn.addEventListener("click", ()=>{
@@ -615,7 +610,6 @@ function setNumField(id, v){
 }
 
 function initLaborReportForm(){
-  bindCharCounter("l_conclusion","l_conclusionCount");
   document.getElementById("laborReportCancelBtn").addEventListener("click", resetLaborReportForm);
   document.getElementById("l_actual").addEventListener("input", updateLaborDiff);
   document.getElementById("l_zeroWork").addEventListener("change", onZeroWorkToggle);
@@ -687,9 +681,10 @@ function initLaborReportForm(){
         diff: actual - rec.required,
         zeroWork,
         signReturnDate: document.getElementById("l_signReturnDate").value,
-        selfDoneWork: numFieldVal("l_selfWork"),
-        selfDoneHours: numFieldVal("l_selfHours"),
-        selfDoneNote: document.getElementById("l_selfNote").value.trim(),
+        // v12：表單移除「根基自辦」（未填代辦即為自辦）；舊單既有自辦資料原樣承繼保留
+        selfDoneWork: (rec.report && rec.report.selfDoneWork != null) ? rec.report.selfDoneWork : null,
+        selfDoneHours: (rec.report && rec.report.selfDoneHours != null) ? rec.report.selfDoneHours : null,
+        selfDoneNote: (rec.report && (rec.report.selfDoneNote || rec.report.selfDone)) || "",
         vendorDoneWork: numFieldVal("l_vendorWork"),
         vendorDoneHours: numFieldVal("l_vendorHours"),
         vendorDoneNote: document.getElementById("l_vendorNote").value.trim(),
@@ -813,7 +808,6 @@ function resetLaborReportForm(){
   setCombo("cb_l_engineer", "");
   document.getElementById("l_typeRows").innerHTML = "";
   document.getElementById("l_diff").value = "";
-  document.getElementById("l_conclusionCount").textContent = "0";
   document.getElementById("laborReportContext").innerHTML = '<div class="empty-row">請從下方清單點選「填寫回報」開始</div>';
   document.getElementById("laborReportSubmitBtn").disabled = true;
   if(READY) renderLaborList();
@@ -849,15 +843,10 @@ async function loadLaborReportRecord(id){
   updateLaborDiff();
   document.getElementById("l_signReturnDate").value = rep.signReturnDate || "";
   setCombo("cb_l_engineer", rep.engineer || "");
-  setNumField("l_selfWork", rep.selfDoneWork);
-  setNumField("l_selfHours", rep.selfDoneHours);
-  // 舊版單一文字欄（selfDone/vendorDone）的內容歸入備註
-  document.getElementById("l_selfNote").value = rep.selfDoneNote || rep.selfDone || "";
   setNumField("l_vendorWork", rep.vendorDoneWork);
   setNumField("l_vendorHours", rep.vendorDoneHours);
   document.getElementById("l_vendorNote").value = rep.vendorDoneNote || rep.vendorDone || "";
   document.getElementById("l_conclusion").value = rep.conclusion || "";
-  document.getElementById("l_conclusionCount").textContent = (rep.conclusion||"").length;
   document.getElementById("laborReportSubmitBtn").disabled = false;
 
   switchSubTab("tab-labor", "labor-report");
@@ -1112,9 +1101,10 @@ function initEquipReportForm(){
         diff: actualHours - rec.requiredQty,
         zeroUse,
         signReturnDate: document.getElementById("e_signReturnDate").value,
-        selfDoneWork: numFieldVal("e_selfWork"),
-        selfDoneHours: numFieldVal("e_selfHours"),
-        selfDoneNote: document.getElementById("e_selfNote").value.trim(),
+        // v12：表單移除「根基自辦」；舊單既有自辦資料原樣承繼保留
+        selfDoneWork: (rec.report && rec.report.selfDoneWork != null) ? rec.report.selfDoneWork : null,
+        selfDoneHours: (rec.report && rec.report.selfDoneHours != null) ? rec.report.selfDoneHours : null,
+        selfDoneNote: (rec.report && (rec.report.selfDoneNote || rec.report.selfDone)) || "",
         vendorDoneWork: numFieldVal("e_vendorWork"),
         vendorDoneHours: numFieldVal("e_vendorHours"),
         vendorDoneNote: document.getElementById("e_vendorNote").value.trim()
@@ -1238,9 +1228,6 @@ async function loadEquipReportRecord(id){
   updateEquipDiff();
   document.getElementById("e_signReturnDate").value = rep.signReturnDate || "";
   setCombo("cb_e_checker", rep.checker || "");
-  setNumField("e_selfWork", rep.selfDoneWork);
-  setNumField("e_selfHours", rep.selfDoneHours);
-  document.getElementById("e_selfNote").value = rep.selfDoneNote || rep.selfDone || "";
   setNumField("e_vendorWork", rep.vendorDoneWork);
   setNumField("e_vendorHours", rep.vendorDoneHours);
   document.getElementById("e_vendorNote").value = rep.vendorDoneNote || rep.vendorDone || "";

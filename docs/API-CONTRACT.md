@@ -4,7 +4,7 @@
 > 未來以公司標準技術（任何語言／資料庫）重寫後端時，只要新後端實作本合約，**前端零修改**。
 > 本合約有兩份參考實作可對照：`netlify/functions/api.mjs`（雲端版）與 `server/server.mjs`（地端版），行為一致。
 
-**合約版本**：1（對應系統 v11.1，2026-07）
+**合約版本**：1（對應系統 v12，2026-07；v12 異動——selfDone* 六→表單移除轉唯讀承繼、conclusion 取消字數上限，見 §4.3 註記）
 **變更紀律**：任何欄位/操作的增修都必須先更新本文件，並保持向下相容（新增欄位可選、不刪除既有欄位語意）。
 
 ---
@@ -137,10 +137,10 @@
 | diff | number | actual − required |
 | zeroWork | boolean | 0 工確認（true 時 workTypes 為空、actual=0） |
 | signReturnDate | string\|"" | 簽單繳回日 |
-| selfDoneWork / selfDoneHours / selfDoneNote | number\|null, number\|null, string | 根基自辦 工數/時數/備註（v10；null=未填，與 0 區分） |
+| selfDoneWork / selfDoneHours / selfDoneNote | number\|null, number\|null, string | 根基自辦 工數/時數/備註（v10 新增；**v12 起表單移除**——未填代辦即為自辦。前端寫入時將舊值原樣承繼，僅舊資料非空；報表欄位保留顯示） |
 | vendorDoneWork / vendorDoneHours / vendorDoneNote | 同上 | 廠商代辦 |
 | selfDone / vendorDone | string | v10 前的單一文字欄（僅舊單存在；顯示時 fallback 至備註） |
-| conclusion | string(≤30字) | 現場查核回饋 |
+| conclusion | string | 現場查核回饋（v12 起不限字數；後端請勿設過短的欄位長度上限，建議 TEXT/NVARCHAR(MAX) 級） |
 
 ### 4.4 機具紀錄（kind=equipment）
 父層：id/date/vendor/applicant/status/report/v/updatedAt 同上，另有 `types:string[]`（機具類型）、`model:string`、`requiredQty:number`（需求數量=預計使用時數）、`contracted:"是"|"否"`、`locations:string[]`、`content:string`。

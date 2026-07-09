@@ -7,6 +7,15 @@
 - app.js API 位址可配置：config.local.js 可設 apiBase 覆寫（預設 /api/data 不變，零迴歸）
 - DEPLOYMENT.md 新增「未來改接公司標準後端」章節；變更紀律：動欄位先改合約文件
 
+## [節點 17] 2026-07-07 — 移除根基自辦欄位、查核回饋取消字數限制（v12）※未部署（額度凍結中）
+- 點工/機具回報表單移除「根基自辦」三欄（未填代辦＝全數自辦）；舊單自辦資料原樣承繼保留，報表欄位不動
+- 「現場查核回饋」取消 30 字上限與計數器
+- API-CONTRACT.md 同步（selfDone* 轉唯讀承繼、conclusion 不限字數）
+
+## [節點 16] 2026-07-07 — API 合約正式化與後端替換餘裕 ※未部署（額度凍結中）
+- 新增 docs/API-CONTRACT.md：前後端接縫合約 v1（7 op 規格、409 並發語意、欄位字典、資料表建議、驗收方式）——IT 依公司標準重寫後端的唯一依據，前端零修改
+- app.js API 位址可配置（config.local.js 的 apiBase 覆寫，預設不變）；DEPLOYMENT.md 新增「改接公司標準後端」章節
+
 ## [節點 15] 2026-07-07 — 可攜式伺服器與地端部署交付（IT handoff）
 - 新增 server/server.mjs：零依賴（Node 18+）可攜式伺服器——同一 API 合約＋靜態服務＋Basic Auth，前端無需修改即可脫離 Netlify 於公司伺服器運行
 - 新增 server/import-backup.mjs：管理員完整備份 JSON → 地端資料目錄的遷移工具

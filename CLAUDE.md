@@ -1,6 +1,6 @@
 # CLAUDE.md — 點工機具稽核系統
 
-給 AI agent 與新進開發者的技術導覽。營運層資訊（網址、帳密、真實名單）不在本檔——本 repo 為 public，遵守去識別化政策（見下）。演進脈絡見 `docs/milestones/`（11 個節點），異動摘要見 `CHANGELOG.md`。
+給 AI agent 與新進開發者的技術導覽。營運層資訊（網址、帳密、真實名單）不在本檔——本 repo 為 public，遵守去識別化政策（見下）。演進脈絡見 `docs/milestones/`（索引在其 README，逐節點記錄背景與決策），異動摘要見 `CHANGELOG.md`。
 
 ## 系統一句話
 
@@ -63,6 +63,7 @@ server/server.mjs              可攜式伺服器（地端部署用，零依賴 
 server/import-backup.mjs       資料遷移工具（完整備份 JSON → 地端資料目錄）
 DEPLOYMENT.md                  地端部署手冊（給 IT：環境需求/步驟/遷移/維運/改接公司後端）
 docs/API-CONTRACT.md           ★ 前後端接縫合約（op 規格/409 語意/欄位字典/資料表建議）——重寫後端唯一依據；改欄位先改這份
+docs/sql/                      SQL 交付包（給 IT）：DB-SCHEMA.sql 8表4VIEW＋backup-json-to-sql.py 遷移工具＋README 實作指引（已於 LocalDB 實測）
 docs/milestones/               迭代節點文件（背景/決策/驗證）
 docs/ops-log.md                營運紀錄（去識別化）
 CHANGELOG.md                   版本摘要

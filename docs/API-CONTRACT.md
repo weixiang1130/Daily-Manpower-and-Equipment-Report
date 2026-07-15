@@ -74,7 +74,7 @@
 ```json
 { "op":"addOption", "site":"工地A", "pool":"vendors", "value":"新選項" }
 ```
-- `pool` 白名單：`vendors | locations | categories | equipTypes | people | workers | laborTypes`
+- `pool` 白名單：`vendors | locations | categories | equipTypes | people | workers | laborTypes`（**本行是白名單的正準定義**；api.mjs／server.mjs／SQL 交付包中的複本以此為準，增減池別先改這裡）
 - 後端 **read-merge-write**：讀該站 config → 值不存在才 push → 寫回（兩人同時新增不互蓋）
 - 成功回 `{ "ok":true, "pool":[...合併後完整清單...] }`（前端會以此覆蓋本地快取）
 
@@ -93,6 +93,8 @@
 
 ### 4.1 master
 `{ "sites": string[] }` — 全域工地清單，順序即顯示順序。
+
+> **與 SQL 交付包 `sites.is_active` 欄位的關係**：`is_active` 是資料庫內部治理欄位（軟退場、保留已結案專案的歷史紀錄），**不屬於本合約的線上格式**。合約行為不變：`scope=all` 仍以 master.sites 全清單回應、`op:master` 仍為整包覆蓋——後端可在 op:master 時把「自清單消失的站」標記 is_active=0 而非刪除資料，但不得據此過濾合約回應。
 
 ### 4.2 config（每工地一份）
 | 欄位 | 型別 | 說明 |
@@ -130,6 +132,7 @@
 | engineer | string | 簽單責任工程師（必填） |
 | checkFace / checkCard / checkToolbox | boolean | 三道查核依據 |
 | workTypes | {type,work,ot2,otOver}[] | **v11**：逐工種明細；work=出工數、ot2=加班前2小時、otOver=第3小時起（單位小時） |
+| （歸段規則） | — | **僅有 totalOT 的舊單（v11 前），其加班一律歸入「前 2 小時」段**（ot2 視為 totalOT、otOver 視為 0）。前端彙總、SQL 遷移與所有報表實作皆須遵循此規則，勿各自詮釋 |
 | attendance | {name,present,work,ot,added?}[] | 舊制逐人明細（v11 前）；新寫入時原樣保留舊值 |
 | actual | number | 簽單實際出工數（=Σ workTypes.work 或手填） |
 | ot2Total / otOverTotal | number | 分段加班總計（v11） |

@@ -17,6 +17,11 @@
    5. 全部文字欄用 NVARCHAR（繁中）；日期一律 DATE（本地日期，勿轉時區）
    ========================================================================== */
 
+/* sqlcmd 預設 QUOTED_IDENTIFIER OFF，而計算欄位（total_ot）要求 ON */
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
 /* ---------- 1. 工地主檔 ---------- */
 CREATE TABLE dbo.sites (
     site_id     INT IDENTITY(1,1) CONSTRAINT PK_sites PRIMARY KEY,
@@ -38,7 +43,8 @@ CREATE TABLE dbo.site_options (
 
 /* ---------- 3. 點工申請單（父） ---------- */
 CREATE TABLE dbo.labor_records (
-    id              VARCHAR(64) NOT NULL CONSTRAINT PK_labor PRIMARY KEY,  -- 合約 ^[A-Za-z0-9_-]{1,64}$
+    id              VARCHAR(64) NOT NULL CONSTRAINT PK_labor PRIMARY KEY
+                    CONSTRAINT CK_labor_id CHECK (id NOT LIKE '%[^A-Za-z0-9_-]%' COLLATE Latin1_General_100_BIN2),  -- 合約 ^[A-Za-z0-9_-]{1,64}$
     site_id         INT NOT NULL CONSTRAINT FK_labor_site REFERENCES dbo.sites(site_id),
     work_date       DATE NOT NULL,
     vendor          NVARCHAR(200) NOT NULL,
@@ -46,7 +52,7 @@ CREATE TABLE dbo.labor_records (
     required_units  DECIMAL(6,2) NOT NULL CONSTRAINT DF_labor_req DEFAULT 0,   -- 需求工數(可0.5)
     locations_json  NVARCHAR(MAX) NULL,   -- JSON 陣列，例 ["A區","B區"]
     categories_json NVARCHAR(MAX) NULL,   -- JSON 陣列（工作內容類別）
-    category_note   NVARCHAR(500) NULL,
+    category_note   NVARCHAR(MAX) NULL,   -- 前端無字數上限，勿設短欄位
     workers_json    NVARCHAR(MAX) NULL,   -- 舊制人員名單（v11 起新單為空陣列）
     status          NVARCHAR(10) NOT NULL CONSTRAINT CK_labor_status CHECK (status IN (N'待回報', N'已回報')),
     v               INT NOT NULL CONSTRAINT DF_labor_v DEFAULT 1,              -- 樂觀並發版本
@@ -65,20 +71,20 @@ CREATE TABLE dbo.labor_reports (
     check_card       BIT NOT NULL DEFAULT 0,
     check_toolbox    BIT NOT NULL DEFAULT 0,
     actual           DECIMAL(6,2) NOT NULL DEFAULT 0,   -- 簽單實際出工數
-    ot2_total        DECIMAL(6,2) NOT NULL DEFAULT 0,   -- 加班·前2小時 總計(v11 分段計價)
+    ot2_total        DECIMAL(6,2) NOT NULL DEFAULT 0,   -- 加班·前2小時 總計(v11 分段計價；舊單 totalOT 歸此段)
     ot_over_total    DECIMAL(6,2) NOT NULL DEFAULT 0,   -- 加班·第3小時起 總計
-    total_ot         DECIMAL(6,2) NOT NULL DEFAULT 0,   -- 合計(=ot2+ot_over；舊單只有此值)
+    total_ot         AS (ot2_total + ot_over_total) PERSISTED,  -- 合計＝計算欄位，杜絕三欄漂移
     diff             DECIMAL(6,2) NOT NULL DEFAULT 0,   -- actual - required
     zero_work        BIT NOT NULL DEFAULT 0,            -- 0工確認
     sign_return_date DATE NULL,                          -- 簽單繳回日
     vendor_done_work  DECIMAL(6,2) NULL,   -- 廠商代辦 工數（NULL=未填，與 0 區分）
     vendor_done_hours DECIMAL(6,2) NULL,   -- 廠商代辦 時數
-    vendor_done_note  NVARCHAR(500) NULL,
+    vendor_done_note  NVARCHAR(MAX) NULL,  -- 前端無字數上限
     self_done_work    DECIMAL(6,2) NULL,   -- 根基自辦（v12 起唯讀歷史；未填代辦=全數自辦）
     self_done_hours   DECIMAL(6,2) NULL,
-    self_done_note    NVARCHAR(500) NULL,
-    legacy_self_done   NVARCHAR(500) NULL, -- v10 前單一文字欄，僅舊資料
-    legacy_vendor_done NVARCHAR(500) NULL,
+    self_done_note    NVARCHAR(MAX) NULL,
+    legacy_self_done   NVARCHAR(MAX) NULL, -- v10 前單一文字欄，僅舊資料
+    legacy_vendor_done NVARCHAR(MAX) NULL,
     legacy_attendance_json NVARCHAR(MAX) NULL,  -- v11 前逐人明細，原樣保存
     conclusion       NVARCHAR(MAX) NULL          -- 現場查核回饋（v12 起不限字數）
 );
@@ -97,7 +103,8 @@ CREATE INDEX IX_labor_wt_record ON dbo.labor_report_worktypes(record_id);
 
 /* ---------- 6. 機具申請單（父） ---------- */
 CREATE TABLE dbo.equip_records (
-    id              VARCHAR(64) NOT NULL CONSTRAINT PK_equip PRIMARY KEY,
+    id              VARCHAR(64) NOT NULL CONSTRAINT PK_equip PRIMARY KEY
+                    CONSTRAINT CK_equip_id CHECK (id NOT LIKE '%[^A-Za-z0-9_-]%' COLLATE Latin1_General_100_BIN2),
     site_id         INT NOT NULL CONSTRAINT FK_equip_site REFERENCES dbo.sites(site_id),
     work_date       DATE NOT NULL,
     vendor          NVARCHAR(200) NOT NULL,       -- 機具廠商（=責任廠商）
@@ -105,14 +112,15 @@ CREATE TABLE dbo.equip_records (
     types_json      NVARCHAR(MAX) NULL,           -- 機具類型 JSON 陣列（可複選）
     model           NVARCHAR(200) NULL,           -- 型號
     required_qty    DECIMAL(8,2) NOT NULL DEFAULT 0,  -- 需求數量=預計使用時數
-    contracted      NVARCHAR(2) NULL,             -- 是/否（合約廠商）
+    contracted      NVARCHAR(2) NULL CONSTRAINT CK_equip_contracted CHECK (contracted IN (N'是', N'否')),  -- 合約廠商
     locations_json  NVARCHAR(MAX) NULL,
-    content         NVARCHAR(500) NULL,           -- 工作內容（文字）
+    content         NVARCHAR(MAX) NULL,           -- 工作內容（文字，前端無字數上限）
     status          NVARCHAR(10) NOT NULL CONSTRAINT CK_equip_status CHECK (status IN (N'待回報', N'已回報')),
     v               INT NOT NULL CONSTRAINT DF_equip_v DEFAULT 1,
     updated_at      DATETIME2(0) NOT NULL CONSTRAINT DF_equip_upd DEFAULT SYSDATETIME()
 );
 CREATE INDEX IX_equip_site_date ON dbo.equip_records(site_id, work_date);
+CREATE INDEX IX_equip_vendor    ON dbo.equip_records(site_id, vendor);
 
 /* ---------- 7. 機具回報（子，1:1） ---------- */
 CREATE TABLE dbo.equip_reports (
@@ -126,12 +134,12 @@ CREATE TABLE dbo.equip_reports (
     sign_return_date DATE NULL,
     vendor_done_work  DECIMAL(6,2) NULL,
     vendor_done_hours DECIMAL(6,2) NULL,
-    vendor_done_note  NVARCHAR(500) NULL,
+    vendor_done_note  NVARCHAR(MAX) NULL,
     self_done_work    DECIMAL(6,2) NULL,
     self_done_hours   DECIMAL(6,2) NULL,
-    self_done_note    NVARCHAR(500) NULL,
-    legacy_self_done   NVARCHAR(500) NULL,
-    legacy_vendor_done NVARCHAR(500) NULL
+    self_done_note    NVARCHAR(MAX) NULL,
+    legacy_self_done   NVARCHAR(MAX) NULL,
+    legacy_vendor_done NVARCHAR(MAX) NULL
 );
 
 /* ---------- 8. 機具回報 逐台明細（子，1:N） ---------- */
@@ -181,12 +189,19 @@ SELECT
     SUM(ISNULL(rep.vendor_done_work, 0))  AS vendor_done_work,
     SUM(ISNULL(rep.vendor_done_hours, 0)) AS vendor_done_hours,
     SUM(ISNULL(rep.self_done_work, 0))    AS self_done_work,
-    SUM(ISNULL(rep.self_done_hours, 0))   AS self_done_hours
+    SUM(ISNULL(rep.self_done_hours, 0))   AS self_done_hours,
+    /* 工作內容彙集（對應前端計價彙總最後一欄；聚合該廠商所有已回報單的類別，去重） */
+    (SELECT STRING_AGG(d.val, N'、')
+       FROM (SELECT DISTINCT j.value AS val
+               FROM dbo.labor_records r2
+               CROSS APPLY OPENJSON(r2.categories_json) j
+              WHERE r2.site_id = r.site_id AND r2.vendor = r.vendor
+                AND r2.status = N'已回報') d) AS categories
 FROM dbo.labor_records r
 JOIN dbo.sites s ON s.site_id = r.site_id
 JOIN dbo.labor_reports rep ON rep.record_id = r.id
 WHERE r.status = N'已回報'
-GROUP BY s.name, r.vendor;
+GROUP BY s.name, r.site_id, r.vendor;
 GO
 
 /* 機具歷程明細 */
@@ -215,10 +230,17 @@ SELECT
     SUM(ISNULL(rep.vendor_done_work, 0))  AS vendor_done_work,
     SUM(ISNULL(rep.vendor_done_hours, 0)) AS vendor_done_hours,
     SUM(ISNULL(rep.self_done_work, 0))    AS self_done_work,
-    SUM(ISNULL(rep.self_done_hours, 0))   AS self_done_hours
+    SUM(ISNULL(rep.self_done_hours, 0))   AS self_done_hours,
+    /* 機具類型彙集（對應前端計價彙總最後一欄） */
+    (SELECT STRING_AGG(d.val, N'、')
+       FROM (SELECT DISTINCT j.value AS val
+               FROM dbo.equip_records r2
+               CROSS APPLY OPENJSON(r2.types_json) j
+              WHERE r2.site_id = r.site_id AND r2.vendor = r.vendor
+                AND r2.status = N'已回報') d) AS equip_types
 FROM dbo.equip_records r
 JOIN dbo.sites s ON s.site_id = r.site_id
 JOIN dbo.equip_reports rep ON rep.record_id = r.id
 WHERE r.status = N'已回報'
-GROUP BY s.name, r.vendor;
+GROUP BY s.name, r.site_id, r.vendor;
 GO

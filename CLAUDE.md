@@ -1,6 +1,6 @@
 # CLAUDE.md — 點工機具稽核系統
 
-給 AI agent 與新進開發者的技術導覽。營運層資訊（網址、帳密、真實名單）不在本檔——本 repo 為 public，遵守去識別化政策（見下）。演進脈絡見 `docs/milestones/`（11 個節點），異動摘要見 `CHANGELOG.md`。
+給 AI agent 與新進開發者的技術導覽。營運層資訊（網址、帳密、真實名單）不在本檔——本 repo 為 public，遵守去識別化政策（見下）。演進脈絡見 `docs/milestones/`（索引在其 README，逐節點記錄背景與決策），異動摘要見 `CHANGELOG.md`。
 
 ## 系統一句話
 

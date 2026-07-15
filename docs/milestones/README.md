@@ -21,6 +21,7 @@
 | [15](15-portable-server-deployment.md) | 可攜式伺服器與地端部署交付 | server/ 零依賴 Node 伺服器（同 API 合約+靜態+Basic Auth）、備份 JSON 匯入工具、DEPLOYMENT.md 部署手冊 |
 | [16](16-api-contract-seam.md) | API 合約正式化與後端替換餘裕 | docs/API-CONTRACT.md 接縫合約（op/409/欄位字典/資料表建議）、apiBase 可配置、IT 標準後端重寫的對接準備 |
 | [17](17-remove-selfdone-unlimit-conclusion.md) | 移除根基自辦、回饋不限字數（v12） | 兩回報表單移除自辦三欄（舊資料承繼保留、報表欄不動）、查核回饋取消 30 字上限 |
+| [18](18-sql-handoff-package.md) | SQL 交付包（資料表＋遷移工具） | docs/sql/ 8表4VIEW＋備份轉SQL工具＋實作指引；LocalDB 以正式資料實測對帳一致、409 模式驗證 |
 
 ## 如何新增下一個節點
 

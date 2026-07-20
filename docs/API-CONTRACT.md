@@ -154,7 +154,8 @@
 | 欄位 | 型別 | 說明 |
 |---|---|---|
 | id | string | 前端產生（同 record id 格式） |
-| auditedAt | "YYYY-MM-DD" | 稽核日期（本地時區） |
+| auditedAt | "YYYY-MM-DD" | 稽核日期（本地時區）；編輯既有紀錄時**不變** |
+| editedAt | "YYYY-MM-DD"（可缺省） | 最近一次編輯日；僅編輯過的紀錄存在此欄 |
 | auditor | string | 稽核人（必填） |
 | applied | number | 稽核當下的申請數快照（點工=required；機具=requiredQty） |
 | actualCount | number | 現場實點數（人數/台數） |

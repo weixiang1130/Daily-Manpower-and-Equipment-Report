@@ -8,3 +8,7 @@ config.local.js
 
 # Netlify 本機工具產生的資料夾
 .netlify/
+
+# 本機 DEMO（不進版控）
+demo.html
+demo-local.js

@@ -169,7 +169,8 @@ CREATE TABLE dbo.labor_audits (
     diff            DECIMAL(6,2) NOT NULL DEFAULT 0,   -- actual_count - applied
     items_json      NVARCHAR(MAX) NULL CONSTRAINT CK_labor_audit_items CHECK (items_json IS NULL OR ISJSON(items_json) = 1),
     note            NVARCHAR(MAX) NULL,                 -- 現場狀況說明（不限字數）
-    status_at_audit NVARCHAR(10) NULL                   -- 稽核當下單據狀態快照
+    status_at_audit NVARCHAR(10) NULL,                  -- 稽核當下單據狀態快照
+    edited_at       DATE NULL                           -- 最近一次編輯日（未編輯過=NULL）
 );
 CREATE INDEX IX_labor_audit_record ON dbo.labor_audits(record_id);
 CREATE INDEX IX_labor_audit_date   ON dbo.labor_audits(audited_at);
@@ -187,7 +188,8 @@ CREATE TABLE dbo.equip_audits (
     diff            DECIMAL(6,2) NOT NULL DEFAULT 0,
     items_json      NVARCHAR(MAX) NULL CONSTRAINT CK_equip_audit_items CHECK (items_json IS NULL OR ISJSON(items_json) = 1),
     note            NVARCHAR(MAX) NULL,
-    status_at_audit NVARCHAR(10) NULL
+    status_at_audit NVARCHAR(10) NULL,
+    edited_at       DATE NULL
 );
 CREATE INDEX IX_equip_audit_record ON dbo.equip_audits(record_id);
 CREATE INDEX IX_equip_audit_date   ON dbo.equip_audits(audited_at);
@@ -291,7 +293,7 @@ SELECT
     r.work_date, r.vendor, a.applied, a.actual_count, a.diff,
     (SELECT COUNT(*) FROM OPENJSON(a.items_json)
       WITH (ok BIT '$.ok') j WHERE j.ok = 0)  AS mismatch_count,
-    a.items_json, a.note, a.status_at_audit,
+    a.items_json, a.note, a.status_at_audit, a.edited_at,
     a.audit_id, a.record_id
 FROM dbo.labor_audits a
 JOIN dbo.labor_records r ON r.id = a.record_id
@@ -302,7 +304,7 @@ SELECT
     r.work_date, r.vendor, a.applied, a.actual_count, a.diff,
     (SELECT COUNT(*) FROM OPENJSON(a.items_json)
       WITH (ok BIT '$.ok') j WHERE j.ok = 0),
-    a.items_json, a.note, a.status_at_audit,
+    a.items_json, a.note, a.status_at_audit, a.edited_at,
     a.audit_id, a.record_id
 FROM dbo.equip_audits a
 JOIN dbo.equip_records r ON r.id = a.record_id

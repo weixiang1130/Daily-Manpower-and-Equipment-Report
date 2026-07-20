@@ -140,13 +140,15 @@ def emit_audits(table, r, count_key):
                 or not DATE_RE.match(str(a.get("auditedAt") or ""))):
             skipped["audit"] += 1
             continue
+        edited = a.get("editedAt")
         out.append(
             f"INSERT INTO dbo.{table} (audit_id, record_id, audited_at, auditor, "
-            "applied, actual_count, diff, items_json, note, status_at_audit) VALUES ("
+            "applied, actual_count, diff, items_json, note, status_at_audit, edited_at) VALUES ("
             f"{q(a['id'])}, {q(r['id'])}, {q(a['auditedAt'])}, {q(a.get('auditor'))}, "
             f"{num(a.get('applied'), '0')}, {num(a.get('actualCount'), '0')}, "
             f"{num(a.get('diff'), '0')}, {qj(a.get('items'))}, "
-            f"{q(a.get('note') or None)}, {q(a.get('statusAtAudit') or None)});"
+            f"{q(a.get('note') or None)}, {q(a.get('statusAtAudit') or None)}, "
+            f"{q(edited) if edited and DATE_RE.match(str(edited)) else 'NULL'});"
         )
         counts[count_key] += 1
 

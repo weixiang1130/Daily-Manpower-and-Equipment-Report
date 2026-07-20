@@ -1725,6 +1725,7 @@ let auditDate = "";
 let auditVendor = "";
 let auditSelectedId = null;
 let auditItemState = [];
+let editingAuditId = null;   // 非 null＝編輯既有稽核紀錄（更新取代，不新增）
 let auditLogFrom = "", auditLogTo = "";
 
 function auditFindRec(kind, id){
@@ -1741,6 +1742,7 @@ function auditRecCats(kind, rec){
 function resetAuditView(){
   auditSelectedId = null;
   auditItemState = [];
+  editingAuditId = null;
   const wrap = document.getElementById("auditFormWrap");
   if(wrap) wrap.innerHTML = '<div class="empty-row">請先從上方選擇要稽核的申請單</div>';
 }
@@ -1789,17 +1791,36 @@ async function pickAuditRecord(id){
   const rec = auditFindRec(auditKind, id);
   if(!rec){ toast("找不到該單據，可能已被刪除"); renderAuditView(); return; }
   auditSelectedId = id;
+  editingAuditId = null;
   auditItemState = AUDIT_ITEMS[auditKind].map(t=>({text:t, ok:null, reason:""}));
   renderAuditRecList();
   renderAuditForm(rec);
 }
 
-function renderAuditForm(rec){
+/* 編輯既有稽核紀錄：載入原內容進表單，儲存時原地更新（保留原稽核日期，另記編輯日） */
+async function editAudit(kind, rid, aid){
+  try{ await refetchSite(MASTER.currentSite); }catch(e){}
+  const rec = auditFindRec(kind, rid);
+  const a = rec && (rec.audits||[]).find(x=>x.id===aid);
+  if(!a){ toast("找不到該筆稽核紀錄，可能已被刪除"); renderAuditView(); return; }
+  auditKind = kind;
+  auditDate = rec.date;
+  auditVendor = "";
+  auditSelectedId = rid;
+  editingAuditId = aid;
+  auditItemState = (a.items||[]).map(it=>({text:it.text, ok: typeof it.ok === "boolean" ? it.ok : null, reason:it.reason||""}));
+  renderAuditView();
+  renderAuditForm(rec, a);
+  document.getElementById("auditFormWrap").scrollIntoView({behavior:"smooth", block:"start"});
+}
+
+function renderAuditForm(rec, editA){
   const wrap = document.getElementById("auditFormWrap");
-  const applied = auditApplied(auditKind, rec);
+  // 編輯模式沿用原稽核當下的申請數快照（基準不因申請單事後修改而漂移）
+  const applied = editA ? (editA.applied||0) : auditApplied(auditKind, rec);
   wrap.innerHTML = `
-    <div class="audit-ctx">
-      <div class="ac-line1">${esc(rec.date)}｜${esc(rec.vendor||"（未填廠商）")}｜${esc(rec.status)}</div>
+    <div class="audit-ctx${editA?" editing":""}">
+      <div class="ac-line1">${editA?`✎ 編輯稽核紀錄（原稽核日期：${esc(editA.auditedAt)}）｜`:""}${esc(rec.date)}｜${esc(rec.vendor||"（未填廠商）")}｜${esc(rec.status)}</div>
       <div class="ac-line2">${esc(auditRecCats(auditKind, rec)||"—")}｜${esc((rec.locations||[]).join("、")||"—")}｜申請人：${esc(rec.applicant||"—")}</div>
     </div>
     <div class="form-grid">
@@ -1809,15 +1830,15 @@ function renderAuditForm(rec){
       </div>
       <div class="field">
         <label>${auditCountLabel()}（現場清點）</label>
-        <input type="number" id="auditCount" min="0" step="0.5">
+        <input type="number" id="auditCount" min="0" step="0.5" value="${editA?fmt(editA.actualCount):""}">
       </div>
       <div class="field">
         <label>差異（自動計算）</label>
-        <input type="text" id="auditCountDiff" readonly class="readonly-field">
+        <input type="text" id="auditCountDiff" readonly class="readonly-field" value="${editA?fmt((editA.actualCount||0)-applied):""}">
       </div>
       <div class="field">
         <label>稽核人</label>
-        <input type="text" id="auditAuditor" placeholder="例：成控－某某某" value="${esc(sessionStorage.getItem("dm_auditor")||"")}">
+        <input type="text" id="auditAuditor" placeholder="例：成控－某某某" value="${esc(editA?(editA.auditor||""):(sessionStorage.getItem("dm_auditor")||""))}">
       </div>
       <div class="field field-wide">
         <label>快速查核（每項必選「相符／不相符」；不相符需填寫原因）</label>
@@ -1825,10 +1846,10 @@ function renderAuditForm(rec){
       </div>
       <div class="field field-wide">
         <label>現場狀況說明（選填，不限字數）</label>
-        <textarea id="auditNote" rows="3" placeholder="例：現場清點與申請相符；其中 2 工無門禁卡紀錄，已提醒工地落實刷卡"></textarea>
+        <textarea id="auditNote" rows="3" placeholder="例：現場清點與申請相符；其中 2 工無門禁卡紀錄，已提醒工地落實刷卡">${esc(editA?(editA.note||""):"")}</textarea>
       </div>
       <div class="field field-wide actions">
-        <button type="button" class="btn-primary" id="auditSaveBtn">儲存稽核紀錄</button>
+        <button type="button" class="btn-primary" id="auditSaveBtn">${editA?"更新稽核紀錄":"儲存稽核紀錄"}</button>
         <button type="button" class="btn-ghost" id="auditCancelBtn">取消</button>
       </div>
     </div>`;
@@ -1869,19 +1890,26 @@ async function saveAudit(id){
     if(it.ok === null){ toast(`「${it.text}」尚未選擇相符／不相符`); return; }
     if(it.ok === false && !it.reason.trim()){ toast(`「${it.text}」為不相符，請填寫不符原因`); return; }
   }
-  const applied = auditApplied(auditKind, rec);
+  const orig = editingAuditId ? (rec.audits||[]).find(x=>x.id===editingAuditId) : null;
+  if(editingAuditId && !orig){ toast("原稽核紀錄不存在，可能已被刪除"); resetAuditView(); renderAuditView(); return; }
+  // 編輯：保留原 id/稽核日期/申請數快照，另記編輯日；新增：全新快照
+  const applied = orig ? (orig.applied||0) : auditApplied(auditKind, rec);
   const audit = {
-    id: uid(),
-    auditedAt: localDate(),
+    id: orig ? orig.id : uid(),
+    auditedAt: orig ? orig.auditedAt : localDate(),
     auditor,
     applied,
     actualCount,
     diff: actualCount - applied,
     items: auditItemState.map(it=>({ text: it.text, ok: !!it.ok, reason: it.ok===false ? it.reason.trim() : "" })),
     note: document.getElementById("auditNote").value.trim(),
-    statusAtAudit: rec.status
+    statusAtAudit: orig ? orig.statusAtAudit : rec.status
   };
-  const updated = Object.assign({}, rec, { audits: (rec.audits||[]).concat([audit]) });
+  if(orig) audit.editedAt = localDate();
+  const updated = Object.assign({}, rec, {
+    audits: orig ? rec.audits.map(x=>x.id===audit.id ? audit : x)
+                 : (rec.audits||[]).concat([audit])
+  });
   try{
     const resp = await apiSaveRecord(auditKind, updated, rec.v || 0);
     updated.v = resp.v; updated.updatedAt = resp.updatedAt;
@@ -1901,7 +1929,7 @@ async function saveAudit(id){
   const idx = list.findIndex(r=>r.id===id);
   if(idx >= 0) list[idx] = updated;
   sessionStorage.setItem("dm_auditor", auditor);
-  toast("稽核紀錄已儲存至共用資料庫");
+  toast(orig ? "稽核紀錄已更新" : "稽核紀錄已儲存至共用資料庫");
   resetAuditView();
   renderAuditView();
 }
@@ -1931,8 +1959,9 @@ function renderAuditLog(){
     entries.map(e=>{
       const bad = e.a.items.filter(i=>!i.ok).length;
       const resTag = bad ? `<span class="tag warn">${bad} 項不符</span>` : `<span class="tag ok">全數相符</span>`;
+      const ids = `data-kind="${e.kind}" data-rid="${esc(e.rec.id)}" data-aid="${esc(e.a.id)}"`;
       return `<tr>
-        <td>${esc(e.a.auditedAt)}</td>
+        <td>${esc(e.a.auditedAt)}${e.a.editedAt?`<span class="edited-mark" title="編輯於 ${esc(e.a.editedAt)}">（已編輯）</span>`:""}</td>
         <td>${e.kind==="labor"?"點工":"機具"}</td>
         <td>${esc(e.rec.date)}</td>
         <td>${esc(e.rec.vendor||"")}</td>
@@ -1942,8 +1971,9 @@ function renderAuditLog(){
         <td>${resTag}</td>
         <td>${esc(e.a.auditor)}</td>
         <td>
-          <button type="button" class="btn-mini btn-edit audit-one-pdf" data-kind="${e.kind}" data-rid="${esc(e.rec.id)}" data-aid="${esc(e.a.id)}">PDF</button>
-          <button type="button" class="btn-mini btn-del audit-del" data-kind="${e.kind}" data-rid="${esc(e.rec.id)}" data-aid="${esc(e.a.id)}">刪除</button>
+          <button type="button" class="btn-mini btn-edit audit-edit" ${ids}>編輯</button>
+          <button type="button" class="btn-mini btn-edit audit-one-pdf" ${ids}>PDF</button>
+          <button type="button" class="btn-mini btn-del audit-del" ${ids}>刪除</button>
         </td>
       </tr>`;
     }).join("") + "</tbody></table>";
@@ -1998,14 +2028,16 @@ function auditReportHTML(entries, subtitle){
         <tbody>${e.a.items.map(i=>`<tr><td>${esc(i.text)}</td><td class="${i.ok?"r-ok":"r-bad"}">${i.ok?"相符":"不相符"}</td><td>${esc(i.reason||"")}</td></tr>`).join("")}</tbody>
       </table>
       ${e.a.note?`<p class="note"><strong>現場狀況說明：</strong>${esc(e.a.note)}</p>`:""}
-      <p class="meta">稽核日期：${esc(e.a.auditedAt)}｜稽核人：${esc(e.a.auditor)}</p>
+      <p class="meta">稽核日期：${esc(e.a.auditedAt)}｜稽核人員：${esc(e.a.auditor)}${e.a.editedAt?`｜編輯於：${esc(e.a.editedAt)}`:""}</p>
     </div>`;
   }).join("");
 
   const sumRows = entries.map((e,n)=>{
     const bad = e.a.items.filter(i=>!i.ok).length;
-    return `<tr><td>${n+1}</td><td>${esc(e.a.auditedAt)}</td><td>${e.kind==="labor"?"點工":"機具"}</td><td>${esc(e.rec.date)}</td><td>${esc(e.rec.vendor||"")}</td><td>${fmt(e.a.applied)}</td><td>${fmt(e.a.actualCount)}</td><td>${fmt(e.a.diff)}</td><td class="${bad?"r-bad":"r-ok"}">${bad?bad+" 項不符":"全數相符"}</td></tr>`;
+    return `<tr><td>${n+1}</td><td>${esc(e.a.auditedAt)}</td><td>${e.kind==="labor"?"點工":"機具"}</td><td>${esc(e.rec.date)}</td><td>${esc(e.rec.vendor||"")}</td><td>${fmt(e.a.applied)}</td><td>${fmt(e.a.actualCount)}</td><td>${fmt(e.a.diff)}</td><td class="${bad?"r-bad":"r-ok"}">${bad?bad+" 項不符":"全數相符"}</td><td>${esc(e.a.auditor)}</td></tr>`;
   }).join("");
+
+  const auditors = [...new Set(entries.map(e=>e.a.auditor).filter(Boolean))];
 
   return `<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8"><title>成控現場稽核報告</title>
   <style>
@@ -2021,17 +2053,23 @@ function auditReportHTML(entries, subtitle){
     .r-ok{color:#1c7d43;font-weight:bold;} .r-bad{color:#b93226;font-weight:bold;}
     .note{margin:4px 0;} .meta{color:#5f6f6e;margin:2px 0 0;}
     .sec{page-break-inside:avoid;}
+    .signs{display:flex;gap:40px;flex-wrap:wrap;margin-top:36px;page-break-inside:avoid;font-size:13px;}
     .toolbar{margin:0 0 16px;}
     .toolbar button{font-size:14px;padding:6px 16px;cursor:pointer;}
     @media print{.toolbar{display:none;} body{margin:12mm;}}
   </style></head><body>
   <div class="toolbar"><button onclick="window.print()">🖨 列印 / 另存 PDF</button>（於列印對話框選「另存為 PDF」）</div>
   <h1>成控現場稽核報告</h1>
-  <p class="sub">工地：${esc(MASTER.currentSite)}｜${esc(subtitle)}｜共 ${entries.length} 筆稽核紀錄｜產出日期：${esc(localDate())}</p>
+  <p class="sub">工地：${esc(MASTER.currentSite)}｜${esc(subtitle)}｜共 ${entries.length} 筆稽核紀錄｜稽核人員：${esc(auditors.join("、")||"—")}｜產出日期：${esc(localDate())}</p>
   <h2>稽核彙總</h2>
-  <table><thead><tr><th>#</th><th>稽核日期</th><th>類型</th><th>出工日期</th><th>廠商</th><th>申請</th><th>實點</th><th>差異</th><th>查核結果</th></tr></thead><tbody>${sumRows}</tbody></table>
+  <table><thead><tr><th>#</th><th>稽核日期</th><th>類型</th><th>出工日期</th><th>廠商</th><th>申請</th><th>實點</th><th>差異</th><th>查核結果</th><th>稽核人員</th></tr></thead><tbody>${sumRows}</tbody></table>
   <h2>逐筆查核明細</h2>
   ${secs}
+  <div class="signs">
+    <div>稽核人員簽章：＿＿＿＿＿＿＿＿＿＿</div>
+    <div>覆核主管簽章：＿＿＿＿＿＿＿＿＿＿</div>
+    <div>日期：＿＿＿＿＿＿＿＿＿＿</div>
+  </div>
   </body></html>`;
 }
 
@@ -2046,11 +2084,11 @@ function openAuditPDF(entries, subtitle){
 function exportAuditCSV(){
   const entries = auditLogEntries();
   if(!entries.length){ toast("此條件內沒有稽核紀錄可匯出"); return; }
-  const headers = ["稽核日期","類型","工地","出工日期","廠商","工作內容","工作地點","申請","現場實點","差異","不符項數","不符項目與原因","現場狀況說明","稽核人","稽核時單據狀態"];
+  const headers = ["稽核日期","編輯日期","類型","工地","出工日期","廠商","工作內容","工作地點","申請","現場實點","差異","不符項數","不符項目與原因","現場狀況說明","稽核人","稽核時單據狀態"];
   const rows = entries.map(e=>{
     const badItems = e.a.items.filter(i=>!i.ok);
     return [
-      e.a.auditedAt, e.kind==="labor"?"點工":"機具", MASTER.currentSite,
+      e.a.auditedAt, e.a.editedAt||"", e.kind==="labor"?"點工":"機具", MASTER.currentSite,
       e.rec.date, e.rec.vendor||"", auditRecCats(e.kind, e.rec),
       (e.rec.locations||[]).join("、"),
       fmt(e.a.applied), fmt(e.a.actualCount), fmt(e.a.diff),
@@ -2104,6 +2142,8 @@ function initAudit(){
     if(auditItemState[i]) auditItemState[i].reason = e.target.value;
   });
   document.getElementById("auditLogList").addEventListener("click", e=>{
+    const ed = e.target.closest(".audit-edit");
+    if(ed){ editAudit(ed.dataset.kind, ed.dataset.rid, ed.dataset.aid); return; }
     const pdf = e.target.closest(".audit-one-pdf");
     if(pdf){
       const rec = auditFindRec(pdf.dataset.kind, pdf.dataset.rid);

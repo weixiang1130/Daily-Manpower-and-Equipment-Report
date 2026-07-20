@@ -1705,10 +1705,10 @@ const AUDIT_ITEMS = {
   labor: (LOCAL.auditItems && LOCAL.auditItems.labor) || [
     "現場點名人數與申請工數相符",
     "人臉辨識紀錄相符",
-    "門禁卡進出紀錄相符",
+    "白卡進出紀錄相符",
     "施作工項與申請內容相符",
     "施作地點與申請相符",
-    "無跨廠商重複計價疑慮",
+    "無同廠商重複計價疑慮",
     "簽單與出工紀錄核對相符"
   ],
   equipment: (LOCAL.auditItems && LOCAL.auditItems.equipment) || [
@@ -1846,7 +1846,7 @@ function renderAuditForm(rec, editA){
       </div>
       <div class="field field-wide">
         <label>現場狀況說明（選填，不限字數）</label>
-        <textarea id="auditNote" rows="3" placeholder="例：現場清點與申請相符；其中 2 工無門禁卡紀錄，已提醒工地落實刷卡">${esc(editA?(editA.note||""):"")}</textarea>
+        <textarea id="auditNote" rows="3" placeholder="例：現場清點與申請相符；其中 2 工無白卡紀錄，已提醒工地落實刷卡">${esc(editA?(editA.note||""):"")}</textarea>
       </div>
       <div class="field field-wide actions">
         <button type="button" class="btn-primary" id="auditSaveBtn">${editA?"更新稽核紀錄":"儲存稽核紀錄"}</button>
@@ -1874,7 +1874,7 @@ function renderAuditItems(){
           <button type="button" class="ai-btn bad ${it.ok===false?"active":""}" data-i="${i}" data-val="0">不相符</button>
         </span>
       </div>
-      ${it.ok===false?`<input type="text" class="ai-reason" data-i="${i}" placeholder="請填寫不符原因（必填），例：2 工無門禁卡進出紀錄" value="${esc(it.reason)}">`:""}
+      ${it.ok===false?`<input type="text" class="ai-reason" data-i="${i}" placeholder="請填寫不符原因（必填），例：2 工無白卡進出紀錄" value="${esc(it.reason)}">`:""}
     </div>`).join("");
 }
 

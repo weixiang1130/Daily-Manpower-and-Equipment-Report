@@ -47,10 +47,10 @@ DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")       # 本地日期字串
 STATUSES = ("待回報", "已回報")
 
 out = []
-skipped = {"id": 0, "date": 0, "status": 0, "type": 0, "option_dup": 0}
+skipped = {"id": 0, "date": 0, "status": 0, "type": 0, "option_dup": 0, "audit": 0}
 counts = {"sites": 0, "site_options": 0, "labor_records": 0, "labor_reports": 0,
           "labor_report_worktypes": 0, "equip_records": 0, "equip_reports": 0,
-          "equip_report_usage": 0}
+          "equip_report_usage": 0, "labor_audits": 0, "equip_audits": 0}
 
 
 def q(s):
@@ -133,6 +133,26 @@ def done_vals(rep):
             f"{q(rep.get('selfDone') or None)}, {q(rep.get('vendorDone') or None)}")
 
 
+def emit_audits(table, r, count_key):
+    """v13 成控現場稽核 audits[]（合約 §4.5）；labor/equip 兩表共用同構"""
+    for a in r.get("audits") or []:
+        if (not a or not a.get("id") or not ID_RE.match(str(a["id"]))
+                or not DATE_RE.match(str(a.get("auditedAt") or ""))):
+            skipped["audit"] += 1
+            continue
+        edited = a.get("editedAt")
+        out.append(
+            f"INSERT INTO dbo.{table} (audit_id, record_id, audited_at, auditor, "
+            "applied, actual_count, diff, items_json, note, status_at_audit, edited_at) VALUES ("
+            f"{q(a['id'])}, {q(r['id'])}, {q(a['auditedAt'])}, {q(a.get('auditor'))}, "
+            f"{num(a.get('applied'), '0')}, {num(a.get('actualCount'), '0')}, "
+            f"{num(a.get('diff'), '0')}, {qj(a.get('items'))}, "
+            f"{q(a.get('note') or None)}, {q(a.get('statusAtAudit') or None)}, "
+            f"{q(edited) if edited and DATE_RE.match(str(edited)) else 'NULL'});"
+        )
+        counts[count_key] += 1
+
+
 out.append("/* 由 backup-json-to-sql.py 產生 */")
 out.append("SET NOCOUNT ON;")
 out.append("SET QUOTED_IDENTIFIER ON;  -- 寫入含計算欄位的資料表所需")
@@ -211,6 +231,7 @@ for site, store in (data["stores"] or {}).items():
                     f"{num(wt.get('ot2'), '0')}, {num(wt.get('otOver'), '0')});"
                 )
                 counts["labor_report_worktypes"] += 1
+        emit_audits("labor_audits", r, "labor_audits")
 
 # ---------- equipment ----------
 for site, store in (data["stores"] or {}).items():
@@ -249,6 +270,7 @@ for site, store in (data["stores"] or {}).items():
                     f"{num(u.get('hours'), '0')});"
                 )
                 counts["equip_report_usage"] += 1
+        emit_audits("equip_audits", r, "equip_audits")
 
 out.append("COMMIT;")
 out.append("/* 預期筆數（匯入後 SELECT COUNT(*) 對帳）： " +
@@ -266,6 +288,7 @@ if total_skipped:
     print(f"⚠ 跳過 {total_skipped} 筆不合格資料：" +
           "、".join(f"{k}={v}" for k, v in skipped.items() if v))
     print("  （id=格式不符；date=非 YYYY-MM-DD；status=非 待回報/已回報；"
-          "type=工種/機具明細缺名稱；option_dup=同值選項僅取首見）")
+          "type=工種/機具明細缺名稱；option_dup=同值選項僅取首見；"
+          "audit=稽核紀錄 id/日期格式不符）")
 else:
     print("無跳過資料")

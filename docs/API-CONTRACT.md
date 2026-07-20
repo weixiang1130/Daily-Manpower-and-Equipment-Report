@@ -4,7 +4,7 @@
 > 未來以公司標準技術（任何語言／資料庫）重寫後端時，只要新後端實作本合約，**前端零修改**。
 > 本合約有兩份參考實作可對照：`netlify/functions/api.mjs`（雲端版）與 `server/server.mjs`（地端版），行為一致。
 
-**合約版本**：1（對應系統 v12，2026-07；v12 異動——selfDone* 六→表單移除轉唯讀承繼、conclusion 取消字數上限，見 §4.3 註記）
+**合約版本**：1（對應系統 v13，2026-07；v12 異動——selfDone* 六→表單移除轉唯讀承繼、conclusion 取消字數上限，見 §4.3 註記；v13 異動——紀錄新增 `audits[]` 成控現場稽核陣列，見 §4.5）
 **變更紀律**：任何欄位/操作的增修都必須先更新本文件，並保持向下相容（新增欄位可選、不刪除既有欄位語意）。
 
 ---
@@ -123,6 +123,7 @@
 | categoryNote | string | 內容補充 |
 | status | "待回報"\|"已回報" | 生命週期狀態 |
 | report | object\|null | 子層回報（見下） |
+| audits | object[]（可缺省） | **v13**：成控現場稽核紀錄陣列（一單可多次稽核），元素結構見 4.5；沿用 `op:record` 整筆覆寫與版本檢查，無獨立 op |
 | v, updatedAt | number, string | 後端維護（版本/時間），前端唯讀 |
 
 子層 `report`（回報覆核）：
@@ -146,8 +147,24 @@
 | conclusion | string | 現場查核回饋（v12 起不限字數；後端請勿設過短的欄位長度上限，建議 TEXT/NVARCHAR(MAX) 級） |
 
 ### 4.4 機具紀錄（kind=equipment）
-父層：id/date/vendor/applicant/status/report/v/updatedAt 同上，另有 `types:string[]`（機具類型）、`model:string`、`requiredQty:number`（需求數量=預計使用時數）、`contracted:"是"|"否"`、`locations:string[]`、`content:string`。
+父層：id/date/vendor/applicant/status/report/audits/v/updatedAt 同上，另有 `types:string[]`（機具類型）、`model:string`、`requiredQty:number`（需求數量=預計使用時數）、`contracted:"是"|"否"`、`locations:string[]`、`content:string`。
 子層 `report`：`checker`（簽單責任工程師）、`usage:{type,present,hours}[]`（逐台）、`actualHours`、`diff`、`zeroUse`、`signReturnDate`、自辦/代辦六欄（同 4.3）。
+
+### 4.5 稽核紀錄（`audits[]` 元素；v13，點工/機具通用）
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| id | string | 前端產生（同 record id 格式） |
+| auditedAt | "YYYY-MM-DD" | 稽核日期（本地時區）；編輯既有紀錄時**不變** |
+| editedAt | "YYYY-MM-DD"（可缺省） | 最近一次編輯日；僅編輯過的紀錄存在此欄 |
+| auditor | string | 稽核人（必填） |
+| applied | number | 稽核當下的申請數快照（點工=required；機具=requiredQty） |
+| actualCount | number | 現場實點數（人數/台數） |
+| diff | number | actualCount − applied |
+| items | {text,ok,reason}[] | 逐項查核結果：text=項目文字、ok=相符(true)/不相符(false)、reason=不符原因（ok=false 時必填，否則空字串） |
+| note | string | 現場狀況說明（不限字數，建議 NVARCHAR(MAX) 級） |
+| statusAtAudit | string | 稽核當下的單據狀態快照（"待回報"/"已回報"） |
+
+> 查核項目文字由前端設定檔（config.local.js `auditItems`）決定，後端一律照存 `items[].text`，不得以固定清單驗證。稽核功能為前端管理員（成控）限定；資料層面 audits 隨單據一起讀寫，後端無需額外權限邏輯（地端若導入個人登入，可於 API 層加稽核角色檢查）。
 
 ## 5. 給後端重寫者的相容須知
 

@@ -154,6 +154,47 @@ CREATE TABLE dbo.equip_report_usage (
 CREATE INDEX IX_equip_usage_record ON dbo.equip_report_usage(record_id);
 GO
 
+/* ---------- 9. 成控現場稽核（v13；點工單 1:N） ----------
+   對應合約 §4.5：一張申請單可多次稽核；逐項查核結果（items）以 JSON 過渡
+   （元素 {text, ok, reason}），與多值欄位設計原則一致 */
+CREATE TABLE dbo.labor_audits (
+    audit_id        VARCHAR(64) NOT NULL CONSTRAINT PK_labor_audit PRIMARY KEY
+                    CONSTRAINT CK_labor_audit_id CHECK (audit_id NOT LIKE '%[^A-Za-z0-9_-]%' COLLATE Latin1_General_100_BIN2),
+    record_id       VARCHAR(64) NOT NULL CONSTRAINT FK_labor_audit
+                    REFERENCES dbo.labor_records(id) ON DELETE CASCADE,
+    audited_at      DATE NOT NULL,
+    auditor         NVARCHAR(100) NOT NULL,
+    applied         DECIMAL(6,2) NOT NULL DEFAULT 0,   -- 稽核當下申請工數快照
+    actual_count    DECIMAL(6,2) NOT NULL DEFAULT 0,   -- 現場實點人數
+    diff            DECIMAL(6,2) NOT NULL DEFAULT 0,   -- actual_count - applied
+    items_json      NVARCHAR(MAX) NULL CONSTRAINT CK_labor_audit_items CHECK (items_json IS NULL OR ISJSON(items_json) = 1),
+    note            NVARCHAR(MAX) NULL,                 -- 現場狀況說明（不限字數）
+    status_at_audit NVARCHAR(10) NULL,                  -- 稽核當下單據狀態快照
+    edited_at       DATE NULL                           -- 最近一次編輯日（未編輯過=NULL）
+);
+CREATE INDEX IX_labor_audit_record ON dbo.labor_audits(record_id);
+CREATE INDEX IX_labor_audit_date   ON dbo.labor_audits(audited_at);
+
+/* ---------- 10. 成控現場稽核（機具單 1:N；結構同上） ---------- */
+CREATE TABLE dbo.equip_audits (
+    audit_id        VARCHAR(64) NOT NULL CONSTRAINT PK_equip_audit PRIMARY KEY
+                    CONSTRAINT CK_equip_audit_id CHECK (audit_id NOT LIKE '%[^A-Za-z0-9_-]%' COLLATE Latin1_General_100_BIN2),
+    record_id       VARCHAR(64) NOT NULL CONSTRAINT FK_equip_audit
+                    REFERENCES dbo.equip_records(id) ON DELETE CASCADE,
+    audited_at      DATE NOT NULL,
+    auditor         NVARCHAR(100) NOT NULL,
+    applied         DECIMAL(6,2) NOT NULL DEFAULT 0,   -- 稽核當下申請台數快照
+    actual_count    DECIMAL(6,2) NOT NULL DEFAULT 0,   -- 現場實點台數
+    diff            DECIMAL(6,2) NOT NULL DEFAULT 0,
+    items_json      NVARCHAR(MAX) NULL CONSTRAINT CK_equip_audit_items CHECK (items_json IS NULL OR ISJSON(items_json) = 1),
+    note            NVARCHAR(MAX) NULL,
+    status_at_audit NVARCHAR(10) NULL,
+    edited_at       DATE NULL
+);
+CREATE INDEX IX_equip_audit_record ON dbo.equip_audits(record_id);
+CREATE INDEX IX_equip_audit_date   ON dbo.equip_audits(audited_at);
+GO
+
 /* ==========================================================================
    VIEW：對應系統現有兩張報表（期間/廠商由查詢端 WHERE 篩選）
    ========================================================================== */
@@ -243,4 +284,29 @@ JOIN dbo.sites s ON s.site_id = r.site_id
 JOIN dbo.equip_reports rep ON rep.record_id = r.id
 WHERE r.status = N'已回報'
 GROUP BY s.name, r.site_id, r.vendor;
+GO
+
+/* 成控現場稽核清單（v13；點工＋機具合併平面化，= 前端「稽核紀錄」清單） */
+CREATE VIEW dbo.v_audit_log AS
+SELECT
+    N'點工' AS kind, s.name AS site, a.audited_at, a.auditor,
+    r.work_date, r.vendor, a.applied, a.actual_count, a.diff,
+    (SELECT COUNT(*) FROM OPENJSON(a.items_json)
+      WITH (ok BIT '$.ok') j WHERE j.ok = 0)  AS mismatch_count,
+    a.items_json, a.note, a.status_at_audit, a.edited_at,
+    a.audit_id, a.record_id
+FROM dbo.labor_audits a
+JOIN dbo.labor_records r ON r.id = a.record_id
+JOIN dbo.sites s ON s.site_id = r.site_id
+UNION ALL
+SELECT
+    N'機具', s.name, a.audited_at, a.auditor,
+    r.work_date, r.vendor, a.applied, a.actual_count, a.diff,
+    (SELECT COUNT(*) FROM OPENJSON(a.items_json)
+      WITH (ok BIT '$.ok') j WHERE j.ok = 0),
+    a.items_json, a.note, a.status_at_audit, a.edited_at,
+    a.audit_id, a.record_id
+FROM dbo.equip_audits a
+JOIN dbo.equip_records r ON r.id = a.record_id
+JOIN dbo.sites s ON s.site_id = r.site_id;
 GO

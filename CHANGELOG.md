@@ -2,7 +2,14 @@
 
 版本異動摘要。完整背景與設計決策請見 [`docs/milestones/`](docs/milestones/README.md)。
 
-## [節點 18] 2026-07-15 — SQL 交付包：資料表設計與遷移工具 ※分支待合併（純文件，不影響系統）
+## [節點 19] 2026-07-20 — 成控現場稽核模組（v13） ※分支待合併
+- 新頁籤「成控現場稽核」：限管理員（工地端完全隱藏）；選 工地/類型/日期/廠商 連動申請單 → 逐項「相符/不相符」查核（不相符必填原因）＋申請數 vs 現場實點差異
+- 稽核紀錄清單（期間篩選）＋單筆編輯（更新取代，保留原稽核日期、標記編輯日）＋刪除＋匯出 PDF 報告（列印視圖，零套件；含稽核人員欄與簽章區）與 CSV
+- 查核項目文字可由 config.local.js `auditItems` 覆蓋（去識別化＋免改版增減項目）
+- 資料存單據 audits[]（沿用 op:record＋版本檢查）——雲端後端零修改；合約新增 §4.5
+- SQL 交付包同步：labor_audits/equip_audits 兩表＋v_audit_log（10 表 5 VIEW）、遷移工具支援 audits；LocalDB 實測（DDL 重建、fixture 匯入、壞資料跳過、JSON 不符項數計算）
+
+## [節點 18] 2026-07-15 — SQL 交付包：資料表設計與遷移工具
 - docs/sql/：DB-SCHEMA.sql（8 表＋4 VIEW，SQL Server）＋ backup-json-to-sql.py（備份 JSON→INSERT 遷移工具）＋ README（操作↔SQL 對照、409 寫法、遷移與驗收步驟）
 - LocalDB 兩輪實測：正式備份 92 筆匯入零錯誤、對帳一致；合成備份補測機具路徑與各類髒資料防護
 - 交付前多代理審查確認 13 項問題並全數硬化：XACT_ABORT/-x/-b 匯入安全、孤兒工地保留（is_active=0）、髒資料跳過＋計數、空陣列/換行/時區保真、total_ot 計算欄、彙總 VIEW 補內容彙集欄、合約同步（totalOT 歸段規則、is_active 關係、白名單正準）

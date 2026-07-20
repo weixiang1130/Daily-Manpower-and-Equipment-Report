@@ -55,6 +55,7 @@
   <button class="tab" data-tab="labor">點工申請/回報</button>
   <button class="tab" data-tab="equipment">機具申請/回報</button>
   <button class="tab" data-tab="history">歷程報表</button>
+  <button class="tab" data-tab="audit" id="auditTabBtn" hidden>成控現場稽核</button>
   <button class="tab" data-tab="settings">設定</button>
 </nav>
 
@@ -413,6 +414,47 @@
       </div>
       <div id="reportTable" class="table-wrap"></div>
       <div id="reportSummary" class="report-summary"></div>
+    </div>
+  </section>
+
+  <!-- ============ 成控現場稽核（管理員限定；v13） ============ -->
+  <section id="tab-audit" class="tab-panel">
+    <div class="panel highlight">
+      <div class="panel-head">
+        <h2>成控現場稽核</h2>
+        <span class="site-chip" data-site-chip></span>
+        <p class="hint">成本管理部現場抽查專用（限管理員）。選擇日期與廠商後點選申請單，依申請內容逐項查核現場狀況：每項必選「相符／不相符」，不相符需填寫原因；並依申請工數清點現場實際人數。稽核紀錄可匯出 PDF 供製作抽查報告。</p>
+      </div>
+      <div class="report-filter">
+        <label>工地</label>
+        <select id="auditSite" class="report-select"></select>
+        <label>類型</label>
+        <span id="auditKindSwitch" class="akind-switch">
+          <button type="button" class="btn-mini akind active" data-akind="labor">點工</button>
+          <button type="button" class="btn-mini akind" data-akind="equipment">機具</button>
+        </span>
+        <label>出工日期</label>
+        <input type="date" id="auditDate">
+        <select id="auditVendor" class="report-select"><option value="">全部廠商</option></select>
+      </div>
+      <div id="auditRecList" class="audit-rec-list"></div>
+      <div id="auditFormWrap"><div class="empty-row">請先從上方選擇要稽核的申請單</div></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>稽核紀錄（目前工地）</h2>
+        <p class="hint">列出本工地全部稽核紀錄（點工＋機具）。可依稽核日期篩選後匯出整份 PDF 報告或 CSV。</p>
+      </div>
+      <div class="report-filter">
+        <label>稽核期間</label>
+        <input type="date" id="auditLogFrom">
+        <span class="range-sep">~</span>
+        <input type="date" id="auditLogTo">
+        <button type="button" id="auditPdfBtn" class="btn-secondary btn-sm">匯出稽核報告 PDF</button>
+        <button type="button" id="auditCsvBtn" class="btn-secondary btn-sm">匯出稽核紀錄 CSV</button>
+      </div>
+      <div id="auditLogList" class="table-wrap"></div>
     </div>
   </section>
 

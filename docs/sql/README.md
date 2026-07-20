@@ -6,7 +6,7 @@
 
 | 檔案 | 內容 | 驗證狀態 |
 |---|---|---|
-| `DB-SCHEMA.sql` | 8 資料表＋4 VIEW（SQL Server 方言，含欄位註解、id/狀態 CHECK、計算欄位） | ✅ LocalDB 實建 |
+| `DB-SCHEMA.sql` | 10 資料表＋5 VIEW（SQL Server 方言，含欄位註解、id/狀態 CHECK、計算欄位；v13 新增 labor_audits／equip_audits 稽核兩表＋v_audit_log） | ✅ LocalDB 實建 |
 | `backup-json-to-sql.py` | 備份 JSON → INSERT 腳本轉換器（含髒資料防護與計數、時區正規化、預期筆數對帳註腳） | ✅ 兩組備份實測 |
 
 **實測涵蓋**（SQL Server LocalDB）：
@@ -32,7 +32,7 @@
 | `GET ?scope=all` | 同上跑全部工地（**注意**：合約 §2.1 規定回傳 master 全清單，`is_active` 只是 DB 治理欄位，不得用來過濾合約回應——除非未來合約改版） |
 | `op:master` | upsert `sites`（順序寫 `sort_order`；自清單移除的站建議僅設 `is_active=0` 保留歷史） |
 | `op:config` | 整包覆蓋該站 `site_options`（delete+insert 交易）＋更新 `sites.lock_date` |
-| `op:record` | **§3 並發模式**；父表 upsert＋回報 1:1/1:N 子表 delete+insert，同一交易 |
+| `op:record` | **§3 並發模式**；父表 upsert＋回報 1:1/1:N 子表 delete+insert，同一交易。**v13 起紀錄含 `audits[]`（合約 §4.5）**：同交易內對 `labor_audits`/`equip_audits` delete+insert（無獨立 op，隨整筆覆寫語意處理） |
 | `op:addOption` | `IF NOT EXISTS ... INSERT`（唯一鍵擋重複；注意 CI 定序下大小寫視為同值） |
 | `op:deleteRecord` | 刪父列（FK CASCADE 帶走子表） |
 | `op:clearSite` / `clearAll` | 建議**加伺服器端管理權限**後才開放（合約允許強化） |

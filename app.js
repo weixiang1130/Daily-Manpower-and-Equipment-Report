@@ -130,7 +130,7 @@ function defaultSiteConfig(){
 function cur(){ return SITE_CACHE[MASTER.currentSite]; }
 
 function anyEditing(){
-  return !!(editingLaborApplyId || editingLaborReportId || editingEquipApplyId || editingEquipReportId);
+  return !!(editingLaborApplyId || editingLaborReportId || editingEquipApplyId || editingEquipReportId || auditSelectedId);
 }
 
 /* ==========================================================
@@ -253,6 +253,8 @@ function switchSiteContext(site, silent){
   resetLaborReportForm();
   resetEquipApplyForm();
   resetEquipReportForm();
+  resetAuditView();
+  auditVendor = "";
   renderAll();
   if(!silent) toast(`已切換至：${site}`);
   refreshData(true);
@@ -268,6 +270,7 @@ function initTabs(){
   document.querySelectorAll(".tabs > .tab").forEach(btn=>{
     btn.addEventListener("click", ()=>{
       if(!READY) return;
+      if(btn.dataset.tab === "audit" && !isAdmin()){ toast("僅限管理員（成控）使用"); return; }
       document.querySelectorAll(".tabs > .tab").forEach(b=>b.classList.remove("active"));
       document.querySelectorAll("#app > .tab-panel").forEach(p=>p.classList.remove("active"));
       btn.classList.add("active");
@@ -275,6 +278,7 @@ function initTabs(){
       if(btn.dataset.tab === "dashboard"){ renderDashboard(); refreshData(true); }
       if(btn.dataset.tab === "labor" || btn.dataset.tab === "equipment"){ refreshData(true); }
       if(btn.dataset.tab === "history") renderReport(currentReport);
+      if(btn.dataset.tab === "audit"){ renderAuditView(); refreshData(true); }
       if(btn.dataset.tab === "settings") renderSettings();
     });
   });
@@ -1689,6 +1693,439 @@ function exportSummaryCSV(key){
 }
 
 /* ==========================================================
+   成控現場稽核（v13；限管理員）
+   - 連動申請父層：日期＋廠商 → 申請單 → 逐項相符/不相符查核
+   - 每項必選；不相符必填原因；申請工數 vs 現場實點自動算差異
+   - 查核項目文字可由 config.local.js 的 auditItems 覆蓋
+     （格式：auditItems: { labor:[...], equipment:[...] }）
+   - 稽核紀錄存於單據 audits[] 陣列（一單可多次稽核）；
+     沿用 op:record 與版本檢查，後端零修改
+   ========================================================== */
+const AUDIT_ITEMS = {
+  labor: (LOCAL.auditItems && LOCAL.auditItems.labor) || [
+    "現場點名人數與申請工數相符",
+    "人臉辨識紀錄相符",
+    "門禁卡進出紀錄相符",
+    "施作工項與申請內容相符",
+    "施作地點與申請相符",
+    "無跨廠商重複計價疑慮",
+    "簽單與出工紀錄核對相符"
+  ],
+  equipment: (LOCAL.auditItems && LOCAL.auditItems.equipment) || [
+    "現場機具數量與申請台數相符",
+    "機具類型與申請相符",
+    "實際使用狀態正常（非閒置）",
+    "使用地點與申請相符",
+    "簽單與使用紀錄核對相符"
+  ]
+};
+
+let auditKind = "labor";
+let auditDate = "";
+let auditVendor = "";
+let auditSelectedId = null;
+let auditItemState = [];
+let auditLogFrom = "", auditLogTo = "";
+
+function auditFindRec(kind, id){
+  const store = cur();
+  return (kind==="labor" ? store.labor : store.equipment).find(r=>r.id===id);
+}
+function auditApplied(kind, rec){ return kind==="labor" ? (rec.required||0) : (rec.requiredQty||0); }
+function auditAppliedLabel(){ return auditKind==="labor" ? "申請工數" : "申請台數"; }
+function auditCountLabel(){ return auditKind==="labor" ? "現場實點人數" : "現場實點台數"; }
+function auditRecCats(kind, rec){
+  return (kind==="labor" ? (rec.categories||[]) : (rec.types||[])).join("、");
+}
+
+function resetAuditView(){
+  auditSelectedId = null;
+  auditItemState = [];
+  const wrap = document.getElementById("auditFormWrap");
+  if(wrap) wrap.innerHTML = '<div class="empty-row">請先從上方選擇要稽核的申請單</div>';
+}
+
+function renderAuditView(){
+  if(!READY || !isAdmin()) return;
+  const siteSel = document.getElementById("auditSite");
+  siteSel.innerHTML = MASTER.sites.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join("");
+  siteSel.value = MASTER.currentSite;
+  document.querySelectorAll("#auditKindSwitch .akind").forEach(b=>b.classList.toggle("active", b.dataset.akind===auditKind));
+  if(!auditDate) auditDate = localDate();
+  document.getElementById("auditDate").value = auditDate;
+
+  const store = cur();
+  const list = auditKind==="labor" ? store.labor : store.equipment;
+  const vendors = [...new Set(list.filter(r=>!auditDate || r.date===auditDate).map(r=>r.vendor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
+  const vSel = document.getElementById("auditVendor");
+  vSel.innerHTML = `<option value="">全部廠商</option>` + vendors.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join("");
+  if(vendors.includes(auditVendor)) vSel.value = auditVendor; else { auditVendor=""; vSel.value=""; }
+
+  renderAuditRecList();
+  renderAuditLog();
+}
+
+function renderAuditRecList(){
+  const el = document.getElementById("auditRecList");
+  const store = cur();
+  const list = auditKind==="labor" ? store.labor : store.equipment;
+  const recs = list.filter(r=>(!auditDate || r.date===auditDate) && (!auditVendor || r.vendor===auditVendor));
+  if(!recs.length){
+    el.innerHTML = '<div class="empty-row">此條件內沒有' + (auditKind==="labor"?"點工":"機具") + '申請單，請調整日期／廠商</div>';
+    resetAuditView();
+    return;
+  }
+  el.innerHTML = recs.map(r=>{
+    const audited = (r.audits||[]).length;
+    return `<button type="button" class="audit-pick ${r.id===auditSelectedId?"active":""}" data-id="${esc(r.id)}">
+      <span class="ap-line1">${esc(r.date)}｜${esc(r.vendor||"（未填廠商）")}｜${auditAppliedLabel()} ${fmt(auditApplied(auditKind, r))}</span>
+      <span class="ap-line2">${esc(auditRecCats(auditKind, r)||"—")}｜${esc((r.locations||[]).join("、")||"—")}｜${esc(r.status)}${audited?`｜已稽核 ${audited} 次`:""}</span>
+    </button>`;
+  }).join("");
+}
+
+async function pickAuditRecord(id){
+  try{ await refetchSite(MASTER.currentSite); }catch(e){}
+  const rec = auditFindRec(auditKind, id);
+  if(!rec){ toast("找不到該單據，可能已被刪除"); renderAuditView(); return; }
+  auditSelectedId = id;
+  auditItemState = AUDIT_ITEMS[auditKind].map(t=>({text:t, ok:null, reason:""}));
+  renderAuditRecList();
+  renderAuditForm(rec);
+}
+
+function renderAuditForm(rec){
+  const wrap = document.getElementById("auditFormWrap");
+  const applied = auditApplied(auditKind, rec);
+  wrap.innerHTML = `
+    <div class="audit-ctx">
+      <div class="ac-line1">${esc(rec.date)}｜${esc(rec.vendor||"（未填廠商）")}｜${esc(rec.status)}</div>
+      <div class="ac-line2">${esc(auditRecCats(auditKind, rec)||"—")}｜${esc((rec.locations||[]).join("、")||"—")}｜申請人：${esc(rec.applicant||"—")}</div>
+    </div>
+    <div class="form-grid">
+      <div class="field">
+        <label>${auditAppliedLabel()}（依申請單）</label>
+        <input type="text" readonly class="readonly-field" value="${fmt(applied)}">
+      </div>
+      <div class="field">
+        <label>${auditCountLabel()}（現場清點）</label>
+        <input type="number" id="auditCount" min="0" step="0.5">
+      </div>
+      <div class="field">
+        <label>差異（自動計算）</label>
+        <input type="text" id="auditCountDiff" readonly class="readonly-field">
+      </div>
+      <div class="field">
+        <label>稽核人</label>
+        <input type="text" id="auditAuditor" placeholder="例：成控－某某某" value="${esc(sessionStorage.getItem("dm_auditor")||"")}">
+      </div>
+      <div class="field field-wide">
+        <label>快速查核（每項必選「相符／不相符」；不相符需填寫原因）</label>
+        <div id="auditItems"></div>
+      </div>
+      <div class="field field-wide">
+        <label>現場狀況說明（選填，不限字數）</label>
+        <textarea id="auditNote" rows="3" placeholder="例：現場清點與申請相符；其中 2 工無門禁卡紀錄，已提醒工地落實刷卡"></textarea>
+      </div>
+      <div class="field field-wide actions">
+        <button type="button" class="btn-primary" id="auditSaveBtn">儲存稽核紀錄</button>
+        <button type="button" class="btn-ghost" id="auditCancelBtn">取消</button>
+      </div>
+    </div>`;
+  renderAuditItems();
+  document.getElementById("auditCount").addEventListener("input", ()=>{
+    const v = parseFloat(document.getElementById("auditCount").value);
+    document.getElementById("auditCountDiff").value = isNaN(v) ? "" : fmt(v - applied);
+  });
+  document.getElementById("auditSaveBtn").addEventListener("click", ()=>saveAudit(rec.id));
+  document.getElementById("auditCancelBtn").addEventListener("click", ()=>{ resetAuditView(); renderAuditRecList(); });
+}
+
+function renderAuditItems(){
+  const box = document.getElementById("auditItems");
+  if(!box) return;
+  box.innerHTML = auditItemState.map((it,i)=>`
+    <div class="audit-item ${it.ok===false?"bad":""}">
+      <div class="ai-row">
+        <span class="ai-text">${esc(it.text)}</span>
+        <span class="ai-btns">
+          <button type="button" class="ai-btn ok ${it.ok===true?"active":""}" data-i="${i}" data-val="1">相符</button>
+          <button type="button" class="ai-btn bad ${it.ok===false?"active":""}" data-i="${i}" data-val="0">不相符</button>
+        </span>
+      </div>
+      ${it.ok===false?`<input type="text" class="ai-reason" data-i="${i}" placeholder="請填寫不符原因（必填），例：2 工無門禁卡進出紀錄" value="${esc(it.reason)}">`:""}
+    </div>`).join("");
+}
+
+async function saveAudit(id){
+  const rec = auditFindRec(auditKind, id);
+  if(!rec){ toast("找不到該單據，請重新選擇"); return; }
+  const auditor = document.getElementById("auditAuditor").value.trim();
+  if(!auditor){ toast("請填寫稽核人"); return; }
+  const cntRaw = document.getElementById("auditCount").value.trim();
+  if(cntRaw === ""){ toast("請填寫" + auditCountLabel()); return; }
+  const actualCount = parseFloat(cntRaw) || 0;
+  for(const it of auditItemState){
+    if(it.ok === null){ toast(`「${it.text}」尚未選擇相符／不相符`); return; }
+    if(it.ok === false && !it.reason.trim()){ toast(`「${it.text}」為不相符，請填寫不符原因`); return; }
+  }
+  const applied = auditApplied(auditKind, rec);
+  const audit = {
+    id: uid(),
+    auditedAt: localDate(),
+    auditor,
+    applied,
+    actualCount,
+    diff: actualCount - applied,
+    items: auditItemState.map(it=>({ text: it.text, ok: !!it.ok, reason: it.ok===false ? it.reason.trim() : "" })),
+    note: document.getElementById("auditNote").value.trim(),
+    statusAtAudit: rec.status
+  };
+  const updated = Object.assign({}, rec, { audits: (rec.audits||[]).concat([audit]) });
+  try{
+    const resp = await apiSaveRecord(auditKind, updated, rec.v || 0);
+    updated.v = resp.v; updated.updatedAt = resp.updatedAt;
+  }catch(err){
+    if(err.status === 409){
+      toast("⚠ 此單剛被其他人修改，稽核未儲存；已重新載入最新內容，請重新填寫");
+      await refetchSite(MASTER.currentSite).catch(()=>{});
+      resetAuditView();
+      renderAuditView();
+      return;
+    }
+    toast("⚠ 雲端儲存失敗，稽核未送出，請檢查網路後再按一次儲存");
+    return;
+  }
+  const store = cur();
+  const list = auditKind==="labor" ? store.labor : store.equipment;
+  const idx = list.findIndex(r=>r.id===id);
+  if(idx >= 0) list[idx] = updated;
+  sessionStorage.setItem("dm_auditor", auditor);
+  toast("稽核紀錄已儲存至共用資料庫");
+  resetAuditView();
+  renderAuditView();
+}
+
+/* ---- 稽核紀錄清單／匯出 ---- */
+function auditLogEntries(){
+  const store = cur();
+  const out = [];
+  [["labor", store.labor], ["equipment", store.equipment]].forEach(([kind, list])=>{
+    list.forEach(rec=>{
+      (rec.audits||[]).forEach(a=>{
+        if(auditLogFrom && a.auditedAt < auditLogFrom) return;
+        if(auditLogTo && a.auditedAt > auditLogTo) return;
+        out.push({kind, rec, a});
+      });
+    });
+  });
+  out.sort((x,y)=>String(y.a.auditedAt + y.a.id).localeCompare(String(x.a.auditedAt + x.a.id)));
+  return out;
+}
+
+function renderAuditLog(){
+  const el = document.getElementById("auditLogList");
+  const entries = auditLogEntries();
+  if(!entries.length){ el.innerHTML = '<div class="empty-row">此條件內尚無稽核紀錄</div>'; return; }
+  el.innerHTML = `<table><thead><tr><th>稽核日期</th><th>類型</th><th>出工日期</th><th>廠商</th><th>申請</th><th>實點</th><th>差異</th><th>查核結果</th><th>稽核人</th><th>操作</th></tr></thead><tbody>` +
+    entries.map(e=>{
+      const bad = e.a.items.filter(i=>!i.ok).length;
+      const resTag = bad ? `<span class="tag warn">${bad} 項不符</span>` : `<span class="tag ok">全數相符</span>`;
+      return `<tr>
+        <td>${esc(e.a.auditedAt)}</td>
+        <td>${e.kind==="labor"?"點工":"機具"}</td>
+        <td>${esc(e.rec.date)}</td>
+        <td>${esc(e.rec.vendor||"")}</td>
+        <td>${fmt(e.a.applied)}</td>
+        <td>${fmt(e.a.actualCount)}</td>
+        <td>${fmt(e.a.diff)}</td>
+        <td>${resTag}</td>
+        <td>${esc(e.a.auditor)}</td>
+        <td>
+          <button type="button" class="btn-mini btn-edit audit-one-pdf" data-kind="${e.kind}" data-rid="${esc(e.rec.id)}" data-aid="${esc(e.a.id)}">PDF</button>
+          <button type="button" class="btn-mini btn-del audit-del" data-kind="${e.kind}" data-rid="${esc(e.rec.id)}" data-aid="${esc(e.a.id)}">刪除</button>
+        </td>
+      </tr>`;
+    }).join("") + "</tbody></table>";
+}
+
+async function deleteAudit(kind, rid, aid){
+  const rec = auditFindRec(kind, rid);
+  if(!rec) return;
+  const a = (rec.audits||[]).find(x=>x.id===aid);
+  if(!a) return;
+  if(!confirm(`確定刪除這筆稽核紀錄嗎？（${a.auditedAt}／${rec.vendor||""}）\n此操作影響所有使用者且無法復原。`)) return;
+  const updated = Object.assign({}, rec, { audits: rec.audits.filter(x=>x.id!==aid) });
+  try{
+    const resp = await apiSaveRecord(kind, updated, rec.v || 0);
+    updated.v = resp.v; updated.updatedAt = resp.updatedAt;
+  }catch(err){
+    if(err.status === 409){
+      toast("⚠ 此單剛被其他人修改，刪除未執行；已重新載入");
+      await refetchSite(MASTER.currentSite).catch(()=>{});
+      renderAuditView();
+      return;
+    }
+    toast("⚠ 雲端儲存失敗，刪除未執行");
+    return;
+  }
+  const store = cur();
+  const list = kind==="labor" ? store.labor : store.equipment;
+  const idx = list.findIndex(r=>r.id===rid);
+  if(idx >= 0) list[idx] = updated;
+  toast("稽核紀錄已刪除");
+  renderAuditLog();
+  renderAuditRecList();
+}
+
+/* ---- PDF 報告（開列印視圖 → 瀏覽器另存 PDF；零套件） ---- */
+function auditPeriodLabel(){
+  return (auditLogFrom || auditLogTo) ? `${auditLogFrom||"起"}~${auditLogTo||"今"}` : "全部期間";
+}
+
+function auditReportHTML(entries, subtitle){
+  const secs = entries.map((e,n)=>{
+    const bad = e.a.items.filter(i=>!i.ok).length;
+    return `<div class="sec">
+      <h3>${n+1}. ${esc(e.rec.date)}｜${e.kind==="labor"?"點工":"機具"}｜${esc(e.rec.vendor||"（未填廠商）")} — ${bad?`<span class="r-bad">${bad} 項不符</span>`:`<span class="r-ok">全數相符</span>`}</h3>
+      <table class="info">
+        <tr><th>工作內容</th><td>${esc(auditRecCats(e.kind, e.rec)||"—")}</td><th>工作地點</th><td>${esc((e.rec.locations||[]).join("、")||"—")}</td></tr>
+        <tr><th>${e.kind==="labor"?"申請工數":"申請台數"}</th><td>${fmt(e.a.applied)}</td><th>現場實點</th><td>${fmt(e.a.actualCount)}（差異 ${fmt(e.a.diff)}）</td></tr>
+        <tr><th>申請人</th><td>${esc(e.rec.applicant||"—")}</td><th>稽核時單據狀態</th><td>${esc(e.a.statusAtAudit||"—")}</td></tr>
+      </table>
+      <table class="items">
+        <thead><tr><th>查核項目</th><th class="w1">結果</th><th>不符原因</th></tr></thead>
+        <tbody>${e.a.items.map(i=>`<tr><td>${esc(i.text)}</td><td class="${i.ok?"r-ok":"r-bad"}">${i.ok?"相符":"不相符"}</td><td>${esc(i.reason||"")}</td></tr>`).join("")}</tbody>
+      </table>
+      ${e.a.note?`<p class="note"><strong>現場狀況說明：</strong>${esc(e.a.note)}</p>`:""}
+      <p class="meta">稽核日期：${esc(e.a.auditedAt)}｜稽核人：${esc(e.a.auditor)}</p>
+    </div>`;
+  }).join("");
+
+  const sumRows = entries.map((e,n)=>{
+    const bad = e.a.items.filter(i=>!i.ok).length;
+    return `<tr><td>${n+1}</td><td>${esc(e.a.auditedAt)}</td><td>${e.kind==="labor"?"點工":"機具"}</td><td>${esc(e.rec.date)}</td><td>${esc(e.rec.vendor||"")}</td><td>${fmt(e.a.applied)}</td><td>${fmt(e.a.actualCount)}</td><td>${fmt(e.a.diff)}</td><td class="${bad?"r-bad":"r-ok"}">${bad?bad+" 項不符":"全數相符"}</td></tr>`;
+  }).join("");
+
+  return `<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8"><title>成控現場稽核報告</title>
+  <style>
+    body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;color:#1c2b2a;margin:32px;font-size:13px;}
+    h1{font-size:20px;margin:0 0 4px;} .sub{color:#5f6f6e;margin:0 0 20px;}
+    h2{font-size:15px;border-left:4px solid #0f6e56;padding-left:8px;margin:24px 0 8px;}
+    h3{font-size:14px;margin:20px 0 6px;}
+    table{border-collapse:collapse;width:100%;margin:4px 0 8px;}
+    th,td{border:1px solid #c8d4d2;padding:4px 8px;text-align:left;vertical-align:top;}
+    thead th{background:#eef4f3;}
+    .info th{background:#eef4f3;width:110px;white-space:nowrap;}
+    .w1{width:64px;white-space:nowrap;}
+    .r-ok{color:#1c7d43;font-weight:bold;} .r-bad{color:#b93226;font-weight:bold;}
+    .note{margin:4px 0;} .meta{color:#5f6f6e;margin:2px 0 0;}
+    .sec{page-break-inside:avoid;}
+    .toolbar{margin:0 0 16px;}
+    .toolbar button{font-size:14px;padding:6px 16px;cursor:pointer;}
+    @media print{.toolbar{display:none;} body{margin:12mm;}}
+  </style></head><body>
+  <div class="toolbar"><button onclick="window.print()">🖨 列印 / 另存 PDF</button>（於列印對話框選「另存為 PDF」）</div>
+  <h1>成控現場稽核報告</h1>
+  <p class="sub">工地：${esc(MASTER.currentSite)}｜${esc(subtitle)}｜共 ${entries.length} 筆稽核紀錄｜產出日期：${esc(localDate())}</p>
+  <h2>稽核彙總</h2>
+  <table><thead><tr><th>#</th><th>稽核日期</th><th>類型</th><th>出工日期</th><th>廠商</th><th>申請</th><th>實點</th><th>差異</th><th>查核結果</th></tr></thead><tbody>${sumRows}</tbody></table>
+  <h2>逐筆查核明細</h2>
+  ${secs}
+  </body></html>`;
+}
+
+function openAuditPDF(entries, subtitle){
+  if(!entries.length){ toast("此條件內沒有稽核紀錄可匯出"); return; }
+  const w = window.open("", "_blank");
+  if(!w){ toast("瀏覽器攔截了報告視窗，請允許彈出視窗後再試"); return; }
+  w.document.write(auditReportHTML(entries, subtitle));
+  w.document.close();
+}
+
+function exportAuditCSV(){
+  const entries = auditLogEntries();
+  if(!entries.length){ toast("此條件內沒有稽核紀錄可匯出"); return; }
+  const headers = ["稽核日期","類型","工地","出工日期","廠商","工作內容","工作地點","申請","現場實點","差異","不符項數","不符項目與原因","現場狀況說明","稽核人","稽核時單據狀態"];
+  const rows = entries.map(e=>{
+    const badItems = e.a.items.filter(i=>!i.ok);
+    return [
+      e.a.auditedAt, e.kind==="labor"?"點工":"機具", MASTER.currentSite,
+      e.rec.date, e.rec.vendor||"", auditRecCats(e.kind, e.rec),
+      (e.rec.locations||[]).join("、"),
+      fmt(e.a.applied), fmt(e.a.actualCount), fmt(e.a.diff),
+      badItems.length,
+      badItems.map(i=>`${i.text}：${i.reason}`).join("；"),
+      e.a.note||"", e.a.auditor, e.a.statusAtAudit||""
+    ];
+  });
+  downloadCSV(headers, rows, `${MASTER.currentSite}_成控稽核紀錄_${auditPeriodLabel()}_${localDate()}.csv`);
+}
+
+function initAudit(){
+  document.getElementById("auditSite").addEventListener("change", e=>{
+    switchSiteContext(e.target.value);
+    switchMainTab("audit");
+    renderAuditView();
+  });
+  document.querySelectorAll("#auditKindSwitch .akind").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      auditKind = btn.dataset.akind;
+      auditVendor = "";
+      resetAuditView();
+      renderAuditView();
+    });
+  });
+  document.getElementById("auditDate").addEventListener("change", e=>{
+    auditDate = e.target.value;
+    resetAuditView();
+    renderAuditView();
+  });
+  document.getElementById("auditVendor").addEventListener("change", e=>{
+    auditVendor = e.target.value;
+    resetAuditView();
+    renderAuditRecList();
+  });
+  document.getElementById("auditRecList").addEventListener("click", e=>{
+    const btn = e.target.closest(".audit-pick");
+    if(btn) pickAuditRecord(btn.dataset.id);
+  });
+  document.getElementById("auditFormWrap").addEventListener("click", e=>{
+    const btn = e.target.closest(".ai-btn");
+    if(!btn) return;
+    const i = parseInt(btn.dataset.i, 10);
+    if(!auditItemState[i]) return;
+    auditItemState[i].ok = btn.dataset.val === "1";
+    renderAuditItems();
+  });
+  document.getElementById("auditFormWrap").addEventListener("input", e=>{
+    if(!e.target.classList.contains("ai-reason")) return;
+    const i = parseInt(e.target.dataset.i, 10);
+    if(auditItemState[i]) auditItemState[i].reason = e.target.value;
+  });
+  document.getElementById("auditLogList").addEventListener("click", e=>{
+    const pdf = e.target.closest(".audit-one-pdf");
+    if(pdf){
+      const rec = auditFindRec(pdf.dataset.kind, pdf.dataset.rid);
+      const a = rec && (rec.audits||[]).find(x=>x.id===pdf.dataset.aid);
+      if(a) openAuditPDF([{kind: pdf.dataset.kind, rec, a}], `單筆稽核（${a.auditedAt}）`);
+      return;
+    }
+    const del = e.target.closest(".audit-del");
+    if(del) deleteAudit(del.dataset.kind, del.dataset.rid, del.dataset.aid);
+  });
+  const logSync = ()=>{
+    auditLogFrom = document.getElementById("auditLogFrom").value || "";
+    auditLogTo = document.getElementById("auditLogTo").value || "";
+    renderAuditLog();
+  };
+  document.getElementById("auditLogFrom").addEventListener("change", logSync);
+  document.getElementById("auditLogTo").addEventListener("change", logSync);
+  document.getElementById("auditPdfBtn").addEventListener("click", ()=>openAuditPDF(auditLogEntries(), `稽核期間：${auditPeriodLabel()}`));
+  document.getElementById("auditCsvBtn").addEventListener("click", exportAuditCSV);
+}
+
+/* ==========================================================
    管理員模式（前端層級防誤觸；密碼來自 config.local.js 的 adminPin）
    ========================================================== */
 const ADMIN_PIN = (LOCAL.adminPin != null) ? String(LOCAL.adminPin) : "0000";
@@ -1729,6 +2166,12 @@ function applyAdminUI(){
   document.getElementById("saveSettings").style.display = admin ? "" : "none";
   document.getElementById("resetSettings").style.display = admin ? "" : "none";
   document.getElementById("dangerZone").style.display = admin ? "" : "none";
+
+  // v13：成控現場稽核頁籤——非管理員完全隱藏；登出時若正在稽核頁則跳回總覽
+  document.getElementById("auditTabBtn").hidden = !admin;
+  if(!admin && document.getElementById("tab-audit").classList.contains("active")){
+    switchMainTab("dashboard");
+  }
 }
 
 /* ==========================================================
@@ -1856,6 +2299,7 @@ function renderAll(){
   renderEquipList();
   renderDashboard();
   renderReport(currentReport);
+  if(document.getElementById("tab-audit").classList.contains("active")) renderAuditView();
   renderSettings();
 }
 
@@ -1884,6 +2328,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
   initEquipApplyForm();
   initEquipReportForm();
   initReportTabs();
+  initAudit();
   initAdmin();
   initSettings();
   document.getElementById("refreshBtn").addEventListener("click", ()=>refreshData(false));

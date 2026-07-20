@@ -467,3 +467,35 @@ tr.clickable:hover td{background:var(--teal-100);}
   .site-picker select{min-width:130px;}
   #app{padding:14px 10px 60px;}
 }
+
+/* ---------- 成控現場稽核（v13） ---------- */
+.akind-switch{display:inline-flex;gap:6px;}
+.akind-switch .akind.active{background:var(--teal-600);color:#fff;border-color:var(--teal-600);}
+.audit-rec-list{display:flex;flex-direction:column;gap:8px;margin:10px 0 16px;}
+.audit-pick{
+  display:block;width:100%;text-align:left;cursor:pointer;
+  background:#fff;border:1px solid var(--line, #dce5e3);border-radius:10px;padding:10px 14px;
+  font:inherit;transition:border-color .15s ease, background .15s ease;
+}
+.audit-pick:hover{border-color:var(--teal-600);}
+.audit-pick.active{border-color:var(--teal-600);background:#eef7f5;box-shadow:0 0 0 1px var(--teal-600) inset;}
+.audit-pick .ap-line1{display:block;font-weight:600;}
+.audit-pick .ap-line2{display:block;font-size:12.5px;color:#5f6f6e;margin-top:2px;}
+.audit-ctx{
+  background:#eef7f5;border:1px solid #cfe3df;border-radius:10px;
+  padding:10px 14px;margin:0 0 14px;
+}
+.audit-ctx .ac-line1{font-weight:700;}
+.audit-ctx .ac-line2{font-size:13px;color:#42615d;margin-top:2px;}
+.audit-item{border:1px solid var(--line, #dce5e3);border-radius:10px;padding:8px 12px;margin-bottom:8px;background:#fff;}
+.audit-item.bad{border-color:#e6b8b8;background:#fdf7f7;}
+.audit-item .ai-row{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;}
+.audit-item .ai-text{font-size:14px;}
+.audit-item .ai-btns{display:inline-flex;gap:6px;flex-shrink:0;}
+.ai-btn{
+  font:inherit;font-size:13px;padding:4px 14px;border-radius:999px;cursor:pointer;
+  background:#fff;border:1px solid #c8d4d2;color:#5f6f6e;
+}
+.ai-btn.ok.active{background:#e2f5ea;border-color:#1c7d43;color:#1c7d43;font-weight:700;}
+.ai-btn.bad.active{background:#fbe6e6;border-color:var(--red-500);color:var(--red-500);font-weight:700;}
+.ai-reason{width:100%;margin-top:8px;font:inherit;font-size:13px;padding:7px 10px;border:1px solid #e6b8b8;border-radius:8px;}

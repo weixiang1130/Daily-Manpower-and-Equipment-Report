@@ -1721,7 +1721,7 @@ const AUDIT_ITEMS = {
 };
 
 let auditKind = "labor";
-let auditDate = "";
+let auditDate = localDate();   // 預設今天；使用者清空後不再被 renderAuditView 強制蓋回（v13 修復）
 let auditVendor = "";
 let auditSelectedId = null;
 let auditItemState = [];
@@ -1753,7 +1753,6 @@ function renderAuditView(){
   siteSel.innerHTML = MASTER.sites.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join("");
   siteSel.value = MASTER.currentSite;
   document.querySelectorAll("#auditKindSwitch .akind").forEach(b=>b.classList.toggle("active", b.dataset.akind===auditKind));
-  if(!auditDate) auditDate = localDate();
   document.getElementById("auditDate").value = auditDate;
 
   const store = cur();
@@ -1786,8 +1785,15 @@ function renderAuditRecList(){
   }).join("");
 }
 
+// 稽核選單/編輯的 refetch 請求序號：避免較慢的回應在較快的回應之後覆寫畫面（v13 修復）
+let auditFetchSeq = 0;
+
 async function pickAuditRecord(id){
-  try{ await refetchSite(MASTER.currentSite); }catch(e){}
+  const seq = ++auditFetchSeq;
+  let refetchFailed = false;
+  try{ await refetchSite(MASTER.currentSite); }catch(e){ refetchFailed = true; }
+  if(seq !== auditFetchSeq) return;   // 已有更新的選取動作，捨棄這次較慢的回應
+  if(refetchFailed) toast("⚠ 無法載入最新資料，請檢查網路後再試");
   const rec = auditFindRec(auditKind, id);
   if(!rec){ toast("找不到該單據，可能已被刪除"); renderAuditView(); return; }
   auditSelectedId = id;
@@ -1799,7 +1805,11 @@ async function pickAuditRecord(id){
 
 /* 編輯既有稽核紀錄：載入原內容進表單，儲存時原地更新（保留原稽核日期，另記編輯日） */
 async function editAudit(kind, rid, aid){
-  try{ await refetchSite(MASTER.currentSite); }catch(e){}
+  const seq = ++auditFetchSeq;
+  let refetchFailed = false;
+  try{ await refetchSite(MASTER.currentSite); }catch(e){ refetchFailed = true; }
+  if(seq !== auditFetchSeq) return;   // 已有更新的選取動作，捨棄這次較慢的回應
+  if(refetchFailed) toast("⚠ 無法載入最新資料，請檢查網路後再試");
   const rec = auditFindRec(kind, rid);
   const a = rec && (rec.audits||[]).find(x=>x.id===aid);
   if(!a){ toast("找不到該筆稽核紀錄，可能已被刪除"); renderAuditView(); return; }
@@ -1886,6 +1896,7 @@ async function saveAudit(id){
   const cntRaw = document.getElementById("auditCount").value.trim();
   if(cntRaw === ""){ toast("請填寫" + auditCountLabel()); return; }
   const actualCount = parseFloat(cntRaw) || 0;
+  if(actualCount < 0){ toast(auditCountLabel() + "不可為負數"); return; }
   for(const it of auditItemState){
     if(it.ok === null){ toast(`「${it.text}」尚未選擇相符／不相符`); return; }
     if(it.ok === false && !it.reason.trim()){ toast(`「${it.text}」為不相符，請填寫不符原因`); return; }
@@ -1981,10 +1992,11 @@ function renderAuditLog(){
 
 async function deleteAudit(kind, rid, aid){
   const rec = auditFindRec(kind, rid);
-  if(!rec) return;
+  if(!rec){ toast("找不到該單據，可能已被刪除；請重新整理後再試"); return; }
   const a = (rec.audits||[]).find(x=>x.id===aid);
-  if(!a) return;
+  if(!a){ toast("找不到該筆稽核紀錄，可能已被刪除；請重新整理後再試"); return; }
   if(!confirm(`確定刪除這筆稽核紀錄嗎？（${a.auditedAt}／${rec.vendor||""}）\n此操作影響所有使用者且無法復原。`)) return;
+  if(editingAuditId === aid) resetAuditView();   // 正被編輯的紀錄同時被刪除：關閉殘影表單（v13 修復）
   const updated = Object.assign({}, rec, { audits: rec.audits.filter(x=>x.id!==aid) });
   try{
     const resp = await apiSaveRecord(kind, updated, rec.v || 0);
@@ -2149,6 +2161,7 @@ function initAudit(){
       const rec = auditFindRec(pdf.dataset.kind, pdf.dataset.rid);
       const a = rec && (rec.audits||[]).find(x=>x.id===pdf.dataset.aid);
       if(a) openAuditPDF([{kind: pdf.dataset.kind, rec, a}], `單筆稽核（${a.auditedAt}）`);
+      else toast("找不到該筆稽核紀錄，可能已被刪除；請重新整理後再試");
       return;
     }
     const del = e.target.closest(".audit-del");
@@ -2207,8 +2220,13 @@ function applyAdminUI(){
   document.getElementById("resetSettings").style.display = admin ? "" : "none";
   document.getElementById("dangerZone").style.display = admin ? "" : "none";
 
-  // v13：成控現場稽核頁籤——非管理員完全隱藏；登出時若正在稽核頁則跳回總覽
+  // v13：成控現場稽核頁籤——非管理員完全隱藏；登出時若正在稽核頁則跳回總覽，
+  // 並重置稽核選取狀態（否則 auditSelectedId 殘留會讓 anyEditing() 卡在 true，
+  // 使後續所有背景資料同步靜默失效，且稽核頁籤已隱藏、無法從 UI 內清除——v13 修復）
   document.getElementById("auditTabBtn").hidden = !admin;
+  if(!admin){
+    resetAuditView();
+  }
   if(!admin && document.getElementById("tab-audit").classList.contains("active")){
     switchMainTab("dashboard");
   }

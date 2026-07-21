@@ -169,7 +169,8 @@ CREATE TABLE dbo.labor_audits (
     diff            DECIMAL(6,2) NOT NULL DEFAULT 0,   -- actual_count - applied
     items_json      NVARCHAR(MAX) NULL CONSTRAINT CK_labor_audit_items CHECK (items_json IS NULL OR ISJSON(items_json) = 1),
     note            NVARCHAR(MAX) NULL,                 -- 現場狀況說明（不限字數）
-    status_at_audit NVARCHAR(10) NULL,                  -- 稽核當下單據狀態快照
+    status_at_audit NVARCHAR(10) NULL                   -- 稽核當下單據狀態快照
+                    CONSTRAINT CK_labor_audit_status CHECK (status_at_audit IS NULL OR status_at_audit IN (N'待回報', N'已回報')),
     edited_at       DATE NULL                           -- 最近一次編輯日（未編輯過=NULL）
 );
 CREATE INDEX IX_labor_audit_record ON dbo.labor_audits(record_id);
@@ -183,12 +184,13 @@ CREATE TABLE dbo.equip_audits (
                     REFERENCES dbo.equip_records(id) ON DELETE CASCADE,
     audited_at      DATE NOT NULL,
     auditor         NVARCHAR(100) NOT NULL,
-    applied         DECIMAL(6,2) NOT NULL DEFAULT 0,   -- 稽核當下申請台數快照
-    actual_count    DECIMAL(6,2) NOT NULL DEFAULT 0,   -- 現場實點台數
-    diff            DECIMAL(6,2) NOT NULL DEFAULT 0,
+    applied         DECIMAL(8,2) NOT NULL DEFAULT 0,   -- 稽核當下申請台數快照（對齊來源 required_qty 的 8,2 精度）
+    actual_count    DECIMAL(8,2) NOT NULL DEFAULT 0,   -- 現場實點台數
+    diff            DECIMAL(8,2) NOT NULL DEFAULT 0,
     items_json      NVARCHAR(MAX) NULL CONSTRAINT CK_equip_audit_items CHECK (items_json IS NULL OR ISJSON(items_json) = 1),
     note            NVARCHAR(MAX) NULL,
-    status_at_audit NVARCHAR(10) NULL,
+    status_at_audit NVARCHAR(10) NULL
+                    CONSTRAINT CK_equip_audit_status CHECK (status_at_audit IS NULL OR status_at_audit IN (N'待回報', N'已回報')),
     edited_at       DATE NULL
 );
 CREATE INDEX IX_equip_audit_record ON dbo.equip_audits(record_id);
@@ -291,8 +293,10 @@ CREATE VIEW dbo.v_audit_log AS
 SELECT
     N'點工' AS kind, s.name AS site, a.audited_at, a.auditor,
     r.work_date, r.vendor, a.applied, a.actual_count, a.diff,
+    /* ISNULL：元素缺 ok 鍵或值為 null 時 OPENJSON 回 SQL NULL，NULL=0 為 UNKNOWN
+       會被 WHERE 排除而低估不符數——形狀異常的資料寧可計入不符也不可誤報全數相符 */
     (SELECT COUNT(*) FROM OPENJSON(a.items_json)
-      WITH (ok BIT '$.ok') j WHERE j.ok = 0)  AS mismatch_count,
+      WITH (ok BIT '$.ok') j WHERE ISNULL(j.ok, 0) = 0)  AS mismatch_count,
     a.items_json, a.note, a.status_at_audit, a.edited_at,
     a.audit_id, a.record_id
 FROM dbo.labor_audits a
@@ -303,7 +307,7 @@ SELECT
     N'機具', s.name, a.audited_at, a.auditor,
     r.work_date, r.vendor, a.applied, a.actual_count, a.diff,
     (SELECT COUNT(*) FROM OPENJSON(a.items_json)
-      WITH (ok BIT '$.ok') j WHERE j.ok = 0),
+      WITH (ok BIT '$.ok') j WHERE ISNULL(j.ok, 0) = 0),
     a.items_json, a.note, a.status_at_audit, a.edited_at,
     a.audit_id, a.record_id
 FROM dbo.equip_audits a

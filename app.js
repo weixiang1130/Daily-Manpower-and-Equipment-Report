@@ -129,8 +129,14 @@ function defaultSiteConfig(){
 }
 function cur(){ return SITE_CACHE[MASTER.currentSite]; }
 
+/* 稽核以外的表單是否編輯中（點工/機具的申請與回報）。
+   稽核選單/編輯前的 refetchSite 必須以此把關：整批刷新快取會讓這些表單
+   送出時抓到漂移後的 v 當 baseV，繞過 409 併發保護（合約 §3.3 語意）。 */
+function otherFormEditing(){
+  return !!(editingLaborApplyId || editingLaborReportId || editingEquipApplyId || editingEquipReportId);
+}
 function anyEditing(){
-  return !!(editingLaborApplyId || editingLaborReportId || editingEquipApplyId || editingEquipReportId || auditSelectedId);
+  return otherFormEditing() || !!auditSelectedId;
 }
 
 /* ==========================================================
@@ -1702,7 +1708,8 @@ function exportSummaryCSV(key){
      沿用 op:record 與版本檢查，後端零修改
    ========================================================== */
 const AUDIT_ITEMS = {
-  labor: (LOCAL.auditItems && LOCAL.auditItems.labor) || [
+  // 覆蓋值須為非空陣列才生效（空陣列 [] 為 truthy，誤設會讓查核項目全空且驗證迴圈跟著空轉）
+  labor: (LOCAL.auditItems && Array.isArray(LOCAL.auditItems.labor) && LOCAL.auditItems.labor.length) ? LOCAL.auditItems.labor : [
     "現場點名人數與申請工數相符",
     "人臉辨識紀錄相符",
     "白卡進出紀錄相符",
@@ -1711,7 +1718,7 @@ const AUDIT_ITEMS = {
     "無同廠商重複計價疑慮",
     "簽單與出工紀錄核對相符"
   ],
-  equipment: (LOCAL.auditItems && LOCAL.auditItems.equipment) || [
+  equipment: (LOCAL.auditItems && Array.isArray(LOCAL.auditItems.equipment) && LOCAL.auditItems.equipment.length) ? LOCAL.auditItems.equipment : [
     "現場機具數量與申請台數相符",
     "機具類型與申請相符",
     "實際使用狀態正常（非閒置）",
@@ -1721,12 +1728,16 @@ const AUDIT_ITEMS = {
 };
 
 let auditKind = "labor";
-let auditDate = localDate();   // 預設今天；使用者清空後不再被 renderAuditView 強制蓋回（v13 修復）
+let auditDate = null;   // null=尚未初始化（首次進稽核頁帶入當天，避免跨午夜的分頁拿到昨天）；""=使用者清空（看全部日期）
 let auditVendor = "";
 let auditSelectedId = null;
 let auditItemState = [];
 let editingAuditId = null;   // 非 null＝編輯既有稽核紀錄（更新取代，不新增）
 let auditLogFrom = "", auditLogTo = "";
+/* 稽核請求序號：pickAuditRecord/editAudit 等待 refetchSite 期間，任何讓畫面
+   失效的動作（重新選取、切類型/日期/廠商/工地、登出、儲存/刪除收尾）都會
+   透過 resetAuditView() 遞增此序號，使較慢的舊回應被捨棄（v13 修復） */
+let auditFetchSeq = 0;
 
 function auditFindRec(kind, id){
   const store = cur();
@@ -1740,6 +1751,7 @@ function auditRecCats(kind, rec){
 }
 
 function resetAuditView(){
+  auditFetchSeq++;   // 讓所有飛行中的稽核選取/編輯請求失效（單一失效點，涵蓋切篩選/切站/登出等全部路徑）
   auditSelectedId = null;
   auditItemState = [];
   editingAuditId = null;
@@ -1753,6 +1765,7 @@ function renderAuditView(){
   siteSel.innerHTML = MASTER.sites.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join("");
   siteSel.value = MASTER.currentSite;
   document.querySelectorAll("#auditKindSwitch .akind").forEach(b=>b.classList.toggle("active", b.dataset.akind===auditKind));
+  if(auditDate === null) auditDate = localDate();   // 首次進稽核頁才帶入當天（延後計算，跨午夜分頁不會拿到昨天）
   document.getElementById("auditDate").value = auditDate;
 
   const store = cur();
@@ -1785,31 +1798,36 @@ function renderAuditRecList(){
   }).join("");
 }
 
-// 稽核選單/編輯的 refetch 請求序號：避免較慢的回應在較快的回應之後覆寫畫面（v13 修復）
-let auditFetchSeq = 0;
-
 async function pickAuditRecord(id){
   const seq = ++auditFetchSeq;
-  let refetchFailed = false;
-  try{ await refetchSite(MASTER.currentSite); }catch(e){ refetchFailed = true; }
-  if(seq !== auditFetchSeq) return;   // 已有更新的選取動作，捨棄這次較慢的回應
-  if(refetchFailed) toast("⚠ 無法載入最新資料，請檢查網路後再試");
+  // 其他頁籤有表單編輯中時「不」整批刷新快取：refetchSite 會讓那些表單送出時
+  // 抓到漂移後的 v 當 baseV、繞過 409 保護。略過刷新只是少了先抓最新的優化，
+  // 稽核儲存本身仍受 baseV/409 保護，資料不會出錯。
+  if(!otherFormEditing()){
+    let refetchFailed = false;
+    try{ await refetchSite(MASTER.currentSite); }catch(e){ refetchFailed = true; }
+    if(seq !== auditFetchSeq) return;   // 等待期間選取/篩選/工地已變，捨棄這次較慢的回應
+    if(refetchFailed) toast("⚠ 無法載入最新資料，請檢查網路後再試");
+  }
   const rec = auditFindRec(auditKind, id);
   if(!rec){ toast("找不到該單據，可能已被刪除"); renderAuditView(); return; }
   auditSelectedId = id;
   editingAuditId = null;
   auditItemState = AUDIT_ITEMS[auditKind].map(t=>({text:t, ok:null, reason:""}));
   renderAuditRecList();
+  if(auditSelectedId !== id) return;   // 重繪過程觸發 resetAuditView（清單變空）時，不渲染已失效的表單
   renderAuditForm(rec);
 }
 
 /* 編輯既有稽核紀錄：載入原內容進表單，儲存時原地更新（保留原稽核日期，另記編輯日） */
 async function editAudit(kind, rid, aid){
   const seq = ++auditFetchSeq;
-  let refetchFailed = false;
-  try{ await refetchSite(MASTER.currentSite); }catch(e){ refetchFailed = true; }
-  if(seq !== auditFetchSeq) return;   // 已有更新的選取動作，捨棄這次較慢的回應
-  if(refetchFailed) toast("⚠ 無法載入最新資料，請檢查網路後再試");
+  if(!otherFormEditing()){   // 同 pickAuditRecord：保護其他表單的 baseV/409 語意
+    let refetchFailed = false;
+    try{ await refetchSite(MASTER.currentSite); }catch(e){ refetchFailed = true; }
+    if(seq !== auditFetchSeq) return;
+    if(refetchFailed) toast("⚠ 無法載入最新資料，請檢查網路後再試");
+  }
   const rec = auditFindRec(kind, rid);
   const a = rec && (rec.audits||[]).find(x=>x.id===aid);
   if(!a){ toast("找不到該筆稽核紀錄，可能已被刪除"); renderAuditView(); return; }
@@ -1820,6 +1838,7 @@ async function editAudit(kind, rid, aid){
   editingAuditId = aid;
   auditItemState = (a.items||[]).map(it=>({text:it.text, ok: typeof it.ok === "boolean" ? it.ok : null, reason:it.reason||""}));
   renderAuditView();
+  if(auditSelectedId !== rid) return;   // 重繪過程觸發 resetAuditView 時，不渲染已失效的表單
   renderAuditForm(rec, a);
   document.getElementById("auditFormWrap").scrollIntoView({behavior:"smooth", block:"start"});
 }
@@ -1889,14 +1908,17 @@ function renderAuditItems(){
 }
 
 async function saveAudit(id){
-  const rec = auditFindRec(auditKind, id);
+  // 快照 kind/store：await 期間切換稽核類型或工地，不影響本次 API 參數與快取寫回位置（v13 修復）
+  const kind = auditKind;
+  const store = cur();
+  const rec = auditFindRec(kind, id);
   if(!rec){ toast("找不到該單據，請重新選擇"); return; }
   const auditor = document.getElementById("auditAuditor").value.trim();
   if(!auditor){ toast("請填寫稽核人"); return; }
   const cntRaw = document.getElementById("auditCount").value.trim();
   if(cntRaw === ""){ toast("請填寫" + auditCountLabel()); return; }
   const actualCount = parseFloat(cntRaw) || 0;
-  if(actualCount < 0){ toast(auditCountLabel() + "不可為負數"); return; }
+  if(!isFinite(actualCount) || actualCount < 0){ toast(auditCountLabel() + "必須是 0 以上的有效數字"); return; }
   for(const it of auditItemState){
     if(it.ok === null){ toast(`「${it.text}」尚未選擇相符／不相符`); return; }
     if(it.ok === false && !it.reason.trim()){ toast(`「${it.text}」為不相符，請填寫不符原因`); return; }
@@ -1904,7 +1926,7 @@ async function saveAudit(id){
   const orig = editingAuditId ? (rec.audits||[]).find(x=>x.id===editingAuditId) : null;
   if(editingAuditId && !orig){ toast("原稽核紀錄不存在，可能已被刪除"); resetAuditView(); renderAuditView(); return; }
   // 編輯：保留原 id/稽核日期/申請數快照，另記編輯日；新增：全新快照
-  const applied = orig ? (orig.applied||0) : auditApplied(auditKind, rec);
+  const applied = orig ? (orig.applied||0) : auditApplied(kind, rec);
   const audit = {
     id: orig ? orig.id : uid(),
     auditedAt: orig ? orig.auditedAt : localDate(),
@@ -1921,28 +1943,32 @@ async function saveAudit(id){
     audits: orig ? rec.audits.map(x=>x.id===audit.id ? audit : x)
                  : (rec.audits||[]).concat([audit])
   });
+  const seqAtSave = auditFetchSeq;   // 收尾守衛：await 期間使用者若已改選/重置，不清掉他新開的表單
   try{
-    const resp = await apiSaveRecord(auditKind, updated, rec.v || 0);
+    const resp = await apiSaveRecord(kind, updated, rec.v || 0);
     updated.v = resp.v; updated.updatedAt = resp.updatedAt;
   }catch(err){
     if(err.status === 409){
       toast("⚠ 此單剛被其他人修改，稽核未儲存；已重新載入最新內容，請重新填寫");
       await refetchSite(MASTER.currentSite).catch(()=>{});
-      resetAuditView();
-      renderAuditView();
+      if(seqAtSave === auditFetchSeq){ resetAuditView(); renderAuditView(); }
       return;
     }
     toast("⚠ 雲端儲存失敗，稽核未送出，請檢查網路後再按一次儲存");
     return;
   }
-  const store = cur();
-  const list = auditKind==="labor" ? store.labor : store.equipment;
+  const list = kind==="labor" ? store.labor : store.equipment;
   const idx = list.findIndex(r=>r.id===id);
   if(idx >= 0) list[idx] = updated;
   sessionStorage.setItem("dm_auditor", auditor);
   toast(orig ? "稽核紀錄已更新" : "稽核紀錄已儲存至共用資料庫");
-  resetAuditView();
-  renderAuditView();
+  if(seqAtSave === auditFetchSeq){
+    resetAuditView();
+    renderAuditView();
+  }else{
+    renderAuditLog();        // 使用者已在操作別的稽核對象：只更新清單，不動他的表單
+    renderAuditRecList();
+  }
 }
 
 /* ---- 稽核紀錄清單／匯出 ---- */
@@ -1991,12 +2017,12 @@ function renderAuditLog(){
 }
 
 async function deleteAudit(kind, rid, aid){
+  const store = cur();   // 快照：await 期間切換工地，寫回位置仍是這筆紀錄所屬的工地
   const rec = auditFindRec(kind, rid);
   if(!rec){ toast("找不到該單據，可能已被刪除；請重新整理後再試"); return; }
   const a = (rec.audits||[]).find(x=>x.id===aid);
   if(!a){ toast("找不到該筆稽核紀錄，可能已被刪除；請重新整理後再試"); return; }
   if(!confirm(`確定刪除這筆稽核紀錄嗎？（${a.auditedAt}／${rec.vendor||""}）\n此操作影響所有使用者且無法復原。`)) return;
-  if(editingAuditId === aid) resetAuditView();   // 正被編輯的紀錄同時被刪除：關閉殘影表單（v13 修復）
   const updated = Object.assign({}, rec, { audits: rec.audits.filter(x=>x.id!==aid) });
   try{
     const resp = await apiSaveRecord(kind, updated, rec.v || 0);
@@ -2011,7 +2037,8 @@ async function deleteAudit(kind, rid, aid){
     toast("⚠ 雲端儲存失敗，刪除未執行");
     return;
   }
-  const store = cur();
+  // API 成功後才關閉正在編輯的同一筆表單（失敗時保留使用者輸入，紀錄其實還在）
+  if(editingAuditId === aid) resetAuditView();
   const list = kind==="labor" ? store.labor : store.equipment;
   const idx = list.findIndex(r=>r.id===rid);
   if(idx >= 0) list[idx] = updated;
@@ -2063,7 +2090,7 @@ function auditReportHTML(entries, subtitle){
     .info th{background:#eef4f3;width:110px;white-space:nowrap;}
     .w1{width:64px;white-space:nowrap;}
     .r-ok{color:#1c7d43;font-weight:bold;} .r-bad{color:#b93226;font-weight:bold;}
-    .note{margin:4px 0;} .meta{color:#5f6f6e;margin:2px 0 0;}
+    .note{margin:4px 0;white-space:pre-wrap;} .meta{color:#5f6f6e;margin:2px 0 0;}
     .sec{page-break-inside:avoid;}
     .signs{display:flex;gap:40px;flex-wrap:wrap;margin-top:36px;page-break-inside:avoid;font-size:13px;}
     .toolbar{margin:0 0 16px;}

@@ -136,18 +136,25 @@ def done_vals(rep):
 def emit_audits(table, r, count_key):
     """v13 成控現場稽核 audits[]（合約 §4.5）；labor/equip 兩表共用同構"""
     for a in r.get("audits") or []:
+        # auditor 為 NOT NULL 欄位：缺漏時比照壞 id/壞日期跳過並計數，
+        # 不可 emit 出會讓整批交易（XACT_ABORT）回滾的違規 INSERT
         if (not a or not a.get("id") or not ID_RE.match(str(a["id"]))
-                or not DATE_RE.match(str(a.get("auditedAt") or ""))):
+                or not DATE_RE.match(str(a.get("auditedAt") or ""))
+                or not str(a.get("auditor") or "").strip()):
             skipped["audit"] += 1
             continue
         edited = a.get("editedAt")
+        # 狀態快照僅接受合法值，其餘正規化為 NULL（欄位有 CHECK 值域限制）
+        status_at = a.get("statusAtAudit")
+        if status_at not in STATUSES:
+            status_at = None
         out.append(
             f"INSERT INTO dbo.{table} (audit_id, record_id, audited_at, auditor, "
             "applied, actual_count, diff, items_json, note, status_at_audit, edited_at) VALUES ("
             f"{q(a['id'])}, {q(r['id'])}, {q(a['auditedAt'])}, {q(a.get('auditor'))}, "
             f"{num(a.get('applied'), '0')}, {num(a.get('actualCount'), '0')}, "
             f"{num(a.get('diff'), '0')}, {qj(a.get('items'))}, "
-            f"{q(a.get('note') or None)}, {q(a.get('statusAtAudit') or None)}, "
+            f"{q(a.get('note') or None)}, {q(status_at)}, "
             f"{q(edited) if edited and DATE_RE.match(str(edited)) else 'NULL'});"
         )
         counts[count_key] += 1
@@ -289,6 +296,6 @@ if total_skipped:
           "、".join(f"{k}={v}" for k, v in skipped.items() if v))
     print("  （id=格式不符；date=非 YYYY-MM-DD；status=非 待回報/已回報；"
           "type=工種/機具明細缺名稱；option_dup=同值選項僅取首見；"
-          "audit=稽核紀錄 id/日期格式不符）")
+          "audit=稽核紀錄 id/日期格式不符或缺稽核人）")
 else:
     print("無跳過資料")

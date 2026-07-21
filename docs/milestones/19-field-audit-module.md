@@ -48,3 +48,11 @@
   - PDF HTML：含彙總表、不符原因、動態字串全部 esc() 跳脫；刪除稽核（confirm）後清單即時更新
   - 權限：登出管理員→頁籤隱藏＋自動跳回總覽；console 零錯誤
 - SQL 層（LocalDB 重建 KG_AUDIT_TEST）：新 DDL 一次跑通（15 物件＝10 表＋5 VIEW）；稽核 fixture 匯入——好資料 2 筆入庫、壞 id/壞日期 2 筆跳過並計數；`v_audit_log` 不符項數（OPENJSON）計算正確；多行說明與單引號原樣保真
+
+## 第二輪硬化（2026-07-21，上線後 MAX 十角度審查 12 項確認發現全數修復）
+
+- **最重要**：pickAuditRecord/editAudit 的 refetchSite 原本無條件整批刷新快取，會讓其他頁籤編輯中表單送出時 baseV 漂移、繞過 409——改以 `otherFormEditing()` 把關（其他表單編輯中時跳過刷新；稽核儲存自身仍受 baseV/409 保護）
+- **競速失效機制一般化**：`resetAuditView()` 統一遞增 `auditFetchSeq`——切篩選/切類型/切站/登出/儲存收尾等任何清空畫面的動作都自動讓飛行中請求失效（altitude 修法：單一失效點取代逐 handler 補丁）
+- saveAudit/deleteAudit await 前快照 kind/store、收尾序號守衛、刪除失敗保留編輯中表單；isFinite 驗證；auditItems 空陣列防呆；渲染守衛；auditDate 延後初始化；PDF note pre-wrap
+- SQL：v_audit_log ISNULL 不符計算、status_at_audit CHECK、equip_audits DECIMAL(8,2)、遷移工具 auditor 驗證＋狀態正規化（LocalDB 重測：缺 ok 鍵計入不符、壞狀態→NULL、缺稽核人跳過計數）
+- 驗證：DEMO 鎖定式測試逐項通過（409 保護 fetch=0、日期切換使飛行中 pick 失效、儲存期間開新表單不被清、刪除失敗表單保留、Infinity 擋下），console 零錯誤

@@ -504,6 +504,7 @@ let editingLaborApplyId = null;
 function initLaborApplyForm(){
   document.getElementById("l_date").valueAsDate = new Date(Date.now()+86400000);
   document.getElementById("laborApplyNewBtn").addEventListener("click", resetLaborApplyForm);
+  initAttBox(laborAtt, "l_attachBox", "l_attachInput");
 
   document.getElementById("laborApplyForm").addEventListener("submit", async e=>{
     e.preventDefault();
@@ -526,6 +527,15 @@ function initLaborApplyForm(){
     const store = cur();
     const existing = editingLaborApplyId ? store.labor.find(r=>r.id===editingLaborApplyId) : null;
 
+    // v14：先上傳新附件（失敗即中止、輸入保留可重試），再組單據
+    let attachments;
+    try{
+      attachments = await attUploadPending(laborAtt);
+    }catch(err){
+      toast("⚠ 附件上傳失敗，資料未送出，請檢查網路後再按一次送出");
+      return;
+    }
+
     const rec = {
       id: editingLaborApplyId || uid(),
       date, vendor, applicant, required,
@@ -533,8 +543,10 @@ function initLaborApplyForm(){
       locations: tagState.l_locations.slice(),
       categories: tagState.l_categories.slice(),
       categoryNote: document.getElementById("l_categoryNote").value.trim(),
+      attachments,
       status: existing ? existing.status : "待回報",
-      report: existing ? existing.report : null
+      report: existing ? existing.report : null,
+      audits: existing ? (existing.audits || []) : []
     };
 
     try{
@@ -559,6 +571,7 @@ function initLaborApplyForm(){
       store.labor.unshift(rec);
       toast("點工申請已送出至共用資料庫，待現場回報覆核");
     }
+    attFinalize(laborAtt);   // 儲存成功後才真正刪除被移除的附件
     resetLaborApplyForm();
     renderDashboard();
   });
@@ -575,6 +588,7 @@ function resetLaborApplyForm(){
   setCombo("cb_l_applicant", "");
   setTags("l_locations", []);
   setTags("l_categories", []);
+  resetAttState(laborAtt, "l_attachBox");
   document.getElementById("laborApplyTitle").textContent = "新增點工申請";
   document.getElementById("laborApplySubmitBtn").textContent = "送出點工申請";
   document.getElementById("laborApplyNewBtn").style.display = "none";
@@ -595,6 +609,9 @@ async function loadLaborApplyRecord(id){
   setTags("l_locations", rec.locations);
   setTags("l_categories", rec.categories);
   document.getElementById("l_categoryNote").value = rec.categoryNote || "";
+  resetAttState(laborAtt);
+  laborAtt.existing = (rec.attachments || []).slice();
+  renderAttBox(laborAtt, "l_attachBox");
 
   document.getElementById("laborApplyTitle").textContent = `編輯點工申請：${rec.date}・${rec.vendor}`;
   document.getElementById("laborApplySubmitBtn").textContent = "儲存變更";
@@ -837,7 +854,7 @@ async function loadLaborReportRecord(id){
   document.getElementById("laborReportContext").innerHTML = `<div class="context-box">
     <strong>${esc(MASTER.currentSite)}</strong>　${esc(rec.date)}・${esc(rec.vendor)}　需求工數：${fmt(rec.required)}　申請人：${esc(rec.applicant)}
     ${(rec.locations||[]).length ? "　地點："+esc(rec.locations.join("、")) : ""}
-  </div>`;
+  </div>${attReadOnlyHTML(rec.attachments)}`;
 
   const rep = rec.report || {};
   document.getElementById("l_check_face").checked = !!rep.checkFace;
@@ -936,6 +953,7 @@ let editingEquipApplyId = null;
 function initEquipApplyForm(){
   document.getElementById("e_date").valueAsDate = new Date(Date.now()+86400000);
   document.getElementById("equipApplyNewBtn").addEventListener("click", resetEquipApplyForm);
+  initAttBox(equipAtt, "e_attachBox", "e_attachInput");
 
   document.getElementById("equipApplyForm").addEventListener("submit", async e=>{
     e.preventDefault();
@@ -960,6 +978,15 @@ function initEquipApplyForm(){
     const store = cur();
     const existing = editingEquipApplyId ? store.equipment.find(r=>r.id===editingEquipApplyId) : null;
 
+    // v14：先上傳新附件（失敗即中止、輸入保留可重試），再組單據
+    let attachments;
+    try{
+      attachments = await attUploadPending(equipAtt);
+    }catch(err){
+      toast("⚠ 附件上傳失敗，資料未送出，請檢查網路後再按一次送出");
+      return;
+    }
+
     const rec = {
       id: editingEquipApplyId || uid(),
       date, vendor, applicant, types,
@@ -968,8 +995,10 @@ function initEquipApplyForm(){
       contracted: document.querySelector('input[name="e_contract"]:checked').value,
       locations: tagState.e_locations.slice(),
       content: document.getElementById("e_content").value.trim(),
+      attachments,
       status: existing ? existing.status : "待回報",
-      report: existing ? existing.report : null
+      report: existing ? existing.report : null,
+      audits: existing ? (existing.audits || []) : []   // v14 修復：編輯申請單不可洗掉既有稽核紀錄
     };
 
     try{
@@ -994,6 +1023,7 @@ function initEquipApplyForm(){
       store.equipment.unshift(rec);
       toast("機具申請已送出至共用資料庫，待現場回報");
     }
+    attFinalize(equipAtt);   // 儲存成功後才真正刪除被移除的附件
     resetEquipApplyForm();
     renderDashboard();
   });
@@ -1010,6 +1040,7 @@ function resetEquipApplyForm(){
   setCombo("cb_e_applicant", "");
   setTags("e_type", []);
   setTags("e_locations", []);
+  resetAttState(equipAtt, "e_attachBox");
   document.getElementById("equipApplyTitle").textContent = "新增機具申請";
   document.getElementById("equipApplySubmitBtn").textContent = "送出機具申請";
   document.getElementById("equipApplyNewBtn").style.display = "none";
@@ -1032,6 +1063,9 @@ async function loadEquipApplyRecord(id){
   document.querySelector(`input[name="e_contract"][value="${rec.contracted||"是"}"]`).checked = true;
   setTags("e_locations", rec.locations);
   document.getElementById("e_content").value = rec.content || "";
+  resetAttState(equipAtt);
+  equipAtt.existing = (rec.attachments || []).slice();
+  renderAttBox(equipAtt, "e_attachBox");
 
   document.getElementById("equipApplyTitle").textContent = `編輯機具申請：${rec.date}・${rec.vendor}`;
   document.getElementById("equipApplySubmitBtn").textContent = "儲存變更";
@@ -1229,7 +1263,7 @@ async function loadEquipReportRecord(id){
 
   document.getElementById("equipReportContext").innerHTML = `<div class="context-box">
     <strong>${esc(MASTER.currentSite)}</strong>　${esc(rec.date)}・${esc(rec.vendor)}　類型：${esc((rec.types||[]).join("、"))}　需求數量：${fmt(rec.requiredQty)}　申請人：${esc(rec.applicant)}
-  </div>`;
+  </div>${attReadOnlyHTML(rec.attachments)}`;
 
   const rep = rec.report || {};
   document.getElementById("e_zeroUse").checked = !!rep.zeroUse;
@@ -1699,6 +1733,176 @@ function exportSummaryCSV(key){
 }
 
 /* ==========================================================
+   附件（v14）：點工/機具申請單夾簽單掃描檔、稽核紀錄夾現場照片
+   - 檔案本體獨立存放（op:uploadAttachment / GET ?attachment=）；
+     單據 JSON 只存描述資料 attachments[]，開站全量載入不受影響
+   - 圖片前端壓縮（長邊 1600px、JPEG 0.8）：手機照片 3-5MB → 數百 KB
+   - 「送出時才上傳、成功後才刪除」：表單取消不會留下孤兒檔案，
+     也不會誤刪仍被引用的檔案
+   ========================================================== */
+const ATT_TYPES = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
+const ATT_LIMIT = 5;                     // 每個掛載點最多件數
+const ATT_PDF_MAX = 4 * 1024 * 1024;     // PDF 原檔上限（圖片壓縮後遠小於此）
+const attLocalUrl = {};                  // id -> objectURL：剛上傳的本地預覽（免重新下載）
+
+function attUrl(id){
+  return API_BASE + "?" + new URLSearchParams({ site: MASTER.currentSite, attachment: id }).toString();
+}
+function attSrc(id){ return attLocalUrl[id] || attUrl(id); }
+
+/* 圖片壓縮：canvas 縮至長邊 1600px、JPEG 品質 0.8（簽單/現場照清晰度足夠） */
+function compressImage(file){
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * scale));
+      const h = Math.max(1, Math.round(img.height * scale));
+      const cv = document.createElement("canvas");
+      cv.width = w; cv.height = h;
+      cv.getContext("2d").drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      cv.toBlob(b => b ? resolve(b) : reject(new Error("compress failed")), "image/jpeg", 0.8);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("unreadable image")); };
+    img.src = url;
+  });
+}
+
+function blobToBase64(blob){
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",")[1] || "");
+    r.onerror = () => reject(new Error("read failed"));
+    r.readAsDataURL(blob);
+  });
+}
+
+/* 每個掛載點一份狀態：existing=已存在單據上的、pendingFiles=已選未上傳、
+   pendingDelete=標記待刪（送出成功後才真正刪除） */
+function newAttState(){ return { existing: [], pendingFiles: [], pendingDelete: [] }; }
+let laborAtt = newAttState(), equipAtt = newAttState(), auditAtt = newAttState();
+function attCount(st){ return st.existing.length + st.pendingFiles.length; }
+
+async function attPick(st, fileList, boxId){
+  for(const file of Array.from(fileList || [])){
+    if(attCount(st) >= ATT_LIMIT){ toast(`附件最多 ${ATT_LIMIT} 件`); break; }
+    let blob = file, type = file.type, name = String(file.name || "附件").slice(0, 200);
+    if(type && type.startsWith("image/")){
+      try{
+        blob = await compressImage(file);
+        type = "image/jpeg";
+        name = name.replace(/\.[^.]+$/, "") + ".jpg";
+      }catch(e){ toast(`「${name}」不是可讀取的圖片`); continue; }
+    }else if(type === "application/pdf"){
+      if(file.size > ATT_PDF_MAX){ toast(`「${name}」超過 PDF 4MB 上限`); continue; }
+    }else{
+      toast(`「${name}」格式不支援（僅圖片與 PDF）`); continue;
+    }
+    st.pendingFiles.push({ blob, type, name, url: URL.createObjectURL(blob) });
+  }
+  renderAttBox(st, boxId);
+}
+
+function attThumbHTML(src, type, name){
+  return type === "application/pdf"
+    ? `<span class="att-pdf" title="${esc(name)}">PDF</span>`
+    : `<img src="${esc(src)}" alt="${esc(name)}" loading="lazy">`;
+}
+
+function renderAttBox(st, boxId, readOnly){
+  const box = document.getElementById(boxId);
+  if(!box) return;
+  const cells = [];
+  st.existing.forEach((m, i) => {
+    cells.push(`<div class="att-cell">
+      <a href="${esc(attSrc(m.id))}" target="_blank" rel="noopener">${attThumbHTML(attSrc(m.id), m.type, m.name)}</a>
+      ${readOnly ? "" : `<button type="button" class="att-del" data-att-act="del-existing" data-i="${i}" title="移除">×</button>`}
+    </div>`);
+  });
+  st.pendingFiles.forEach((p, i) => {
+    cells.push(`<div class="att-cell pending">
+      ${attThumbHTML(p.url, p.type, p.name)}
+      <button type="button" class="att-del" data-att-act="del-pending" data-i="${i}" title="移除">×</button>
+      <span class="att-new">新</span>
+    </div>`);
+  });
+  if(!readOnly && attCount(st) < ATT_LIMIT){
+    cells.push(`<button type="button" class="att-add" data-att-act="add">＋ 拍照／選檔</button>`);
+  }
+  if(readOnly && !cells.length){
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML = cells.join("");
+}
+
+/* 掛載點事件（box 內委派＋隱藏 file input） */
+function initAttBox(st, boxId, inputId){
+  const box = document.getElementById(boxId);
+  const input = document.getElementById(inputId);
+  box.addEventListener("click", e => {
+    const btn = e.target.closest("[data-att-act]");
+    if(!btn) return;
+    const act = btn.dataset.attAct;
+    if(act === "add"){ input.click(); return; }
+    const i = parseInt(btn.dataset.i, 10);
+    if(act === "del-existing" && st.existing[i]){
+      st.pendingDelete.push(st.existing[i].id);
+      st.existing.splice(i, 1);
+      renderAttBox(st, boxId);
+    }
+    if(act === "del-pending" && st.pendingFiles[i]){
+      URL.revokeObjectURL(st.pendingFiles[i].url);
+      st.pendingFiles.splice(i, 1);
+      renderAttBox(st, boxId);
+    }
+  });
+  input.addEventListener("change", async () => {
+    await attPick(st, input.files, boxId);
+    input.value = "";
+  });
+}
+
+/* 送出流程：先上傳 pending（失敗即中止、可重試），回傳合併後的 attachments[]。
+   逐件「上傳成功即移入 existing」：部分成功後重試不會重複上傳同一檔案 */
+async function attUploadPending(st){
+  while(st.pendingFiles.length){
+    const p = st.pendingFiles[0];
+    const id = uid();
+    const data = await blobToBase64(p.blob);
+    await api("POST", { op: "uploadAttachment", site: MASTER.currentSite, id, name: p.name, type: p.type, data });
+    attLocalUrl[id] = p.url;   // 本地預覽所有權轉移（reset 時不得 revoke）
+    p.url = null;
+    st.pendingFiles.shift();
+    st.existing.push({ id, name: p.name, type: p.type, size: p.blob.size, uploadedAt: localDate() });
+  }
+  return st.existing.slice();
+}
+
+/* 單據儲存成功後：真正刪除被移除的附件（失敗不擋流程，孤兒檔無害） */
+function attFinalize(st){
+  st.pendingDelete.forEach(id => {
+    api("POST", { op: "deleteAttachment", site: MASTER.currentSite, id }).catch(() => {});
+  });
+}
+
+function resetAttState(st, boxId){
+  st.pendingFiles.forEach(p => { if(p.url) URL.revokeObjectURL(p.url); });
+  st.existing = []; st.pendingFiles = []; st.pendingDelete = [];
+  if(boxId) renderAttBox(st, boxId);
+}
+
+/* 回報頁的唯讀附件列（工程師回報時查看申請單夾帶的簽單掃描檔） */
+function attReadOnlyHTML(atts){
+  if(!atts || !atts.length) return "";
+  return `<div class="att-strip readonly">` + atts.map(m =>
+    `<a class="att-cell" href="${esc(attSrc(m.id))}" target="_blank" rel="noopener">${attThumbHTML(attSrc(m.id), m.type, m.name)}</a>`
+  ).join("") + `</div>`;
+}
+
+/* ==========================================================
    成控現場稽核（v13；限管理員）
    - 連動申請父層：日期＋廠商 → 申請單 → 逐項相符/不相符查核
    - 每項必選；不相符必填原因；申請工數 vs 現場實點自動算差異
@@ -1755,6 +1959,7 @@ function resetAuditView(){
   auditSelectedId = null;
   auditItemState = [];
   editingAuditId = null;
+  resetAttState(auditAtt);
   const wrap = document.getElementById("auditFormWrap");
   if(wrap) wrap.innerHTML = '<div class="empty-row">請先從上方選擇要稽核的申請單</div>';
 }
@@ -1814,6 +2019,7 @@ async function pickAuditRecord(id){
   auditSelectedId = id;
   editingAuditId = null;
   auditItemState = AUDIT_ITEMS[auditKind].map(t=>({text:t, ok:null, reason:""}));
+  resetAttState(auditAtt);   // 新稽核：附件從空白開始
   renderAuditRecList();
   if(auditSelectedId !== id) return;   // 重繪過程觸發 resetAuditView（清單變空）時，不渲染已失效的表單
   renderAuditForm(rec);
@@ -1837,6 +2043,8 @@ async function editAudit(kind, rid, aid){
   auditSelectedId = rid;
   editingAuditId = aid;
   auditItemState = (a.items||[]).map(it=>({text:it.text, ok: typeof it.ok === "boolean" ? it.ok : null, reason:it.reason||""}));
+  resetAttState(auditAtt);
+  auditAtt.existing = (a.attachments || []).slice();   // 載入既有稽核附件供編輯
   renderAuditView();
   if(auditSelectedId !== rid) return;   // 重繪過程觸發 resetAuditView 時，不渲染已失效的表單
   renderAuditForm(rec, a);
@@ -1877,12 +2085,18 @@ function renderAuditForm(rec, editA){
         <label>現場狀況說明（選填，不限字數）</label>
         <textarea id="auditNote" rows="3" placeholder="例：現場清點與申請相符；其中 2 工無白卡紀錄，已提醒工地落實刷卡">${esc(editA?(editA.note||""):"")}</textarea>
       </div>
+      <div class="field field-wide">
+        <label>現場照片／附件（選填，最多 ${ATT_LIMIT} 件；圖片自動壓縮，會一併列入 PDF 報告）</label>
+        <div id="auditAttachBox" class="att-strip"></div>
+        <input type="file" id="auditAttachInput" accept="image/*,application/pdf" multiple hidden>
+      </div>
       <div class="field field-wide actions">
         <button type="button" class="btn-primary" id="auditSaveBtn">${editA?"更新稽核紀錄":"儲存稽核紀錄"}</button>
         <button type="button" class="btn-ghost" id="auditCancelBtn">取消</button>
       </div>
     </div>`;
   renderAuditItems();
+  renderAttBox(auditAtt, "auditAttachBox");
   document.getElementById("auditCount").addEventListener("input", ()=>{
     const v = parseFloat(document.getElementById("auditCount").value);
     document.getElementById("auditCountDiff").value = isNaN(v) ? "" : fmt(v - applied);
@@ -1925,6 +2139,14 @@ async function saveAudit(id){
   }
   const orig = editingAuditId ? (rec.audits||[]).find(x=>x.id===editingAuditId) : null;
   if(editingAuditId && !orig){ toast("原稽核紀錄不存在，可能已被刪除"); resetAuditView(); renderAuditView(); return; }
+  // v14：先上傳現場照片/附件（失敗即中止、輸入保留可重試）
+  let attachments;
+  try{
+    attachments = await attUploadPending(auditAtt);
+  }catch(err){
+    toast("⚠ 附件上傳失敗，稽核未送出，請檢查網路後再試");
+    return;
+  }
   // 編輯：保留原 id/稽核日期/申請數快照，另記編輯日；新增：全新快照
   const applied = orig ? (orig.applied||0) : auditApplied(kind, rec);
   const audit = {
@@ -1935,6 +2157,7 @@ async function saveAudit(id){
     actualCount,
     diff: actualCount - applied,
     items: auditItemState.map(it=>({ text: it.text, ok: !!it.ok, reason: it.ok===false ? it.reason.trim() : "" })),
+    attachments,
     note: document.getElementById("auditNote").value.trim(),
     statusAtAudit: orig ? orig.statusAtAudit : rec.status
   };
@@ -1961,6 +2184,7 @@ async function saveAudit(id){
   const idx = list.findIndex(r=>r.id===id);
   if(idx >= 0) list[idx] = updated;
   sessionStorage.setItem("dm_auditor", auditor);
+  attFinalize(auditAtt);   // 儲存成功後才真正刪除被移除的附件
   toast(orig ? "稽核紀錄已更新" : "稽核紀錄已儲存至共用資料庫");
   if(seqAtSave === auditFetchSeq){
     resetAuditView();
@@ -2067,6 +2291,13 @@ function auditReportHTML(entries, subtitle){
         <tbody>${e.a.items.map(i=>`<tr><td>${esc(i.text)}</td><td class="${i.ok?"r-ok":"r-bad"}">${i.ok?"相符":"不相符"}</td><td>${esc(i.reason||"")}</td></tr>`).join("")}</tbody>
       </table>
       ${e.a.note?`<p class="note"><strong>現場狀況說明：</strong>${esc(e.a.note)}</p>`:""}
+      ${(() => {   // v14：現場照片嵌入報告；PDF 附件列出檔名
+        const atts = e.a.attachments || [];
+        const imgs = atts.filter(a => a.type && a.type.startsWith("image/"));
+        const pdfs = atts.filter(a => a.type === "application/pdf");
+        return (imgs.length ? `<div class="photos">${imgs.map(a=>`<img src="${esc(attSrc(a.id))}" alt="${esc(a.name)}">`).join("")}</div>` : "")
+             + (pdfs.length ? `<p class="meta">附件（PDF）：${esc(pdfs.map(a=>a.name).join("、"))}</p>` : "");
+      })()}
       <p class="meta">稽核日期：${esc(e.a.auditedAt)}｜稽核人員：${esc(e.a.auditor)}${e.a.editedAt?`｜編輯於：${esc(e.a.editedAt)}`:""}</p>
     </div>`;
   }).join("");
@@ -2091,6 +2322,8 @@ function auditReportHTML(entries, subtitle){
     .w1{width:64px;white-space:nowrap;}
     .r-ok{color:#1c7d43;font-weight:bold;} .r-bad{color:#b93226;font-weight:bold;}
     .note{margin:4px 0;white-space:pre-wrap;} .meta{color:#5f6f6e;margin:2px 0 0;}
+    .photos{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0;}
+    .photos img{max-width:46%;max-height:300px;border:1px solid #c8d4d2;object-fit:contain;}
     .sec{page-break-inside:avoid;}
     .signs{display:flex;gap:40px;flex-wrap:wrap;margin-top:36px;page-break-inside:avoid;font-size:13px;}
     .toolbar{margin:0 0 16px;}
@@ -2168,12 +2401,35 @@ function initAudit(){
     if(btn) pickAuditRecord(btn.dataset.id);
   });
   document.getElementById("auditFormWrap").addEventListener("click", e=>{
+    // v14：附件列（動態表單 → 事件委派）
+    const ab = e.target.closest("[data-att-act]");
+    if(ab){
+      const act = ab.dataset.attAct;
+      if(act === "add"){ const inp = document.getElementById("auditAttachInput"); if(inp) inp.click(); return; }
+      const ai = parseInt(ab.dataset.i, 10);
+      if(act === "del-existing" && auditAtt.existing[ai]){
+        auditAtt.pendingDelete.push(auditAtt.existing[ai].id);
+        auditAtt.existing.splice(ai, 1);
+        renderAttBox(auditAtt, "auditAttachBox");
+      }
+      if(act === "del-pending" && auditAtt.pendingFiles[ai]){
+        if(auditAtt.pendingFiles[ai].url) URL.revokeObjectURL(auditAtt.pendingFiles[ai].url);
+        auditAtt.pendingFiles.splice(ai, 1);
+        renderAttBox(auditAtt, "auditAttachBox");
+      }
+      return;
+    }
     const btn = e.target.closest(".ai-btn");
     if(!btn) return;
     const i = parseInt(btn.dataset.i, 10);
     if(!auditItemState[i]) return;
     auditItemState[i].ok = btn.dataset.val === "1";
     renderAuditItems();
+  });
+  document.getElementById("auditFormWrap").addEventListener("change", async e=>{
+    if(e.target.id !== "auditAttachInput") return;
+    await attPick(auditAtt, e.target.files, "auditAttachBox");
+    e.target.value = "";
   });
   document.getElementById("auditFormWrap").addEventListener("input", e=>{
     if(!e.target.classList.contains("ai-reason")) return;

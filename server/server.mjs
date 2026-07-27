@@ -54,6 +54,30 @@ const KINDS = ["labor", "equipment"];
 /* ---------------- 檔案儲存層（對應 Netlify Blobs） ---------------- */
 async function ensureDataDir(){
   await fs.mkdir(DATA_DIR, { recursive: true });
+  await fs.mkdir(ATT_DIR, { recursive: true });
+}
+
+/* ---------------- 附件（v14，合約 §2.3/§3.6/§3.7） ----------------
+   檔案本體存 DATA_DIR/attachments/<b64e(site)>_<id>（id 為安全字元集），
+   name/type 描述資料存 kv（attmeta:<b64e(site)>:<id>），與 Netlify 版
+   Blobs metadata 同構。 */
+const ATT_DIR = path.join(DATA_DIR, "attachments");
+const ATT_TYPES = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
+const ATT_MAX_BYTES = 4 * 1024 * 1024;
+const attFile = (site, id) => path.join(ATT_DIR, `${b64e(site)}_${id}`);
+const attMetaKey = (site, id) => `attmeta:${b64e(site)}:${id}`;
+
+function attIdsOf(rec){
+  const ids = [];
+  ((rec && rec.attachments) || []).forEach(a => a && a.id && ids.push(a.id));
+  ((rec && rec.audits) || []).forEach(au => ((au && au.attachments) || []).forEach(a => a && a.id && ids.push(a.id)));
+  return ids.filter(id => /^[A-Za-z0-9_-]{1,64}$/.test(String(id)));
+}
+async function deleteAttachmentFiles(site, ids){
+  for(const id of ids){
+    await fs.unlink(attFile(site, id)).catch(() => {});
+    await kvDelete(attMetaKey(site, id));
+  }
 }
 
 async function kvGet(key){
@@ -114,6 +138,28 @@ async function readSite(site){
 
 async function handleApi(req, res, body, query){
   if(req.method === "GET"){
+    /* 附件下載（v14）：二進位回應＋原始 Content-Type */
+    const attId = query.get("attachment");
+    const attSite = query.get("site");
+    if(attId && attSite){
+      if(!/^[A-Za-z0-9_-]{1,64}$/.test(attId)) return sendJson(res, { error: "invalid attachment id" }, 400);
+      try{
+        const [buf, meta] = await Promise.all([
+          fs.readFile(attFile(attSite, attId)),
+          kvGet(attMetaKey(attSite, attId))
+        ]);
+        res.writeHead(200, {
+          "content-type": (meta && ATT_TYPES.includes(meta.type)) ? meta.type : "application/octet-stream",
+          "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent((meta && meta.name) || attId)}`,
+          "cache-control": "private, max-age=86400"
+        });
+        return res.end(buf);
+      }catch(e){
+        if(e.code === "ENOENT") return sendJson(res, { error: "not found" }, 404);
+        throw e;
+      }
+    }
+
     const site = query.get("site");
     if(site) return sendJson(res, await readSite(site));
 
@@ -187,24 +233,52 @@ async function handleApi(req, res, body, query){
         return sendJson(res, { ok: true, pool: cfg[data.pool] });
       }
 
-      case "deleteRecord":
+      case "uploadAttachment": {
+        if(!data.site || !data.id || !data.data) return sendJson(res, { error: "site/id/data required" }, 400);
+        if(!/^[A-Za-z0-9_-]{1,64}$/.test(String(data.id))) return sendJson(res, { error: "invalid attachment id" }, 400);
+        if(!ATT_TYPES.includes(data.type)) return sendJson(res, { error: "type not allowed" }, 400);
+        let buf;
+        try{ buf = Buffer.from(String(data.data), "base64"); }catch(e){ return sendJson(res, { error: "invalid data" }, 400); }
+        if(!buf.length || buf.length > ATT_MAX_BYTES) return sendJson(res, { error: "size limit exceeded" }, 400);
+        await fs.writeFile(attFile(data.site, data.id), buf);
+        await kvSet(attMetaKey(data.site, data.id), { name: String(data.name || data.id).slice(0, 200), type: data.type });
+        return sendJson(res, { ok: true, id: data.id, size: buf.length });
+      }
+
+      case "deleteAttachment":
+        if(!data.site || !data.id) return sendJson(res, { error: "site/id required" }, 400);
+        if(!/^[A-Za-z0-9_-]{1,64}$/.test(String(data.id))) return sendJson(res, { error: "invalid attachment id" }, 400);
+        await deleteAttachmentFiles(data.site, [data.id]);
+        return sendJson(res, { ok: true });
+
+      case "deleteRecord": {
         if(!data.site || !KINDS.includes(data.kind) || !data.id) return sendJson(res, { error: "site/kind/id required" }, 400);
         if(!/^[A-Za-z0-9_-]{1,64}$/.test(String(data.id)))
           return sendJson(res, { error: "invalid record id" }, 400);
-        await kvDelete(recKey(data.site, data.kind, data.id));
+        const rKey = recKey(data.site, data.kind, data.id);
+        const rec = await kvGet(rKey);   // 先讀出，連同引用附件一併刪除（合約 §3.8）
+        await kvDelete(rKey);
+        if(rec) await deleteAttachmentFiles(data.site, attIdsOf(rec));
         return sendJson(res, { ok: true });
+      }
 
       case "clearSite": {
         if(!data.site) return sendJson(res, { error: "site required" }, 400);
         const keys = await kvListKeys("rec2:" + b64e(data.site) + ":");
         for(const key of keys) await kvDelete(key);
-        return sendJson(res, { ok: true, deleted: keys.length });
+        /* 該站附件（實體檔＋描述資料）一併清除 */
+        const metaKeys = await kvListKeys("attmeta:" + b64e(data.site) + ":");
+        await deleteAttachmentFiles(data.site, metaKeys.map(k => k.split(":")[2]).filter(Boolean));
+        return sendJson(res, { ok: true, deleted: keys.length + metaKeys.length });
       }
 
       case "clearAll": {
         const keys = await kvListKeys("");
         for(const key of keys) await kvDelete(key);
-        return sendJson(res, { ok: true, deleted: keys.length });
+        /* 附件實體檔一併清空 */
+        const files = await fs.readdir(ATT_DIR).catch(() => []);
+        for(const f of files) await fs.unlink(path.join(ATT_DIR, f)).catch(() => {});
+        return sendJson(res, { ok: true, deleted: keys.length + files.length });
       }
 
       default:

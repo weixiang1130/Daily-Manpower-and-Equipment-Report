@@ -4,7 +4,7 @@
 > 未來以公司標準技術（任何語言／資料庫）重寫後端時，只要新後端實作本合約，**前端零修改**。
 > 本合約有兩份參考實作可對照：`netlify/functions/api.mjs`（雲端版）與 `server/server.mjs`（地端版），行為一致。
 
-**合約版本**：1（對應系統 v13，2026-07；v12 異動——selfDone* 六→表單移除轉唯讀承繼、conclusion 取消字數上限，見 §4.3 註記；v13 異動——紀錄新增 `audits[]` 成控現場稽核陣列，見 §4.5）
+**合約版本**：1（對應系統 v14，2026-07；v12 異動——selfDone* 六→表單移除轉唯讀承繼、conclusion 取消字數上限，見 §4.3 註記；v13 異動——紀錄新增 `audits[]` 成控現場稽核陣列，見 §4.5；v14 異動——附件：新增 §2.3 下載、§3.6/§3.7 上傳刪除、§4.6 描述資料，deleteRecord/clearSite 連動清附件）
 **變更紀律**：任何欄位/操作的增修都必須先更新本文件，並保持向下相容（新增欄位可選、不刪除既有欄位語意）。
 
 ---
@@ -40,6 +40,12 @@
 ### 2.2 `GET ?site=<工地名>` — 單一工地（編輯前抓最新）
 
 回應：`{ "config": {...}|null, "labor": [...], "equipment": [...] }`
+
+### 2.3 `GET ?site=<工地名>&attachment=<附件id>` — 附件下載（v14）
+
+- 回應為**二進位內容**（非 JSON）：`Content-Type` 為上傳時的原始型別、`Content-Disposition: inline; filename*=UTF-8''<檔名>`
+- 附件 id 格式同紀錄 id（`^[A-Za-z0-9_-]{1,64}$`），不符回 `400`；不存在回 `404`
+- 附件內容不可變（同 id 不會被覆蓋為不同內容），後端可下 `Cache-Control: private, max-age=86400`
 
 ## 3. 寫入（POST，body 以 `op` 分派）
 
@@ -84,10 +90,29 @@
 ```
 - `id` 同 §3.3 格式驗證。成功回 `{ "ok": true }`（不存在也回 ok，冪等）
 
-### 3.6 `op:"clearSite"` / `op:"clearAll"` — 清空（危險操作）
-- `clearSite`：刪除該站全部**紀錄**（不含 config）。`clearAll`：刪除全部資料
+### 3.6 `op:"uploadAttachment"` — 上傳附件（v14）
+```json
+{ "op":"uploadAttachment", "site":"工地A", "id":"<前端產生的附件id>",
+  "name":"簽單.jpg", "type":"image/jpeg", "data":"<base64 檔案內容>" }
+```
+- `type` 白名單：`image/jpeg | image/png | image/webp | application/pdf`（**正準定義**），其餘 `400`
+- 解碼後大小上限 **4MB**（前端已將圖片壓縮至長邊 1600px／JPEG 0.8，遠小於此；PDF 為原檔），超過 `400`
+- `id` 格式同紀錄 id；`name` 截斷至 200 字
+- 檔案本體獨立儲存（**不進**單據 JSON）；描述資料由前端寫入單據的 `attachments[]`（§4.6）
+- 成功回 `{ "ok":true, "id":"...", "size":<bytes> }`
+
+### 3.7 `op:"deleteAttachment"` — 刪除附件（v14）
+```json
+{ "op":"deleteAttachment", "site":"工地A", "id":"<附件id>" }
+```
+- 冪等，成功回 `{ "ok":true }`
+- 前端紀律：**單據儲存成功後**才對被移除的附件呼叫本 op（表單取消不誤刪）
+
+### 3.8 `op:"clearSite"` / `op:"clearAll"` — 清空（危險操作）
+- `clearSite`：刪除該站全部**紀錄與附件**（不含 config）。`clearAll`：刪除全部資料
 - 回 `{ "ok":true, "deleted":<筆數> }`
-- ⚠ 現行合約對此二 op 無額外權限檢查（已知限制）；公司後端重寫時**建議加上伺服器端管理權限**，此屬合約的允許強化（前端行為不受影響）
+- v14 起 `deleteRecord` 亦須連同該單引用的全部附件（含各稽核紀錄的附件）一併刪除，避免孤兒檔案
+- ⚠ 現行合約對清空二 op 無額外權限檢查（已知限制）；公司後端重寫時**建議加上伺服器端管理權限**，此屬合約的允許強化（前端行為不受影響）
 
 ## 4. 資料模型（欄位字典）
 
@@ -124,6 +149,7 @@
 | status | "待回報"\|"已回報" | 生命週期狀態 |
 | report | object\|null | 子層回報（見下） |
 | audits | object[]（可缺省） | **v13**：成控現場稽核紀錄陣列（一單可多次稽核），元素結構見 4.5；沿用 `op:record` 整筆覆寫與版本檢查，無獨立 op |
+| attachments | object[]（可缺省） | **v14**：簽單掃描檔/附件的描述資料陣列（檔案本體獨立存放），元素結構見 4.6 |
 | v, updatedAt | number, string | 後端維護（版本/時間），前端唯讀 |
 
 子層 `report`（回報覆核）：
@@ -163,8 +189,20 @@
 | items | {text,ok,reason}[] | 逐項查核結果：text=項目文字、ok=相符(true)/不相符(false)、reason=不符原因（ok=false 時必填，否則空字串） |
 | note | string | 現場狀況說明（不限字數，建議 NVARCHAR(MAX) 級） |
 | statusAtAudit | string | 稽核當下的單據狀態快照（"待回報"/"已回報"） |
+| attachments | object[]（可缺省） | **v14**：現場照片/附件描述資料（結構見 4.6；照片會嵌入稽核 PDF 報告） |
 
 > 查核項目文字由前端設定檔（config.local.js `auditItems`）決定，後端一律照存 `items[].text`，不得以固定清單驗證。稽核功能為前端管理員（成控）限定；資料層面 audits 隨單據一起讀寫，後端無需額外權限邏輯（地端若導入個人登入，可於 API 層加稽核角色檢查）。
+
+### 4.6 附件描述資料（`attachments[]` 元素；v14，申請單／稽核紀錄通用）
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| id | string | 前端產生（同 record id 格式）；即 §2.3/§3.6 的附件 id |
+| name | string | 顯示檔名（圖片壓縮後為 `.jpg`） |
+| type | string | MIME 型別（§3.6 白名單之一） |
+| size | number | 位元組數（壓縮後實際大小） |
+| uploadedAt | "YYYY-MM-DD" | 上傳日（本地時區） |
+
+> **檔案本體與描述資料分離**是本設計的鐵則：單據 JSON 永遠只含描述資料，`scope=all` 全量載入與管理員 JSON 備份都不含檔案本體。**因此 JSON 備份不等於完整備份**——地端切換日必須另以 §2.3 逐一下載附件檔案（見 DEPLOYMENT.md 切換流程與 docs/sql/README.md 附件搬運節）。地端後端建議：描述資料入 `attachments` 資料表、檔案本體存檔案系統（路徑欄位記錄），不建議存 DB BLOB。
 
 ## 5. 給後端重寫者的相容須知
 

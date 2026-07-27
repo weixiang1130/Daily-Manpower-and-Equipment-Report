@@ -501,3 +501,23 @@ tr.clickable:hover td{background:var(--teal-100);}
 .ai-reason{width:100%;margin-top:8px;font:inherit;font-size:13px;padding:7px 10px;border:1px solid #e6b8b8;border-radius:8px;}
 .audit-ctx.editing{border-color:#e3c98a;background:#fdf6e8;}
 .edited-mark{font-size:11.5px;color:#9a7b2d;margin-left:2px;}
+
+/* ---------- 附件（v14） ---------- */
+.att-strip{display:flex;flex-wrap:wrap;gap:10px;align-items:center;min-height:8px;}
+.att-strip.readonly{margin-top:8px;}
+.att-cell{position:relative;width:84px;height:84px;border:1px solid var(--line, #dce5e3);border-radius:10px;overflow:hidden;background:#fff;display:flex;align-items:center;justify-content:center;}
+.att-cell img{width:100%;height:100%;object-fit:cover;display:block;}
+.att-cell.pending{border-style:dashed;border-color:var(--teal-600);}
+.att-pdf{font-weight:700;font-size:13px;color:var(--red-500);letter-spacing:1px;}
+.att-del{
+  position:absolute;top:2px;right:2px;width:22px;height:22px;border-radius:50%;
+  border:none;background:rgba(0,0,0,.55);color:#fff;font-size:14px;line-height:1;cursor:pointer;
+}
+.att-del:hover{background:var(--red-500);}
+.att-new{position:absolute;left:0;bottom:0;background:var(--teal-600);color:#fff;font-size:10.5px;padding:1px 6px;border-radius:0 8px 0 0;}
+.att-add{
+  width:84px;height:84px;border:1.5px dashed #b8c6c3;border-radius:10px;background:#f7faf9;
+  color:#5f6f6e;font:inherit;font-size:12.5px;cursor:pointer;
+}
+.att-add:hover{border-color:var(--teal-600);color:var(--teal-700);}
+a.att-cell{text-decoration:none;}

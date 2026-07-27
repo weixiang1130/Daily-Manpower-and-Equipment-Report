@@ -25,7 +25,23 @@ const b64d = s => Buffer.from(s, "base64url").toString("utf8");
 
 const cfgKey = s => "cfg2:" + b64e(s);
 const recKey = (s, kind, id) => `rec2:${b64e(s)}:${kind}:${id}`;
+const attKey = (s, id) => `att2:${b64e(s)}:${id}`;
 const KINDS = ["labor", "equipment"];
+
+/* 附件（v14）：檔案本體獨立存放（一檔一 blob，含 name/type metadata），
+   單據 JSON 只存描述資料（attachments[]），開站全量載入不受影響。
+   型別白名單＋大小上限：圖片由前端壓縮後上傳，PDF 原檔（≤4MB，
+   base64 後約 5.3MB，仍在 Functions 6MB body 限制內）。 */
+const ATT_TYPES = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
+const ATT_MAX_BYTES = 4 * 1024 * 1024;
+
+/* 刪單據時連同其附件（含各稽核紀錄的附件）一併清除，避免孤兒檔案 */
+function attIdsOf(rec){
+  const ids = [];
+  (rec && rec.attachments || []).forEach(a => a && a.id && ids.push(a.id));
+  (rec && rec.audits || []).forEach(au => (au && au.attachments || []).forEach(a => a && a.id && ids.push(a.id)));
+  return ids.filter(id => /^[A-Za-z0-9_-]{1,64}$/.test(String(id)));
+}
 
 /* 一次性遷移：把舊命名空間（rec:/cfg:，工地段為原始字串或
    %-編碼殘留）的全部 key 無條件搬到 rec2:/cfg2:。
@@ -90,6 +106,22 @@ export default async (req) => {
   const url = new URL(req.url);
 
   if(req.method === "GET"){
+    /* 附件下載：獨立路徑，回傳二進位＋原始 Content-Type。
+       附件內容不可變（id 唯一、覆蓋即換新 id），可長時間快取 */
+    const attId = url.searchParams.get("attachment");
+    const attSite = url.searchParams.get("site");
+    if(attId && attSite){
+      if(!/^[A-Za-z0-9_-]{1,64}$/.test(attId)) return json({ error: "invalid attachment id" }, 400);
+      const got = await s.getWithMetadata(attKey(attSite, attId), { type: "arrayBuffer" });
+      if(!got || !got.data) return json({ error: "not found" }, 404);
+      const meta = got.metadata || {};
+      return new Response(got.data, { status: 200, headers: {
+        "content-type": ATT_TYPES.includes(meta.type) ? meta.type : "application/octet-stream",
+        "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(meta.name || attId)}`,
+        "cache-control": "private, max-age=86400"
+      }});
+    }
+
     await migrateLegacyKeys(s);
 
     const site = url.searchParams.get("site");
@@ -171,18 +203,45 @@ export default async (req) => {
         return json({ ok: true, pool: cfg[body.pool] });
       }
 
-      case "deleteRecord":
+      case "uploadAttachment": {
+        if(!body.site || !body.id || !body.data) return json({ error: "site/id/data required" }, 400);
+        if(!/^[A-Za-z0-9_-]{1,64}$/.test(String(body.id))) return json({ error: "invalid attachment id" }, 400);
+        if(!ATT_TYPES.includes(body.type)) return json({ error: "type not allowed" }, 400);
+        let buf;
+        try{ buf = Buffer.from(String(body.data), "base64"); }catch(e){ return json({ error: "invalid data" }, 400); }
+        if(!buf.length || buf.length > ATT_MAX_BYTES) return json({ error: "size limit exceeded" }, 400);
+        const name = String(body.name || body.id).slice(0, 200);
+        await s.set(attKey(body.site, body.id), buf, { metadata: { name, type: body.type } });
+        return json({ ok: true, id: body.id, size: buf.length });
+      }
+
+      case "deleteAttachment":
+        if(!body.site || !body.id) return json({ error: "site/id required" }, 400);
+        if(!/^[A-Za-z0-9_-]{1,64}$/.test(String(body.id))) return json({ error: "invalid attachment id" }, 400);
+        await s.delete(attKey(body.site, body.id));
+        return json({ ok: true });
+
+      case "deleteRecord": {
         if(!body.site || !KINDS.includes(body.kind) || !body.id) return json({ error: "site/kind/id required" }, 400);
         if(!/^[A-Za-z0-9_-]{1,64}$/.test(String(body.id)))
           return json({ error: "invalid record id" }, 400);
-        await s.delete(recKey(body.site, body.kind, body.id));
+        const rKey = recKey(body.site, body.kind, body.id);
+        /* 先讀出單據，連同其引用的附件一併刪除（避免孤兒檔案佔用空間） */
+        const rec = await s.get(rKey, { type: "json" });
+        await s.delete(rKey);
+        if(rec) await Promise.all(attIdsOf(rec).map(id => s.delete(attKey(body.site, id)).catch(() => {})));
         return json({ ok: true });
+      }
 
       case "clearSite": {
         if(!body.site) return json({ error: "site required" }, 400);
-        const listed = await s.list({ prefix: "rec2:" + b64e(body.site) + ":" });
-        await Promise.all(listed.blobs.map(b => s.delete(b.key)));
-        return json({ ok: true, deleted: listed.blobs.length });
+        const [listed, atts] = await Promise.all([
+          s.list({ prefix: "rec2:" + b64e(body.site) + ":" }),
+          s.list({ prefix: "att2:" + b64e(body.site) + ":" })
+        ]);
+        const all = [...listed.blobs, ...atts.blobs];
+        await Promise.all(all.map(b => s.delete(b.key)));
+        return json({ ok: true, deleted: all.length });
       }
 
       case "clearAll": {

@@ -197,6 +197,26 @@ CREATE INDEX IX_equip_audit_record ON dbo.equip_audits(record_id);
 CREATE INDEX IX_equip_audit_date   ON dbo.equip_audits(audited_at);
 GO
 
+/* ---------- 11. 附件描述資料（v14；申請單簽單掃描檔／稽核現場照片） ----------
+   對應合約 §4.6：檔案本體「不」入 DB——雲端存 Blobs、地端建議存檔案系統，
+   file_path 記錄地端實體路徑（遷移匯入時為 NULL，切換日附件搬運腳本補填）。
+   parent 橫跨四種對象故不設 FK（以索引＋應用層維護參照）。 */
+CREATE TABLE dbo.attachments (
+    attachment_id   VARCHAR(64) NOT NULL CONSTRAINT PK_attachments PRIMARY KEY
+                    CONSTRAINT CK_att_id CHECK (attachment_id NOT LIKE '%[^A-Za-z0-9_-]%' COLLATE Latin1_General_100_BIN2),
+    site_id         INT NOT NULL CONSTRAINT FK_att_site REFERENCES dbo.sites(site_id),
+    parent_kind     VARCHAR(12) NOT NULL CONSTRAINT CK_att_parent
+                    CHECK (parent_kind IN ('labor','equipment','labor_audit','equip_audit')),
+    parent_id       VARCHAR(64) NOT NULL,   -- labor/equipment=單據 id；*_audit=稽核紀錄 audit_id
+    name            NVARCHAR(200) NOT NULL,
+    content_type    VARCHAR(50) NOT NULL,   -- 合約 §3.6 白名單（image/jpeg|png|webp、application/pdf）
+    size_bytes      INT NOT NULL CONSTRAINT DF_att_size DEFAULT 0,
+    uploaded_at     DATE NULL,
+    file_path       NVARCHAR(400) NULL
+);
+CREATE INDEX IX_att_parent ON dbo.attachments(parent_kind, parent_id);
+GO
+
 /* ==========================================================================
    VIEW：對應系統現有兩張報表（期間/廠商由查詢端 WHERE 篩選）
    ========================================================================== */

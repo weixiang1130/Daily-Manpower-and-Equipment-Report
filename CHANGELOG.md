@@ -2,6 +2,14 @@
 
 版本異動摘要。完整背景與設計決策請見 [`docs/milestones/`](docs/milestones/README.md)。
 
+## [節點 20] 2026-07-27 — 附件：簽單掃描檔與稽核現場照片（v14） ※待部署
+- 點工/機具申請單可夾簽單掃描檔、稽核紀錄可附現場照片（手機直接拍照，圖片前端壓縮至長邊 1600px/JPEG 0.8）；每處上限 5 件、僅圖片＋PDF（4MB）
+- 稽核 PDF 報告自動嵌入現場照片；回報頁以唯讀縮圖顯示申請單附件
+- 後端（api.mjs 首次修改）：att2: 命名空間存檔案本體、op:uploadAttachment/deleteAttachment、GET ?attachment= 下載；deleteRecord/clearSite 連動清附件
+- 架構鐵則：單據 JSON 只存描述資料 attachments[]（合約 §4.6），檔案本體獨立存放——全量載入與 JSON 備份不受影響；**JSON 備份不含檔案本體**，切換日需附件搬運（DEPLOYMENT §4）
+- 修復既有 bug：申請表單編輯送出未帶 audits[]，會洗掉該單的稽核紀錄（點工/機具皆修）
+- SQL 交付包同步：第 11 表 attachments＋遷移工具附件描述資料（LocalDB 重測）；server.mjs 對等實作
+
 ## [節點 19 第二輪硬化] 2026-07-21 — MAX 審查 12 項修復（v13.1）
 - **409 保護**：稽核選單/編輯前的整站快取刷新改以 otherFormEditing() 把關——其他頁籤有表單編輯中時跳過刷新，杜絕該表單送出時 baseV 漂移繞過併發保護
 - **失效機制一般化**：resetAuditView() 統一遞增請求序號，任何清空稽核畫面的動作（切篩選/切站/登出/儲存收尾）都讓飛行中的選取請求失效，取代逐 handler 補丁

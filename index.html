@@ -138,6 +138,12 @@
             <input type="text" id="l_categoryNote" class="note-input" placeholder="其他工作內容補充（選填，簡短即可）">
           </div>
 
+          <div class="field field-wide">
+            <label>簽單掃描檔／附件（選填，最多 5 件；圖片自動壓縮、PDF 上限 4MB）</label>
+            <div id="l_attachBox" class="att-strip"></div>
+            <input type="file" id="l_attachInput" accept="image/*,application/pdf" multiple hidden>
+          </div>
+
           <div class="field field-wide actions">
             <button type="submit" class="btn-primary" id="laborApplySubmitBtn">送出點工申請</button>
             <button type="button" class="btn-ghost" id="laborApplyNewBtn" style="display:none;">＋ 新增另一筆（取消編輯）</button>
@@ -304,6 +310,12 @@
           <div class="field field-wide">
             <label>工作內容</label>
             <input type="text" id="e_content" class="note-input" placeholder="例：吊掛物料、開挖等，簡短即可">
+          </div>
+
+          <div class="field field-wide">
+            <label>簽單掃描檔／附件（選填，最多 5 件；圖片自動壓縮、PDF 上限 4MB）</label>
+            <div id="e_attachBox" class="att-strip"></div>
+            <input type="file" id="e_attachInput" accept="image/*,application/pdf" multiple hidden>
           </div>
 
           <div class="field field-wide actions">

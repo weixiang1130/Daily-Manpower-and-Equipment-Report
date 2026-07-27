@@ -47,10 +47,12 @@ DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")       # 本地日期字串
 STATUSES = ("待回報", "已回報")
 
 out = []
-skipped = {"id": 0, "date": 0, "status": 0, "type": 0, "option_dup": 0, "audit": 0}
+skipped = {"id": 0, "date": 0, "status": 0, "type": 0, "option_dup": 0, "audit": 0,
+           "attachment": 0}
 counts = {"sites": 0, "site_options": 0, "labor_records": 0, "labor_reports": 0,
           "labor_report_worktypes": 0, "equip_records": 0, "equip_reports": 0,
-          "equip_report_usage": 0, "labor_audits": 0, "equip_audits": 0}
+          "equip_report_usage": 0, "labor_audits": 0, "equip_audits": 0,
+          "attachments": 0}
 
 
 def q(s):
@@ -133,8 +135,29 @@ def done_vals(rep):
             f"{q(rep.get('selfDone') or None)}, {q(rep.get('vendorDone') or None)}")
 
 
-def emit_audits(table, r, count_key):
+def emit_attachments(site, parent_kind, parent_id, atts):
+    """v14 附件描述資料（合約 §4.6）：只入描述資料；file_path 由切換日
+       附件搬運腳本補填（備份 JSON 不含檔案本體）"""
+    for a in atts or []:
+        if (not a or not a.get("id") or not ID_RE.match(str(a["id"]))
+                or not str(a.get("name") or "").strip()):
+            skipped["attachment"] += 1
+            continue
+        up = a.get("uploadedAt")
+        out.append(
+            "INSERT INTO dbo.attachments (attachment_id, site_id, parent_kind, parent_id, "
+            "name, content_type, size_bytes, uploaded_at) VALUES ("
+            f"{q(a['id'])}, {site_ref(site)}, '{parent_kind}', {q(parent_id)}, "
+            f"{q(str(a['name'])[:200])}, {q(str(a.get('type') or 'application/octet-stream')[:50])}, "
+            f"{int(a.get('size') or 0)}, "
+            f"{q(up) if up and DATE_RE.match(str(up)) else 'NULL'});"
+        )
+        counts["attachments"] += 1
+
+
+def emit_audits(table, r, count_key, site):
     """v13 成控現場稽核 audits[]（合約 §4.5）；labor/equip 兩表共用同構"""
+    audit_att_kind = "labor_audit" if table == "labor_audits" else "equip_audit"
     for a in r.get("audits") or []:
         # auditor 為 NOT NULL 欄位：缺漏時比照壞 id/壞日期跳過並計數，
         # 不可 emit 出會讓整批交易（XACT_ABORT）回滾的違規 INSERT
@@ -158,6 +181,7 @@ def emit_audits(table, r, count_key):
             f"{q(edited) if edited and DATE_RE.match(str(edited)) else 'NULL'});"
         )
         counts[count_key] += 1
+        emit_attachments(site, audit_att_kind, a["id"], a.get("attachments"))
 
 
 out.append("/* 由 backup-json-to-sql.py 產生 */")
@@ -238,7 +262,8 @@ for site, store in (data["stores"] or {}).items():
                     f"{num(wt.get('ot2'), '0')}, {num(wt.get('otOver'), '0')});"
                 )
                 counts["labor_report_worktypes"] += 1
-        emit_audits("labor_audits", r, "labor_audits")
+        emit_attachments(site, "labor", r["id"], r.get("attachments"))
+        emit_audits("labor_audits", r, "labor_audits", site)
 
 # ---------- equipment ----------
 for site, store in (data["stores"] or {}).items():
@@ -277,7 +302,8 @@ for site, store in (data["stores"] or {}).items():
                     f"{num(u.get('hours'), '0')});"
                 )
                 counts["equip_report_usage"] += 1
-        emit_audits("equip_audits", r, "equip_audits")
+        emit_attachments(site, "equipment", r["id"], r.get("attachments"))
+        emit_audits("equip_audits", r, "equip_audits", site)
 
 out.append("COMMIT;")
 out.append("/* 預期筆數（匯入後 SELECT COUNT(*) 對帳）： " +
@@ -296,6 +322,6 @@ if total_skipped:
           "、".join(f"{k}={v}" for k, v in skipped.items() if v))
     print("  （id=格式不符；date=非 YYYY-MM-DD；status=非 待回報/已回報；"
           "type=工種/機具明細缺名稱；option_dup=同值選項僅取首見；"
-          "audit=稽核紀錄 id/日期格式不符或缺稽核人）")
+          "audit=稽核紀錄 id/日期格式不符或缺稽核人；attachment=附件 id/檔名不符）")
 else:
     print("無跳過資料")

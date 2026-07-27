@@ -6,7 +6,7 @@
 
 | 檔案 | 內容 | 驗證狀態 |
 |---|---|---|
-| `DB-SCHEMA.sql` | 10 資料表＋5 VIEW（SQL Server 方言，含欄位註解、id/狀態 CHECK、計算欄位；v13 新增 labor_audits／equip_audits 稽核兩表＋v_audit_log） | ✅ LocalDB 實建 |
+| `DB-SCHEMA.sql` | 11 資料表＋5 VIEW（SQL Server 方言，含欄位註解、id/狀態 CHECK、計算欄位；v13 新增 labor_audits／equip_audits 稽核兩表＋v_audit_log；v14 新增 attachments 附件描述資料表） | ✅ LocalDB 實建 |
 | `backup-json-to-sql.py` | 備份 JSON → INSERT 腳本轉換器（含髒資料防護與計數、時區正規化、預期筆數對帳註腳） | ✅ 兩組備份實測 |
 
 **實測涵蓋**（SQL Server LocalDB）：
@@ -34,8 +34,16 @@
 | `op:config` | 整包覆蓋該站 `site_options`（delete+insert 交易）＋更新 `sites.lock_date` |
 | `op:record` | **§3 並發模式**；父表 upsert＋回報 1:1/1:N 子表 delete+insert，同一交易。**v13 起紀錄含 `audits[]`（合約 §4.5）**：同交易內對 `labor_audits`/`equip_audits` delete+insert（無獨立 op，隨整筆覆寫語意處理） |
 | `op:addOption` | `IF NOT EXISTS ... INSERT`（唯一鍵擋重複；注意 CI 定序下大小寫視為同值） |
-| `op:deleteRecord` | 刪父列（FK CASCADE 帶走子表） |
-| `op:clearSite` / `clearAll` | 建議**加伺服器端管理權限**後才開放（合約允許強化） |
+| `op:deleteRecord` | 刪父列（FK CASCADE 帶走子表）＋**刪該單引用的全部附件**（attachments 資料列與實體檔案，合約 §3.8） |
+| `op:uploadAttachment`（v14） | 檔案本體寫入檔案系統（建議路徑 `<附件根目錄>/<site_id>/<attachment_id>`）＋ INSERT `attachments` 描述資料列（file_path 記錄實體路徑） |
+| `GET ?attachment=`（v14） | 依 `attachments.file_path` 讀檔回傳，Content-Type 取 `content_type` 欄 |
+| `op:deleteAttachment`（v14） | 刪 `attachments` 資料列＋實體檔案（冪等） |
+| `op:clearSite` / `clearAll` | 建議**加伺服器端管理權限**後才開放（合約允許強化）；v14 起 clearSite 連同該站附件 |
+
+> **附件搬運（切換日必做）**：管理員 JSON 備份**只含附件描述資料，不含檔案本體**。
+> 切換日流程：備份 JSON 轉入後，另以合約 §2.3（`GET ?site=..&attachment=<id>`）
+> 逐一下載每筆 `attachments` 資料列對應的檔案存入地端檔案系統，並回填 `file_path`。
+> 附件 id 清單即 attachments 資料表全部資料列——轉換工具已把描述資料入表，照表掃即可。
 
 ## 3. 樂觀並發（409）— 已實測的寫法
 

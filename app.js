@@ -291,42 +291,46 @@ const listFilter = {
   labor: { date: "", vendor: "" },
   equipment: { date: "", vendor: "" }
 };
-/* v15.1：清單預設只列最近 N 筆（新到舊排序的前 N），歷史查閱走「顯示全部」或歷程報表 */
-const LIST_PREVIEW = 20;
-const listShowAll = { labor: false, equipment: false };
+/* v15.2：清單分頁（每頁 20 筆，取代 v15.1「顯示全部」展開——展開後仍是長頁面）。
+   套用：點工清單、機具清單、稽核紀錄清單；篩選/切站自動回第 1 頁 */
+const LIST_PAGE_SIZE = 20;
+const listPage = { labor: 1, equipment: 1, auditlog: 1 };
 function resetListFilters(){
   listFilter.labor = { date: "", vendor: "" };
   listFilter.equipment = { date: "", vendor: "" };
-  listShowAll.labor = false;
-  listShowAll.equipment = false;
+  listPage.labor = 1;
+  listPage.equipment = 1;
+  listPage.auditlog = 1;
   ["laborListDate","equipListDate"].forEach(id=>{ const el = document.getElementById(id); if(el) el.value = ""; });
   ["laborListVendor","equipListVendor"].forEach(id=>{ const el = document.getElementById(id); if(el) el.value = ""; });
 }
-/* 截斷清單並產生「顯示全部/收回」按鈕 HTML；renderFn 完成 innerHTML 後呼叫 bindListMore 綁定 */
-function truncateList(kind, list){
-  if(listShowAll[kind] || list.length <= LIST_PREVIEW){
-    const btn = (listShowAll[kind] && list.length > LIST_PREVIEW)
-      ? `<div class="list-more"><button type="button" class="btn-secondary btn-sm list-more-btn" data-kind="${kind}">收回，只顯示最近 ${LIST_PREVIEW} 筆</button></div>` : "";
-    return { shown: list, moreHTML: btn };
-  }
-  return {
-    shown: list.slice(0, LIST_PREVIEW),
-    moreHTML: `<div class="list-more"><button type="button" class="btn-secondary btn-sm list-more-btn" data-kind="${kind}">顯示全部 ${list.length} 筆（目前僅列最近 ${LIST_PREVIEW} 筆）</button></div>`
-  };
+/* 依 listPage[kind] 取當頁資料並產生頁碼列 HTML */
+function paginate(kind, list){
+  const pages = Math.max(1, Math.ceil(list.length / LIST_PAGE_SIZE));
+  if(listPage[kind] > pages) listPage[kind] = pages;
+  if(listPage[kind] < 1) listPage[kind] = 1;
+  const page = listPage[kind];
+  const shown = list.slice((page - 1) * LIST_PAGE_SIZE, page * LIST_PAGE_SIZE);
+  const pagerHTML = pages > 1 ? `<div class="list-pager">
+      <button type="button" class="btn-mini pager-prev" data-kind="${kind}" ${page <= 1 ? "disabled" : ""}>‹ 上一頁</button>
+      <span class="pager-info">第 ${page}／${pages} 頁（共 ${list.length} 筆）</span>
+      <button type="button" class="btn-mini pager-next" data-kind="${kind}" ${page >= pages ? "disabled" : ""}>下一頁 ›</button>
+    </div>` : "";
+  return { shown, pagerHTML };
 }
-function bindListMore(el, renderFn){
-  const btn = el.querySelector(".list-more-btn");
-  if(!btn) return;
-  btn.addEventListener("click", ()=>{
-    listShowAll[btn.dataset.kind] = !listShowAll[btn.dataset.kind];
+function bindPager(el, kind, renderFn){
+  el.querySelectorAll(".pager-prev, .pager-next").forEach(b => b.addEventListener("click", ()=>{
+    listPage[kind] += b.classList.contains("pager-next") ? 1 : -1;
     renderFn();
-  });
+    el.scrollTop = 0;   // 換頁後回到表頭
+  }));
 }
 function initListFilter(kind, dateId, vendorId, clearId, renderFn){
-  document.getElementById(dateId).addEventListener("change", e=>{ listFilter[kind].date = e.target.value; renderFn(); });
-  document.getElementById(vendorId).addEventListener("change", e=>{ listFilter[kind].vendor = e.target.value; renderFn(); });
+  document.getElementById(dateId).addEventListener("change", e=>{ listFilter[kind].date = e.target.value; listPage[kind] = 1; renderFn(); });
+  document.getElementById(vendorId).addEventListener("change", e=>{ listFilter[kind].vendor = e.target.value; listPage[kind] = 1; renderFn(); });
   document.getElementById(clearId).addEventListener("click", ()=>{
     listFilter[kind] = { date: "", vendor: "" };
+    listPage[kind] = 1;
     document.getElementById(dateId).value = "";
     document.getElementById(vendorId).value = "";
     renderFn();
@@ -1008,7 +1012,7 @@ function renderLaborList(){
   if(!all.length){ el.innerHTML = '<div class="empty-row">目前工地尚無點工紀錄</div>'; document.getElementById("laborListCount").textContent = ""; return; }
   const list = applyListFilter("labor", all, "laborListVendor", "laborListCount");
   if(!list.length){ el.innerHTML = '<div class="empty-row">此篩選條件內沒有點工紀錄，請調整日期／廠商</div>'; return; }
-  const { shown, moreHTML } = truncateList("labor", list);
+  const { shown, pagerHTML } = paginate("labor", list);
   el.innerHTML = `<table><thead><tr>
     <th>狀態</th><th>出工日期</th><th>分包商</th><th>申請人</th><th>需求工數</th><th>簽單實際出工數</th><th>差異</th>
     <th>加班時數</th><th>簽單繳回日</th><th>簽單責任工程師</th><th>現場查核回饋</th><th>操作</th>
@@ -1037,12 +1041,12 @@ function renderLaborList(){
         </td>
       </tr>`;
     }).join("")}
-  </tbody></table>${moreHTML}`;
+  </tbody></table>${pagerHTML}`;
 
   el.querySelectorAll(".btn-edit").forEach(btn=>btn.addEventListener("click", ()=>loadLaborApplyRecord(btn.dataset.id)));
   el.querySelectorAll(".btn-report").forEach(btn=>btn.addEventListener("click", ()=>loadLaborReportRecord(btn.dataset.id)));
   el.querySelectorAll(".btn-del").forEach(btn=>btn.addEventListener("click", ()=>deleteLaborRecord(btn.dataset.id)));
-  bindListMore(el, renderLaborList);
+  bindPager(el, "labor", renderLaborList);
 }
 
 /* ==========================================================
@@ -1425,7 +1429,7 @@ function renderEquipList(){
   if(!all.length){ el.innerHTML = '<div class="empty-row">目前工地尚無機具紀錄</div>'; document.getElementById("equipListCount").textContent = ""; return; }
   const list = applyListFilter("equipment", all, "equipListVendor", "equipListCount");
   if(!list.length){ el.innerHTML = '<div class="empty-row">此篩選條件內沒有機具紀錄，請調整日期／廠商</div>'; return; }
-  const { shown, moreHTML } = truncateList("equipment", list);
+  const { shown, pagerHTML } = paginate("equipment", list);
   el.innerHTML = `<table><thead><tr>
     <th>狀態</th><th>日期</th><th>廠商</th><th>申請人</th><th>類型</th><th>型號</th><th>需求數量</th><th>機具實際工作使用時數</th><th>差異</th>
     <th>簽單繳回日</th><th>簽單責任工程師</th><th>操作</th>
@@ -1453,12 +1457,12 @@ function renderEquipList(){
         </td>
       </tr>`;
     }).join("")}
-  </tbody></table>${moreHTML}`;
+  </tbody></table>${pagerHTML}`;
 
   el.querySelectorAll(".btn-edit").forEach(btn=>btn.addEventListener("click", ()=>loadEquipApplyRecord(btn.dataset.id)));
   el.querySelectorAll(".btn-report").forEach(btn=>btn.addEventListener("click", ()=>loadEquipReportRecord(btn.dataset.id)));
   el.querySelectorAll(".btn-del").forEach(btn=>btn.addEventListener("click", ()=>deleteEquipRecord(btn.dataset.id)));
-  bindListMore(el, renderEquipList);
+  bindPager(el, "equipment", renderEquipList);
 }
 
 /* ==========================================================
@@ -2353,8 +2357,9 @@ function renderAuditLog(){
   const el = document.getElementById("auditLogList");
   const entries = auditLogEntries();
   if(!entries.length){ el.innerHTML = '<div class="empty-row">此條件內尚無稽核紀錄</div>'; return; }
+  const { shown, pagerHTML } = paginate("auditlog", entries);
   el.innerHTML = `<table><thead><tr><th>稽核日期</th><th>類型</th><th>出工日期</th><th>廠商</th><th>申請</th><th>實點</th><th>差異</th><th>查核結果</th><th>稽核人</th><th>操作</th></tr></thead><tbody>` +
-    entries.map(e=>{
+    shown.map(e=>{
       const bad = e.a.items.filter(i=>!i.ok).length;
       const resTag = bad ? `<span class="tag warn">${bad} 項不符</span>` : `<span class="tag ok">全數相符</span>`;
       const ids = `data-kind="${e.kind}" data-rid="${esc(e.rec.id)}" data-aid="${esc(e.a.id)}"`;
@@ -2374,7 +2379,7 @@ function renderAuditLog(){
           <button type="button" class="btn-mini btn-del audit-del" ${ids}>刪除</button>
         </td>
       </tr>`;
-    }).join("") + "</tbody></table>";
+    }).join("") + "</tbody></table>" + pagerHTML;
 }
 
 async function deleteAudit(kind, rid, aid){
@@ -2574,6 +2579,12 @@ function initAudit(){
     if(auditItemState[i]) auditItemState[i].reason = e.target.value;
   });
   document.getElementById("auditLogList").addEventListener("click", e=>{
+    const pg = e.target.closest(".pager-prev, .pager-next");   // v15.2：稽核紀錄分頁（委派）
+    if(pg){
+      listPage.auditlog += pg.classList.contains("pager-next") ? 1 : -1;
+      renderAuditLog();
+      return;
+    }
     const ed = e.target.closest(".audit-edit");
     if(ed){ editAudit(ed.dataset.kind, ed.dataset.rid, ed.dataset.aid); return; }
     const pdf = e.target.closest(".audit-one-pdf");
@@ -2590,6 +2601,7 @@ function initAudit(){
   const logSync = ()=>{
     auditLogFrom = document.getElementById("auditLogFrom").value || "";
     auditLogTo = document.getElementById("auditLogTo").value || "";
+    listPage.auditlog = 1;   // v15.2：改篩選回第 1 頁
     renderAuditLog();
   };
   document.getElementById("auditLogFrom").addEventListener("change", logSync);

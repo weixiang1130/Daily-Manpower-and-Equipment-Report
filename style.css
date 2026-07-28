@@ -371,10 +371,10 @@ tr.current-site-row td{background:#f4faf8;}
 textarea[readonly]{background:#f1f5f4;color:var(--ink-400);cursor:not-allowed;}
 
 /* ---------- Tables / Lists ---------- */
-.table-wrap{overflow-x:auto;}
+.table-wrap{overflow:auto;max-height:72vh;}   /* v15.2：垂直滾動移入容器內，th 的 sticky 表頭才會生效 */
 table{width:100%;border-collapse:collapse;font-size:13.5px;}
 th,td{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;}
-th{background:var(--teal-100);color:var(--teal-800);font-weight:700;position:sticky;top:0;}
+th{background:var(--teal-100);color:var(--teal-800);font-weight:700;position:sticky;top:0;z-index:2;}
 tr:hover td{background:#fafdfc;}
 tr.clickable{cursor:pointer;}
 tr.clickable:hover td{background:var(--teal-100);}
@@ -534,3 +534,8 @@ a.att-cell{text-decoration:none;}
 
 /* ---------- 清單截斷（v15.1） ---------- */
 .list-more{text-align:center;padding:12px 0 4px;}
+
+/* ---------- 清單分頁（v15.2，取代 v15.1 list-more） ---------- */
+.list-pager{display:flex;align-items:center;justify-content:center;gap:14px;padding:12px 0 4px;position:sticky;left:0;}
+.list-pager .pager-info{font-size:13px;color:#5f6f6e;}
+.list-pager button[disabled]{opacity:.4;cursor:default;}

@@ -293,7 +293,7 @@ const listFilter = {
 };
 /* v15.2：清單分頁（每頁 20 筆，取代 v15.1「顯示全部」展開——展開後仍是長頁面）。
    套用：點工清單、機具清單、稽核紀錄清單；篩選/切站自動回第 1 頁 */
-const LIST_PAGE_SIZE = 20;
+const LIST_PAGE_SIZE = 10;   // v15.3：每頁 10 筆，配合放寬版面讓一頁清單盡量落在單一畫面內
 const listPage = { labor: 1, equipment: 1, auditlog: 1 };
 function resetListFilters(){
   listFilter.labor = { date: "", vendor: "" };

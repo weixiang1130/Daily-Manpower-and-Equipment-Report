@@ -81,6 +81,7 @@
 { "op":"addOption", "site":"工地A", "pool":"vendors", "value":"新選項" }
 ```
 - `pool` 白名單：`vendors | locations | categories | equipTypes | people | workers | laborTypes`（**本行是白名單的正準定義**；api.mjs／server.mjs／SQL 交付包中的複本以此為準，增減池別先改這裡）
+- **v15.1**：`pool="people"` 時 `value` 僅接受**單一人名**——含分隔符（`+ ＋ / ／ \ 、 , ， ; ； : ： 空白`）回 `400 { "error":"person name must be a single name" }`（回報覆核限一位工程師代表，名單源頭即堵住多人並列）
 - 後端 **read-merge-write**：讀該站 config → 值不存在才 push → 寫回（兩人同時新增不互蓋）
 - 成功回 `{ "ok":true, "pool":[...合併後完整清單...] }`（前端會以此覆蓋本地快取）
 

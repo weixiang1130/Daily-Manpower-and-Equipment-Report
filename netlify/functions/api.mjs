@@ -192,10 +192,14 @@ export default async (req) => {
         const POOLS = ["vendors","locations","categories","equipTypes","people","workers","laborTypes"];
         if(!body.site || !POOLS.includes(body.pool) || !body.value || typeof body.value !== "string")
           return json({ error: "site/pool/value required" }, 400);
+        const val = body.value.trim();
+        /* v15.1：人員池僅接受單一人名（前端已擋，伺服器端為第二道防線，
+           防以「/」等分隔符把多人並列塞進名單規避回報單人限制） */
+        if(body.pool === "people" && /[+＋/／\\、,，;；:：\s]/.test(val))
+          return json({ error: "person name must be a single name" }, 400);
         const ck = cfgKey(body.site);
         const cfg = (await s.get(ck, { type: "json" })) || {};
         if(!Array.isArray(cfg[body.pool])) cfg[body.pool] = [];
-        const val = body.value.trim();
         if(val && !cfg[body.pool].includes(val)){
           cfg[body.pool].push(val);
           await s.setJSON(ck, cfg);

@@ -531,3 +531,6 @@ a.att-cell{text-decoration:none;}
 .panel.collapsible.collapsed > .panel-head::after{content:"▼ 展開填寫";color:var(--teal-700);border-color:var(--teal-500);}
 .panel.collapsible.collapsed > .panel-head .hint{display:none;}
 .panel.collapsible.collapsed > *:not(.panel-head){display:none;}
+
+/* ---------- 清單截斷（v15.1） ---------- */
+.list-more{text-align:center;padding:12px 0 4px;}

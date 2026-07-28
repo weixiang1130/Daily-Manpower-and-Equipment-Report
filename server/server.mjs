@@ -222,10 +222,13 @@ async function handleApi(req, res, body, query){
         const POOLS = ["vendors","locations","categories","equipTypes","people","workers","laborTypes"];
         if(!data.site || !POOLS.includes(data.pool) || !data.value || typeof data.value !== "string")
           return sendJson(res, { error: "site/pool/value required" }, 400);
+        const val = data.value.trim();
+        /* v15.1：人員池僅接受單一人名（與 Netlify 版同規則） */
+        if(data.pool === "people" && /[+＋/／\\、,，;；:：\s]/.test(val))
+          return sendJson(res, { error: "person name must be a single name" }, 400);
         const ck = cfgKey(data.site);
         const cfg = (await kvGet(ck)) || {};
         if(!Array.isArray(cfg[data.pool])) cfg[data.pool] = [];
-        const val = data.value.trim();
         if(val && !cfg[data.pool].includes(val)){
           cfg[data.pool].push(val);
           await kvSet(ck, cfg);

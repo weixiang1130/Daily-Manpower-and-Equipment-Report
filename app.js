@@ -291,11 +291,36 @@ const listFilter = {
   labor: { date: "", vendor: "" },
   equipment: { date: "", vendor: "" }
 };
+/* v15.1：清單預設只列最近 N 筆（新到舊排序的前 N），歷史查閱走「顯示全部」或歷程報表 */
+const LIST_PREVIEW = 20;
+const listShowAll = { labor: false, equipment: false };
 function resetListFilters(){
   listFilter.labor = { date: "", vendor: "" };
   listFilter.equipment = { date: "", vendor: "" };
+  listShowAll.labor = false;
+  listShowAll.equipment = false;
   ["laborListDate","equipListDate"].forEach(id=>{ const el = document.getElementById(id); if(el) el.value = ""; });
   ["laborListVendor","equipListVendor"].forEach(id=>{ const el = document.getElementById(id); if(el) el.value = ""; });
+}
+/* 截斷清單並產生「顯示全部/收回」按鈕 HTML；renderFn 完成 innerHTML 後呼叫 bindListMore 綁定 */
+function truncateList(kind, list){
+  if(listShowAll[kind] || list.length <= LIST_PREVIEW){
+    const btn = (listShowAll[kind] && list.length > LIST_PREVIEW)
+      ? `<div class="list-more"><button type="button" class="btn-secondary btn-sm list-more-btn" data-kind="${kind}">收回，只顯示最近 ${LIST_PREVIEW} 筆</button></div>` : "";
+    return { shown: list, moreHTML: btn };
+  }
+  return {
+    shown: list.slice(0, LIST_PREVIEW),
+    moreHTML: `<div class="list-more"><button type="button" class="btn-secondary btn-sm list-more-btn" data-kind="${kind}">顯示全部 ${list.length} 筆（目前僅列最近 ${LIST_PREVIEW} 筆）</button></div>`
+  };
+}
+function bindListMore(el, renderFn){
+  const btn = el.querySelector(".list-more-btn");
+  if(!btn) return;
+  btn.addEventListener("click", ()=>{
+    listShowAll[btn.dataset.kind] = !listShowAll[btn.dataset.kind];
+    renderFn();
+  });
 }
 function initListFilter(kind, dateId, vendorId, clearId, renderFn){
   document.getElementById(dateId).addEventListener("change", e=>{ listFilter[kind].date = e.target.value; renderFn(); });
@@ -446,7 +471,15 @@ function initCombobox(rootId, pool, placeholder, opts={}){
   });
 }
 
+/* 單一人名規則（v15.1）：人員池選項不得含任何多人並列分隔符——
+   從「新增選項」源頭堵住「XXX/XXX」進入名單（送出驗證為第二道防線） */
+const MULTI_NAME_RE = /[+＋/／\\、,，;；:：\s]/;
+
 function addPoolOption(pool, v){
+  if(pool === "people" && MULTI_NAME_RE.test(v)){
+    toast("人員名單僅能逐一新增單一人名（請勿以「/」等符號並列多人）");
+    return;
+  }
   const c = cur().config;
   if(!Array.isArray(c[pool])) c[pool] = [];
   if(!c[pool].includes(v)){
@@ -725,7 +758,7 @@ function initLaborReportForm(){
     const engineer = requireCombo("cb_l_engineer", "簽單責任工程師");
     if(engineer === null) return;
     // v15：回報覆核僅限一位工程師代表（申請可多人，回報統計要能歸到個人）
-    if(/[+＋/／、,，;；\s]/.test(engineer)){
+    if(MULTI_NAME_RE.test(engineer)){
       toast("簽單責任工程師僅限一位代表，請勿多人並列（申請可多人、回報限一人）");
       return;
     }
@@ -975,11 +1008,12 @@ function renderLaborList(){
   if(!all.length){ el.innerHTML = '<div class="empty-row">目前工地尚無點工紀錄</div>'; document.getElementById("laborListCount").textContent = ""; return; }
   const list = applyListFilter("labor", all, "laborListVendor", "laborListCount");
   if(!list.length){ el.innerHTML = '<div class="empty-row">此篩選條件內沒有點工紀錄，請調整日期／廠商</div>'; return; }
+  const { shown, moreHTML } = truncateList("labor", list);
   el.innerHTML = `<table><thead><tr>
     <th>狀態</th><th>出工日期</th><th>分包商</th><th>申請人</th><th>需求工數</th><th>簽單實際出工數</th><th>差異</th>
     <th>加班時數</th><th>簽單繳回日</th><th>簽單責任工程師</th><th>現場查核回饋</th><th>操作</th>
   </tr></thead><tbody>
-    ${list.map(r=>{
+    ${shown.map(r=>{
       const rep = r.report;
       const reported = r.status==="已回報" && rep;
       const statusTag = reported
@@ -1003,11 +1037,12 @@ function renderLaborList(){
         </td>
       </tr>`;
     }).join("")}
-  </tbody></table>`;
+  </tbody></table>${moreHTML}`;
 
   el.querySelectorAll(".btn-edit").forEach(btn=>btn.addEventListener("click", ()=>loadLaborApplyRecord(btn.dataset.id)));
   el.querySelectorAll(".btn-report").forEach(btn=>btn.addEventListener("click", ()=>loadLaborReportRecord(btn.dataset.id)));
   el.querySelectorAll(".btn-del").forEach(btn=>btn.addEventListener("click", ()=>deleteLaborRecord(btn.dataset.id)));
+  bindListMore(el, renderLaborList);
 }
 
 /* ==========================================================
@@ -1184,7 +1219,7 @@ function initEquipReportForm(){
     const checker = requireCombo("cb_e_checker", "簽單責任工程師");
     if(checker === null) return;
     // v15：回報覆核僅限一位工程師代表
-    if(/[+＋/／、,，;；\s]/.test(checker)){
+    if(MULTI_NAME_RE.test(checker)){
       toast("簽單責任工程師僅限一位代表，請勿多人並列（申請可多人、回報限一人）");
       return;
     }
@@ -1390,11 +1425,12 @@ function renderEquipList(){
   if(!all.length){ el.innerHTML = '<div class="empty-row">目前工地尚無機具紀錄</div>'; document.getElementById("equipListCount").textContent = ""; return; }
   const list = applyListFilter("equipment", all, "equipListVendor", "equipListCount");
   if(!list.length){ el.innerHTML = '<div class="empty-row">此篩選條件內沒有機具紀錄，請調整日期／廠商</div>'; return; }
+  const { shown, moreHTML } = truncateList("equipment", list);
   el.innerHTML = `<table><thead><tr>
     <th>狀態</th><th>日期</th><th>廠商</th><th>申請人</th><th>類型</th><th>型號</th><th>需求數量</th><th>機具實際工作使用時數</th><th>差異</th>
     <th>簽單繳回日</th><th>簽單責任工程師</th><th>操作</th>
   </tr></thead><tbody>
-    ${list.map(x=>{
+    ${shown.map(x=>{
       const rep = x.report;
       const reported = x.status==="已回報" && rep;
       const statusTag = reported
@@ -1417,11 +1453,12 @@ function renderEquipList(){
         </td>
       </tr>`;
     }).join("")}
-  </tbody></table>`;
+  </tbody></table>${moreHTML}`;
 
   el.querySelectorAll(".btn-edit").forEach(btn=>btn.addEventListener("click", ()=>loadEquipApplyRecord(btn.dataset.id)));
   el.querySelectorAll(".btn-report").forEach(btn=>btn.addEventListener("click", ()=>loadEquipReportRecord(btn.dataset.id)));
   el.querySelectorAll(".btn-del").forEach(btn=>btn.addEventListener("click", ()=>deleteEquipRecord(btn.dataset.id)));
+  bindListMore(el, renderEquipList);
 }
 
 /* ==========================================================
@@ -2640,6 +2677,14 @@ function initSettings(){
     if(!isAdmin()){ toast("僅限管理員操作"); return; }
     const siteLines = document.getElementById("cfg_sites").value.split("\n").map(s=>s.trim()).filter(Boolean);
     if(siteLines.length) MASTER.sites = Array.from(new Set(siteLines));
+
+    // v15.1：人員名單批次貼上也須逐行單一人名（與「新增選項」同一規則）
+    const peopleLines = document.getElementById("cfg_people").value.split("\n").map(s=>s.trim()).filter(Boolean);
+    const badNames = peopleLines.filter(p=>MULTI_NAME_RE.test(p));
+    if(badNames.length){
+      toast(`人員名單每行僅限一位人名，請修正後再儲存：${badNames.slice(0,3).join("、")}${badNames.length>3?"…":""}`);
+      return;
+    }
 
     const c = cur().config;
     Object.entries(SITE_CFG_MAP).forEach(([id,key])=>{

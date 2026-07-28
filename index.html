@@ -100,7 +100,7 @@
 
     <!-- ---- 申請（父層） ---- -->
     <div id="sub-labor-apply" class="sub-panel active">
-      <div class="panel highlight">
+      <div class="panel highlight collapsible collapsed" id="laborApplyPanel">
         <div class="panel-head">
           <h2 id="laborApplyTitle">新增點工申請</h2>
           <span class="site-chip" data-site-chip></span>
@@ -154,7 +154,7 @@
 
     <!-- ---- 回報覆核（子層） ---- -->
     <div id="sub-labor-report" class="sub-panel">
-      <div class="panel highlight">
+      <div class="panel highlight collapsible collapsed" id="laborReportPanel">
         <div class="panel-head">
           <h2>出工回報覆核</h2>
           <span class="site-chip" data-site-chip></span>
@@ -242,6 +242,13 @@
 
     <div class="panel">
       <div class="panel-head"><h2>點工清單（目前工地）</h2></div>
+      <div class="report-filter">
+        <label>篩選</label>
+        <input type="date" id="laborListDate">
+        <select id="laborListVendor" class="report-select"><option value="">全部廠商</option></select>
+        <button type="button" id="laborListClear" class="btn-mini">清除</button>
+        <span id="laborListCount" class="report-count"></span>
+      </div>
       <div id="laborList" class="table-wrap"></div>
     </div>
   </section>
@@ -255,7 +262,7 @@
 
     <!-- ---- 申請 ---- -->
     <div id="sub-equip-apply" class="sub-panel active">
-      <div class="panel highlight">
+      <div class="panel highlight collapsible collapsed" id="equipApplyPanel">
         <div class="panel-head">
           <h2 id="equipApplyTitle">新增機具申請</h2>
           <span class="site-chip" data-site-chip></span>
@@ -328,7 +335,7 @@
 
     <!-- ---- 回報 ---- -->
     <div id="sub-equip-report" class="sub-panel">
-      <div class="panel highlight">
+      <div class="panel highlight collapsible collapsed" id="equipReportPanel">
         <div class="panel-head">
           <h2>機具回報覆核</h2>
           <span class="site-chip" data-site-chip></span>
@@ -390,6 +397,13 @@
 
     <div class="panel">
       <div class="panel-head"><h2>機具清單（目前工地）</h2></div>
+      <div class="report-filter">
+        <label>篩選</label>
+        <input type="date" id="equipListDate">
+        <select id="equipListVendor" class="report-select"><option value="">全部廠商</option></select>
+        <button type="button" id="equipListClear" class="btn-mini">清除</button>
+        <span id="equipListCount" class="report-count"></span>
+      </div>
       <div id="equipList" class="table-wrap"></div>
     </div>
   </section>
@@ -418,6 +432,7 @@
         <label>條件篩選</label>
         <select id="reportVendor" class="report-select"><option value="">全部廠商</option></select>
         <select id="reportCat" class="report-select"><option value="">全部工作內容</option></select>
+        <select id="reportEngineer" class="report-select"><option value="">全部簽單責任工程師</option></select>
       </div>
       <div class="report-actions">
         <button id="exportBtn" class="btn-secondary">匯出明細 CSV</button>

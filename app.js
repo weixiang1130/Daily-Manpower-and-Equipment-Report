@@ -261,6 +261,7 @@ function switchSiteContext(site, silent){
   resetEquipReportForm();
   resetAuditView();
   auditVendor = "";
+  resetListFilters();   // v15：清單篩選屬於單一工地的檢視狀態，切站即重置
   renderAll();
   if(!silent) toast(`已切換至：${site}`);
   refreshData(true);
@@ -269,6 +270,56 @@ function renderSiteChips(){
   document.querySelectorAll("[data-site-chip]").forEach(el=>{
     el.textContent = "📍 " + (MASTER.currentSite || "");
   });
+}
+
+/* ---------------- 收合式表單面板（v15：表單太長回饋） ----------------
+   四個申請/回報表單預設收合只留標題列；點標題展開/收回，
+   「編輯申請/填寫回報」自動展開、送出或取消後自動收回 */
+function expandPanel(id){ const p = document.getElementById(id); if(p) p.classList.remove("collapsed"); }
+function collapsePanel(id){ const p = document.getElementById(id); if(p) p.classList.add("collapsed"); }
+function initCollapsibles(){
+  document.querySelectorAll(".panel.collapsible > .panel-head").forEach(head=>{
+    head.addEventListener("click", e=>{
+      if(e.target.closest("button, a, input, select, textarea")) return;   // 不攔表單元件
+      head.parentElement.classList.toggle("collapsed");
+    });
+  });
+}
+
+/* ---------------- 清單篩選（v15：依日期/廠商找要覆核的單） ---------------- */
+const listFilter = {
+  labor: { date: "", vendor: "" },
+  equipment: { date: "", vendor: "" }
+};
+function resetListFilters(){
+  listFilter.labor = { date: "", vendor: "" };
+  listFilter.equipment = { date: "", vendor: "" };
+  ["laborListDate","equipListDate"].forEach(id=>{ const el = document.getElementById(id); if(el) el.value = ""; });
+  ["laborListVendor","equipListVendor"].forEach(id=>{ const el = document.getElementById(id); if(el) el.value = ""; });
+}
+function initListFilter(kind, dateId, vendorId, clearId, renderFn){
+  document.getElementById(dateId).addEventListener("change", e=>{ listFilter[kind].date = e.target.value; renderFn(); });
+  document.getElementById(vendorId).addEventListener("change", e=>{ listFilter[kind].vendor = e.target.value; renderFn(); });
+  document.getElementById(clearId).addEventListener("click", ()=>{
+    listFilter[kind] = { date: "", vendor: "" };
+    document.getElementById(dateId).value = "";
+    document.getElementById(vendorId).value = "";
+    renderFn();
+  });
+}
+/* 廠商下拉選項由該類紀錄實際值彙集；回傳套用篩選後的清單與計數文字 */
+function applyListFilter(kind, all, vendorSelId, countId){
+  const f = listFilter[kind];
+  const vendors = [...new Set(all.map(r=>r.vendor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
+  const sel = document.getElementById(vendorSelId);
+  if(sel){
+    sel.innerHTML = `<option value="">全部廠商</option>` + vendors.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join("");
+    if(vendors.includes(f.vendor)) sel.value = f.vendor; else { f.vendor = ""; sel.value = ""; }
+  }
+  const list = all.filter(r=>(!f.date || r.date===f.date) && (!f.vendor || r.vendor===f.vendor));
+  const cnt = document.getElementById(countId);
+  if(cnt) cnt.textContent = (f.date || f.vendor) ? `符合 ${list.length}／共 ${all.length} 筆` : `共 ${all.length} 筆`;
+  return list;
 }
 
 /* ---------------- Top-level / Sub Tabs ---------------- */
@@ -573,6 +624,7 @@ function initLaborApplyForm(){
     }
     attFinalize(laborAtt);   // 儲存成功後才真正刪除被移除的附件
     resetLaborApplyForm();
+    collapsePanel("laborApplyPanel");   // v15：送出後收回表單，清單一目了然
     renderDashboard();
   });
 
@@ -617,6 +669,7 @@ async function loadLaborApplyRecord(id){
   document.getElementById("laborApplySubmitBtn").textContent = "儲存變更";
   document.getElementById("laborApplyNewBtn").style.display = "";
 
+  expandPanel("laborApplyPanel");
   switchSubTab("tab-labor", "labor-apply");
   document.getElementById("tab-labor").scrollIntoView({behavior:"smooth", block:"start"});
 }
@@ -637,7 +690,10 @@ function setNumField(id, v){
 }
 
 function initLaborReportForm(){
-  document.getElementById("laborReportCancelBtn").addEventListener("click", resetLaborReportForm);
+  document.getElementById("laborReportCancelBtn").addEventListener("click", ()=>{
+    resetLaborReportForm();
+    collapsePanel("laborReportPanel");   // v15：取消後收回表單
+  });
   document.getElementById("l_actual").addEventListener("input", updateLaborDiff);
   document.getElementById("l_zeroWork").addEventListener("change", onZeroWorkToggle);
 
@@ -668,6 +724,11 @@ function initLaborReportForm(){
 
     const engineer = requireCombo("cb_l_engineer", "簽單責任工程師");
     if(engineer === null) return;
+    // v15：回報覆核僅限一位工程師代表（申請可多人，回報統計要能歸到個人）
+    if(/[+＋/／、,，;；\s]/.test(engineer)){
+      toast("簽單責任工程師僅限一位代表，請勿多人並列（申請可多人、回報限一人）");
+      return;
+    }
     if(engineer === rec.applicant){
       toast("⚠ 簽單責任工程師與申請人相同，建議由不同人員回報以維持查核獨立性");
     }
@@ -737,6 +798,7 @@ function initLaborReportForm(){
     store.labor[idx] = updated;
     toast(zeroWork ? "已以 0 工寫入共用資料庫" : "回報已儲存至共用資料庫");
     resetLaborReportForm();
+    collapsePanel("laborReportPanel");   // v15：送出後收回表單
     renderDashboard();
   });
 
@@ -876,6 +938,7 @@ async function loadLaborReportRecord(id){
   document.getElementById("l_conclusion").value = rep.conclusion || "";
   document.getElementById("laborReportSubmitBtn").disabled = false;
 
+  expandPanel("laborReportPanel");
   switchSubTab("tab-labor", "labor-report");
   document.getElementById("tab-labor").scrollIntoView({behavior:"smooth", block:"start"});
 }
@@ -907,9 +970,11 @@ async function deleteLaborRecord(id){
 }
 
 function renderLaborList(){
-  const list = cur().labor;
+  const all = cur().labor;
   const el = document.getElementById("laborList");
-  if(!list.length){ el.innerHTML = '<div class="empty-row">目前工地尚無點工紀錄</div>'; return; }
+  if(!all.length){ el.innerHTML = '<div class="empty-row">目前工地尚無點工紀錄</div>'; document.getElementById("laborListCount").textContent = ""; return; }
+  const list = applyListFilter("labor", all, "laborListVendor", "laborListCount");
+  if(!list.length){ el.innerHTML = '<div class="empty-row">此篩選條件內沒有點工紀錄，請調整日期／廠商</div>'; return; }
   el.innerHTML = `<table><thead><tr>
     <th>狀態</th><th>出工日期</th><th>分包商</th><th>申請人</th><th>需求工數</th><th>簽單實際出工數</th><th>差異</th>
     <th>加班時數</th><th>簽單繳回日</th><th>簽單責任工程師</th><th>現場查核回饋</th><th>操作</th>
@@ -1025,6 +1090,7 @@ function initEquipApplyForm(){
     }
     attFinalize(equipAtt);   // 儲存成功後才真正刪除被移除的附件
     resetEquipApplyForm();
+    collapsePanel("equipApplyPanel");   // v15：送出後收回表單
     renderDashboard();
   });
 
@@ -1071,6 +1137,7 @@ async function loadEquipApplyRecord(id){
   document.getElementById("equipApplySubmitBtn").textContent = "儲存變更";
   document.getElementById("equipApplyNewBtn").style.display = "";
 
+  expandPanel("equipApplyPanel");
   switchSubTab("tab-equipment", "equip-apply");
   document.getElementById("tab-equipment").scrollIntoView({behavior:"smooth", block:"start"});
 }
@@ -1083,7 +1150,10 @@ let usageState = [];
 
 function initEquipReportForm(){
   document.getElementById("e_actualHours").addEventListener("input", updateEquipDiff);
-  document.getElementById("equipReportCancelBtn").addEventListener("click", resetEquipReportForm);
+  document.getElementById("equipReportCancelBtn").addEventListener("click", ()=>{
+    resetEquipReportForm();
+    collapsePanel("equipReportPanel");   // v15：取消後收回表單
+  });
   document.getElementById("e_zeroUse").addEventListener("change", onZeroUseToggle);
 
   const usageBox = document.getElementById("e_usage");
@@ -1113,6 +1183,11 @@ function initEquipReportForm(){
 
     const checker = requireCombo("cb_e_checker", "簽單責任工程師");
     if(checker === null) return;
+    // v15：回報覆核僅限一位工程師代表
+    if(/[+＋/／、,，;；\s]/.test(checker)){
+      toast("簽單責任工程師僅限一位代表，請勿多人並列（申請可多人、回報限一人）");
+      return;
+    }
     if(checker === rec.applicant){
       toast("⚠ 簽單責任工程師與申請人相同，建議由不同人員回報以維持查核獨立性");
     }
@@ -1173,6 +1248,7 @@ function initEquipReportForm(){
     store.equipment[idx] = updated;
     toast(zeroUse ? "已以 0 時數寫入共用資料庫" : "回報已儲存至共用資料庫");
     resetEquipReportForm();
+    collapsePanel("equipReportPanel");   // v15：送出後收回表單
     renderDashboard();
   });
 
@@ -1277,6 +1353,7 @@ async function loadEquipReportRecord(id){
   document.getElementById("e_vendorNote").value = rep.vendorDoneNote || rep.vendorDone || "";
   document.getElementById("equipReportSubmitBtn").disabled = false;
 
+  expandPanel("equipReportPanel");
   switchSubTab("tab-equipment", "equip-report");
   document.getElementById("tab-equipment").scrollIntoView({behavior:"smooth", block:"start"});
 }
@@ -1308,9 +1385,11 @@ async function deleteEquipRecord(id){
 }
 
 function renderEquipList(){
-  const list = cur().equipment;
+  const all = cur().equipment;
   const el = document.getElementById("equipList");
-  if(!list.length){ el.innerHTML = '<div class="empty-row">目前工地尚無機具紀錄</div>'; return; }
+  if(!all.length){ el.innerHTML = '<div class="empty-row">目前工地尚無機具紀錄</div>'; document.getElementById("equipListCount").textContent = ""; return; }
+  const list = applyListFilter("equipment", all, "equipListVendor", "equipListCount");
+  if(!list.length){ el.innerHTML = '<div class="empty-row">此篩選條件內沒有機具紀錄，請調整日期／廠商</div>'; return; }
   el.innerHTML = `<table><thead><tr>
     <th>狀態</th><th>日期</th><th>廠商</th><th>申請人</th><th>類型</th><th>型號</th><th>需求數量</th><th>機具實際工作使用時數</th><th>差異</th>
     <th>簽單繳回日</th><th>簽單責任工程師</th><th>操作</th>
@@ -1452,9 +1531,16 @@ function renderSiteBreakdown(){
    ========================================================== */
 let currentReport = "labor";
 let reportFrom = "", reportTo = "";
-let reportVendor = "", reportCat = "";
+let reportVendor = "", reportCat = "", reportEngineer = "";
 
 function matchReportVendor(r){ return !reportVendor || r.vendor === reportVendor; }
+/* v15：依簽單責任工程師篩選（labor=rep.engineer；equip=rep.checker）——
+   回報限一人代表後，選定工程師即可統計他經手叫了多少工 */
+function matchReportEngineer(r, kind){
+  if(!reportEngineer) return true;
+  const rep = r.report || {};
+  return (kind === "labor" ? rep.engineer : rep.checker) === reportEngineer;
+}
 function matchReportCat(r, kind){
   if(!reportCat) return true;
   return kind === "labor" ? (r.categories||[]).includes(reportCat) : (r.types||[]).includes(reportCat);
@@ -1508,7 +1594,7 @@ const REPORT_DEFS = {
   labor: {
     title:"點工紀錄",
     headers:["出工日期","廠商","需求工數","工作內容","工作地點","申請人","狀態","人臉紀錄","白卡紀錄","工具箱紀錄","簽單繳回日","簽單實際出工數","差異","0工確認","簽單責任工程師","加班時數(前2小時)","加班時數(第3小時起)","加班總時數","出工明細(工種)","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註","現場查核回饋"],
-    records: ()=>cur().labor.filter(r=>inReportRange(r.date) && matchReportVendor(r) && matchReportCat(r,"labor")),
+    records: ()=>cur().labor.filter(r=>inReportRange(r.date) && matchReportVendor(r) && matchReportCat(r,"labor") && matchReportEngineer(r,"labor")),
     rows(){ return this.records().map(r=>{
       const rep = r.report || {};
       const reported = r.status==="已回報" && r.report;
@@ -1530,7 +1616,7 @@ const REPORT_DEFS = {
   equipment: {
     title:"機具紀錄",
     headers:["出工日期","機具廠商","機具類型","型號","工作內容","工作地點","責任廠商","預計使用時數(需求數量)","申請人","狀態","簽單繳回日","機具實際工作使用時數","差異","0使用確認","機具使用明細","簽單責任工程師","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註"],
-    records: ()=>cur().equipment.filter(x=>inReportRange(x.date) && matchReportVendor(x) && matchReportCat(x,"equipment")),
+    records: ()=>cur().equipment.filter(x=>inReportRange(x.date) && matchReportVendor(x) && matchReportCat(x,"equipment") && matchReportEngineer(x,"equipment")),
     rows(){ return this.records().map(x=>{
       const rep = x.report || {};
       const reported = x.status==="已回報" && x.report;
@@ -1606,6 +1692,8 @@ function initReportTabs(){
       currentReport = btn.dataset.r;
       reportCat = "";           // 點工/機具的內容池不同，切換頁籤時重置內容篩選
       document.getElementById("reportCat").value = "";
+      reportEngineer = "";      // 工程師池亦分屬兩類（engineer/checker），一併重置
+      document.getElementById("reportEngineer").value = "";
       renderReport(currentReport);
     });
   });
@@ -1617,6 +1705,10 @@ function initReportTabs(){
   });
   document.getElementById("reportCat").addEventListener("change", e=>{
     reportCat = e.target.value;
+    renderReport(currentReport);
+  });
+  document.getElementById("reportEngineer").addEventListener("change", e=>{
+    reportEngineer = e.target.value;
     renderReport(currentReport);
   });
 
@@ -1644,15 +1736,22 @@ function initReportTabs(){
 function populateReportFilters(key){
   const vendSel = document.getElementById("reportVendor");
   const catSel = document.getElementById("reportCat");
+  const engSel = document.getElementById("reportEngineer");
   const recs = key==="labor" ? cur().labor : cur().equipment;
   const vendors = [...new Set(recs.map(r=>r.vendor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
   const cats = [...new Set(recs.flatMap(r=>(key==="labor" ? r.categories : r.types) || []))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
+  const engineers = [...new Set(recs.map(r=>{
+    const rep = r.report || {};
+    return key==="labor" ? rep.engineer : rep.checker;
+  }).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
   const vendLabel = key==="labor" ? "全部廠商" : "全部機具廠商";
   const catLabel = key==="labor" ? "全部工作內容" : "全部機具類型";
   vendSel.innerHTML = `<option value="">${esc(vendLabel)}</option>` + vendors.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join("");
   catSel.innerHTML = `<option value="">${esc(catLabel)}</option>` + cats.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("");
+  engSel.innerHTML = `<option value="">全部簽單責任工程師</option>` + engineers.map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join("");
   if(vendors.includes(reportVendor)) vendSel.value = reportVendor; else { reportVendor = ""; vendSel.value = ""; }
   if(cats.includes(reportCat)) catSel.value = reportCat; else { reportCat = ""; catSel.value = ""; }
+  if(engineers.includes(reportEngineer)) engSel.value = reportEngineer; else { reportEngineer = ""; engSel.value = ""; }
 }
 
 function renderReport(key){
@@ -1663,7 +1762,7 @@ function renderReport(key){
   const cnt = document.getElementById("reportCount");
   const filterTags = [
     (reportFrom||reportTo) ? `${reportFrom||"起"} ~ ${reportTo||"今"}` : "",
-    reportVendor, reportCat
+    reportVendor, reportCat, reportEngineer
   ].filter(Boolean).join("・");
   if(cnt) cnt.textContent = `共 ${rows.length} 筆` + (filterTags ? `（${filterTags}）` : "");
   const el = document.getElementById("reportTable");
@@ -1715,6 +1814,7 @@ function exportFilterTag(){
   if(reportFrom || reportTo) parts.push(`${reportFrom||"起"}至${reportTo||"今"}`);
   if(reportVendor) parts.push(reportVendor);
   if(reportCat) parts.push(reportCat);
+  if(reportEngineer) parts.push(reportEngineer);
   return parts.length ? "_" + parts.join("_") : "";
 }
 
@@ -2648,6 +2748,9 @@ function renderAll(){
 document.addEventListener("DOMContentLoaded", ()=>{
   initTabs();
   initSubTabs();
+  initCollapsibles();
+  initListFilter("labor", "laborListDate", "laborListVendor", "laborListClear", renderLaborList);
+  initListFilter("equipment", "equipListDate", "equipListVendor", "equipListClear", renderEquipList);
   initTagRemoveHandler();
 
   initCombobox("cb_l_vendor", "vendors", "輸入以搜尋分包商");

@@ -521,3 +521,13 @@ tr.clickable:hover td{background:var(--teal-100);}
 }
 .att-add:hover{border-color:var(--teal-600);color:var(--teal-700);}
 a.att-cell{text-decoration:none;}
+
+/* ---------- 收合式表單面板（v15） ---------- */
+.panel.collapsible > .panel-head{cursor:pointer;user-select:none;position:relative;padding-right:96px;}
+.panel.collapsible > .panel-head::after{
+  content:"▲ 收合";position:absolute;right:0;top:2px;font-size:12.5px;color:#5f6f6e;
+  border:1px solid #c8d4d2;border-radius:999px;padding:3px 12px;background:#fff;
+}
+.panel.collapsible.collapsed > .panel-head::after{content:"▼ 展開填寫";color:var(--teal-700);border-color:var(--teal-500);}
+.panel.collapsible.collapsed > .panel-head .hint{display:none;}
+.panel.collapsible.collapsed > *:not(.panel-head){display:none;}

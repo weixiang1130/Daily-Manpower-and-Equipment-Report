@@ -1,27 +1,57 @@
 :root{
-  --teal-900:#0a2f2c;
-  --teal-800:#0f3e3a;
-  --teal-700:#155e56;
-  --teal-600:#1c7d72;
-  --teal-500:#26a394;
-  --teal-100:#e3f4f1;
-  --amber-500:#e0a94a;
-  --amber-600:#c98f2e;
-  --red-500:#c94b4b;
-  --ink-900:#1c2321;
-  --ink-600:#4c5754;
-  --ink-400:#7c8582;
-  --line:#dbe4e1;
-  --bg:#f4f7f6;
-  --card:#ffffff;
-  --radius:12px;
+  /* ==========================================================
+     根基營造 Kedge Construction 品牌設計 token
+     暖中性底 ＋ 深板岩藍重點色｜尖角｜暖調陰影｜無漸層
+     ========================================================== */
+  --slate-900:#1A2536; --slate-800:#24334A; --slate-700:#2E3F5A;
+  --slate-600:#3A5070; --slate-500:#4A6488; --slate-400:#6A84A4;
+  --slate-300:#94A8C0; --slate-200:#B8C6D6; --slate-100:#D8E0E8; --slate-50:#EDF1F5;
+
+  --bg-canvas:#FAFAF7; --bg-surface-1:#F5F1EC; --bg-surface-2:#EDE8E0;
+  --bg-surface-3:#E3DDD4; --bg-warm-wash:#F0EBE3;
+
+  --fg-primary:#1C1C1C; --fg-secondary:#454540; --fg-tertiary:#76736C;
+  --fg-muted:#A09B93; --fg-faint:#C4BFB6;
+
+  --border-light:#E8E3DB; --border-medium:#D0C9BE; --border-strong:#B0A89C;
+  --border-blueprint:#C4CCD8; --border-architectural:#B0BAC8;
+
+  --color-accent:var(--slate-700); --color-success:#3A6B52;
+  --color-warning:#8B6D2E; --color-error:#8B3A3A;
+
+  --shadow-xs:0 1px 2px rgba(28,28,28,0.03);
+  --shadow-sm:0 1px 4px rgba(28,28,28,0.05);
+  --shadow-md:0 4px 12px rgba(28,28,28,0.06);
+  --shadow-lg:0 8px 24px rgba(28,28,28,0.08);
+  --shadow-xl:0 16px 48px rgba(28,28,28,0.10);
+
+  --duration-normal:200ms;
+  --ease-default:cubic-bezier(0.25,0.1,0.25,1);
+
+  /* ---- 相容映射：既有元件變數 → 品牌 token（不改元件即換色） ---- */
+  --teal-900:var(--slate-900);
+  --teal-800:var(--slate-800);
+  --teal-700:var(--slate-700);
+  --teal-600:var(--slate-600);
+  --teal-500:var(--slate-500);
+  --teal-100:var(--slate-100);
+  --amber-500:#A8842F;
+  --amber-600:var(--color-warning);
+  --red-500:var(--color-error);
+  --ink-900:var(--fg-primary);
+  --ink-600:var(--fg-secondary);
+  --ink-400:var(--fg-muted);
+  --line:var(--border-light);
+  --bg:var(--bg-canvas);
+  --card:#FFFFFF;
+  --radius:4px;              /* 品牌規範：尖角 0–4px */
   font-size:16px;
 }
 
 *{box-sizing:border-box;}
 html,body{margin:0;padding:0;}
 body{
-  font-family:"Noto Sans TC","Segoe UI",Arial,sans-serif;
+  font-family:'DM Sans','Noto Sans TC','Microsoft JhengHei','Segoe UI',Arial,sans-serif;
   background:var(--bg);
   color:var(--ink-900);
   -webkit-tap-highlight-color:transparent;
@@ -34,7 +64,7 @@ body{
   justify-content:space-between;
   gap:12px;
   padding:14px 20px;
-  background:linear-gradient(135deg,var(--teal-800),var(--teal-700));
+  background:var(--slate-800);   /* 品牌規範：無漸層，改用純色深板岩藍 */
   color:#fff;
   position:sticky;
   top:0;
@@ -43,16 +73,16 @@ body{
 }
 .brand{display:flex;align-items:center;gap:12px;}
 .brand-mark{
-  width:38px;height:38px;border-radius:10px;
+  width:38px;height:38px;border-radius:4px;
   background:var(--amber-500);color:var(--teal-900);
   display:flex;align-items:center;justify-content:center;
   font-weight:700;font-size:18px;flex:none;
 }
 .brand-title{font-size:16px;font-weight:700;}
-.brand-sub{font-size:12px;color:#cfe8e3;}
-.site-picker{display:flex;align-items:center;gap:8px;font-size:13px;color:#e6f3f0;}
+.brand-sub{font-size:12px;color:var(--border-blueprint);}
+.site-picker{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--bg-surface-2);}
 .site-picker select{
-  padding:8px 10px;border-radius:8px;border:none;background:#fff;color:var(--ink-900);
+  padding:8px 10px;border-radius:4px;border:none;background:#fff;color:var(--ink-900);
   font-size:14px;min-width:160px;
 }
 
@@ -73,10 +103,10 @@ body{
   padding:10px 16px;
   border:none;
   background:transparent;
-  color:#bcd6d0;
+  color:var(--border-blueprint);
   font-size:14px;
   font-weight:600;
-  border-radius:8px 8px 0 0;
+  border-radius:4px 4px 0 0;
   cursor:pointer;
   white-space:nowrap;
 }
@@ -97,7 +127,7 @@ body{
   margin-bottom:18px;
 }
 .panel.highlight{border-color:var(--teal-500);box-shadow:0 0 0 3px var(--teal-100);}
-.panel.danger-zone{border-color:#f0cccc;background:#fff8f8;}
+.panel.danger-zone{border-color:#DFC4C4;background:#FAF3F3;}
 
 .panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
 .panel-head h2{margin:0 0 4px;font-size:17px;color:var(--teal-800);}
@@ -105,7 +135,7 @@ body{
 
 .list-filter{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-600);font-weight:600;}
 .list-filter select{
-  padding:7px 10px;border-radius:8px;border:1px solid var(--line);
+  padding:7px 10px;border-radius:4px;border:1px solid var(--line);
   font-size:13px;min-width:170px;background:#fff;
 }
 
@@ -135,13 +165,13 @@ body{
 }
 .field{display:flex;flex-direction:column;gap:6px;}
 .field-wide{grid-column:1 / -1;}
-.field label{font-size:13px;font-weight:700;color:var(--ink-700,#33403d);}
+.field label{font-size:13px;font-weight:700;color:var(--ink-700,var(--fg-secondary));}
 
 input[type=text],input[type=number],input[type=date],input[type=time],
 input[type=datetime-local],select,textarea{
   padding:10px 12px;
   border:1px solid var(--line);
-  border-radius:8px;
+  border-radius:4px;
   font-size:15px;
   font-family:inherit;
   color:var(--ink-900);
@@ -152,7 +182,7 @@ textarea{resize:vertical;}
 input:focus,select:focus,textarea:focus{
   outline:none;border-color:var(--teal-500);box-shadow:0 0 0 3px var(--teal-100);
 }
-.readonly-field{background:#f1f5f4;color:var(--ink-600);font-weight:700;}
+.readonly-field{background:var(--bg-surface-1);color:var(--ink-600);font-weight:700;}
 .note-input{margin-top:2px;}
 
 .char-count{font-size:12px;color:var(--ink-400);text-align:right;}
@@ -166,19 +196,19 @@ select option[value="__ADD_NEW__"]{
 .combobox{position:relative;}
 .cb-list{
   position:absolute;left:0;right:0;top:calc(100% + 4px);
-  background:#fff;border:1.5px solid var(--teal-500);border-radius:10px;
+  background:#fff;border:1.5px solid var(--teal-500);border-radius:4px;
   max-height:260px;overflow-y:auto;z-index:40;
-  box-shadow:0 10px 28px rgba(10,47,44,0.16);
+  box-shadow:0 10px 28px rgba(28,28,28,0.10);
 }
 .cb-item{
   padding:10px 14px;font-size:14.5px;cursor:pointer;
-  border-bottom:1px solid #f0f5f4;
+  border-bottom:1px solid var(--bg-surface-2);
 }
 .cb-item:last-child{border-bottom:none;}
 .cb-item:hover{background:var(--teal-100);}
 .cb-item.cb-add{
   color:var(--teal-700);font-weight:700;
-  background:#f7fbfa;border-top:1.5px dashed var(--line);
+  background:var(--bg-surface-1);border-top:1.5px dashed var(--line);
   position:sticky;bottom:0;
 }
 .cb-item.cb-add:hover{background:var(--teal-600);color:#fff;}
@@ -186,8 +216,8 @@ select option[value="__ADD_NEW__"]{
 
 /* ---------- 出工人員覆核（attendance） ---------- */
 .attendance-box{
-  border:1.5px solid var(--line);border-radius:10px;
-  padding:6px 12px;background:#fbfdfc;
+  border:1.5px solid var(--line);border-radius:4px;
+  padding:6px 12px;background:var(--bg-canvas);
 }
 .attendance-box.disabled{opacity:0.45;pointer-events:none;}
 .att-row{
@@ -209,11 +239,11 @@ select option[value="__ADD_NEW__"]{
 .att-fields input{width:84px;padding:7px 8px;text-align:center;font-weight:700;}
 
 /* ---------- 0工確認 ---------- */
-.zero-chip{border-color:#f0cccc;}
+.zero-chip{border-color:#DFC4C4;}
 .zero-chip:has(input:checked){background:var(--red-500);border-color:var(--red-500);}
 
 /* ---------- 目前工地列 ---------- */
-tr.current-site-row td{background:#f4faf8;}
+tr.current-site-row td{background:var(--bg-surface-1);}
 
 /* ---------- Tag picker (dropdown-to-add multi-value fields) ---------- */
 .tag-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;min-height:22px;}
@@ -245,7 +275,7 @@ tr.current-site-row td{background:#f4faf8;}
 .report-context{margin-bottom:16px;}
 .context-box{
   background:var(--teal-100);color:var(--teal-800);
-  padding:12px 14px;border-radius:10px;font-size:14px;font-weight:600;line-height:1.6;
+  padding:12px 14px;border-radius:4px;font-size:14px;font-weight:600;line-height:1.6;
 }
 
 /* ---------- Chips ---------- */
@@ -260,9 +290,9 @@ tr.current-site-row td{background:#f4faf8;}
   background:#fff;
   cursor:pointer;
   font-size:14px;
-  color:var(--ink-700,#33403d);
+  color:var(--ink-700,var(--fg-secondary));
   user-select:none;
-  transition:all .12s ease;
+  transition:all var(--duration-normal) ease;
 }
 .chip input{position:absolute;opacity:0;width:0;height:0;}
 .chip:has(input:checked){
@@ -282,7 +312,7 @@ tr.current-site-row td{background:#f4faf8;}
   border:1.5px solid var(--teal-500);
   background:var(--teal-100);
   color:var(--teal-800);
-  border-radius:10px;
+  border-radius:4px;
   font-size:20px;
   font-weight:700;
   cursor:pointer;
@@ -293,7 +323,7 @@ tr.current-site-row td{background:#f4faf8;}
 .actions{display:flex;gap:10px;flex-wrap:wrap;}
 .btn-primary,.btn-secondary,.btn-ghost,.btn-danger{
   padding:12px 22px;
-  border-radius:10px;
+  border-radius:4px;
   font-size:15px;
   font-weight:700;
   cursor:pointer;
@@ -314,17 +344,17 @@ tr.current-site-row td{background:#f4faf8;}
 /* ---------- 全頁遮罩（載入／錯誤／選工地） ---------- */
 .overlay{
   position:fixed;inset:0;z-index:200;
-  background:rgba(10,47,44,0.88);
+  background:rgba(26,37,54,0.90);
   display:flex;align-items:center;justify-content:center;
   padding:20px;
 }
 .overlay[hidden]{display:none;}
 .overlay-card{
-  background:#fff;border-radius:16px;padding:30px 34px;
+  background:#fff;border-radius:4px;padding:30px 34px;
   max-width:560px;width:100%;text-align:center;
   display:flex;flex-direction:column;gap:14px;align-items:center;
   font-size:15px;color:var(--ink-900);
-  box-shadow:0 24px 60px rgba(0,0,0,0.35);
+  box-shadow:0 24px 60px rgba(28,28,28,0.12);
 }
 .overlay-card h2{margin:0;font-size:19px;color:var(--teal-800);}
 .spinner{
@@ -337,7 +367,7 @@ tr.current-site-row td{background:#f4faf8;}
 .gate-card{max-width:640px;text-align:left;align-items:stretch;max-height:86vh;overflow-y:auto;}
 .gate-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
 .gate-btn{
-  padding:13px 14px;border-radius:10px;border:1.5px solid var(--line);
+  padding:13px 14px;border-radius:4px;border:1.5px solid var(--line);
   background:#fff;font-size:14px;font-weight:700;color:var(--teal-800);
   cursor:pointer;text-align:left;
 }
@@ -355,7 +385,7 @@ tr.current-site-row td{background:#f4faf8;}
 /* ---------- 重新整理按鈕 ---------- */
 .topbar-right{display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
 .refresh-btn{
-  padding:8px 14px;border-radius:8px;font-size:13px;font-weight:700;
+  padding:8px 14px;border-radius:4px;font-size:13px;font-weight:700;
   background:rgba(255,255,255,0.14);color:#fff;
   border:1.5px solid rgba(255,255,255,0.45);cursor:pointer;
 }
@@ -365,35 +395,35 @@ tr.current-site-row td{background:#f4faf8;}
 .admin-bar{display:flex;align-items:center;gap:12px;}
 .admin-only-badge{
   display:inline-block;margin-left:8px;padding:2px 9px;border-radius:999px;
-  font-size:11px;font-weight:700;background:#fdf1de;color:var(--amber-600);
+  font-size:11px;font-weight:700;background:#F2EADA;color:var(--amber-600);
   vertical-align:middle;
 }
-textarea[readonly]{background:#f1f5f4;color:var(--ink-400);cursor:not-allowed;}
+textarea[readonly]{background:var(--bg-surface-1);color:var(--ink-400);cursor:not-allowed;}
 
 /* ---------- Tables / Lists ---------- */
 .table-wrap{overflow:auto;max-height:72vh;}   /* v15.2：垂直滾動移入容器內，th 的 sticky 表頭才會生效 */
 table{width:100%;border-collapse:collapse;font-size:13.5px;}
 th,td{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;}
 th{background:var(--teal-100);color:var(--teal-800);font-weight:700;position:sticky;top:0;z-index:2;}
-tr:hover td{background:#fafdfc;}
+tr:hover td{background:var(--bg-canvas);}
 tr.clickable{cursor:pointer;}
 tr.clickable:hover td{background:var(--teal-100);}
 .site-name-cell{font-weight:700;color:var(--teal-800);}
 .row-actions{display:flex;gap:6px;}
 .btn-mini{
-  padding:5px 12px;border-radius:7px;font-size:12.5px;font-weight:700;cursor:pointer;
+  padding:5px 12px;border-radius:4px;font-size:12.5px;font-weight:700;cursor:pointer;
   border:1.5px solid var(--line);background:#fff;
 }
 .btn-mini.btn-edit{color:var(--teal-700);border-color:var(--teal-500);}
 .btn-mini.btn-edit:hover{background:var(--teal-600);color:#fff;border-color:var(--teal-600);}
-.btn-mini.btn-del{color:var(--red-500);border-color:#f0cccc;}
+.btn-mini.btn-del{color:var(--red-500);border-color:#DFC4C4;}
 .btn-mini.btn-del:hover{background:var(--red-500);color:#fff;border-color:var(--red-500);}
 .tag{
   display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:700;
 }
-.tag.ok{background:#e2f5ea;color:#1c7d43;}
-.tag.warn{background:#fdf1de;color:var(--amber-600);}
-.tag.bad{background:#fbe6e6;color:var(--red-500);}
+.tag.ok{background:#E4EDE8;color:var(--color-success);}
+.tag.warn{background:#F2EADA;color:var(--amber-600);}
+.tag.bad{background:#F2E2E2;color:var(--red-500);}
 .empty-row{color:var(--ink-400);font-style:italic;padding:14px 0;}
 
 .list-simple .row-item{
@@ -416,14 +446,14 @@ tr.clickable:hover td{background:var(--teal-100);}
 .report-filter{
   display:flex;align-items:center;gap:8px;flex-wrap:wrap;
   margin-bottom:12px;padding:10px 14px;
-  background:var(--teal-100);border-radius:10px;
+  background:var(--teal-100);border-radius:4px;
 }
 .report-filter label{font-size:13px;font-weight:700;color:var(--teal-800);}
 .report-filter input[type=date]{width:160px;padding:7px 10px;font-size:13.5px;}
 .range-sep{color:var(--ink-400);font-weight:700;}
 .report-select{
   min-width:170px;max-width:260px;padding:7px 10px;font-size:13.5px;
-  border:1.5px solid var(--line);border-radius:8px;background:#fff;color:var(--ink-900);
+  border:1.5px solid var(--line);border-radius:4px;background:#fff;color:var(--ink-900);
 }
 
 /* ---------- 計價彙總（v10） ---------- */
@@ -437,13 +467,13 @@ tr.clickable:hover td{background:var(--teal-100);}
 .att-add-combo{margin-top:8px;}
 .att-added-tag{
   font-style:normal;font-size:11px;font-weight:800;color:#fff;
-  background:var(--amber-600);border-radius:6px;padding:1px 6px;margin-left:6px;vertical-align:1px;
+  background:var(--amber-600);border-radius:4px;padding:1px 6px;margin-left:6px;vertical-align:1px;
 }
 .att-remove{
   margin-left:10px;border:none;background:none;color:var(--red-500);
-  font-size:17px;font-weight:800;cursor:pointer;line-height:1;padding:4px 8px;border-radius:6px;
+  font-size:17px;font-weight:800;cursor:pointer;line-height:1;padding:4px 8px;border-radius:4px;
 }
-.att-remove:hover{background:#fbeaea;}
+.att-remove:hover{background:#F2E2E2;}
 
 /* ---------- 工種覆核列（v11） ---------- */
 .tr-name{
@@ -454,8 +484,8 @@ tr.clickable:hover td{background:var(--teal-100);}
 .toast{
   position:fixed;left:50%;bottom:24px;transform:translate(-50%,20px);
   background:var(--teal-800);color:#fff;padding:12px 22px;border-radius:999px;
-  font-size:14px;font-weight:600;opacity:0;pointer-events:none;transition:all .25s ease;
-  z-index:100;box-shadow:0 8px 20px rgba(0,0,0,0.2);
+  font-size:14px;font-weight:600;opacity:0;pointer-events:none;transition:all var(--duration-normal) ease;
+  z-index:100;box-shadow:0 8px 20px rgba(28,28,28,0.08);
 }
 .toast.show{opacity:1;transform:translate(-50%,0);}
 
@@ -474,50 +504,50 @@ tr.clickable:hover td{background:var(--teal-100);}
 .audit-rec-list{display:flex;flex-direction:column;gap:8px;margin:10px 0 16px;}
 .audit-pick{
   display:block;width:100%;text-align:left;cursor:pointer;
-  background:#fff;border:1px solid var(--line, #dce5e3);border-radius:10px;padding:10px 14px;
-  font:inherit;transition:border-color .15s ease, background .15s ease;
+  background:#fff;border:1px solid var(--line, var(--border-light));border-radius:4px;padding:10px 14px;
+  font:inherit;transition:border-color var(--duration-normal) ease, background .15s ease;
 }
 .audit-pick:hover{border-color:var(--teal-600);}
-.audit-pick.active{border-color:var(--teal-600);background:#eef7f5;box-shadow:0 0 0 1px var(--teal-600) inset;}
+.audit-pick.active{border-color:var(--teal-600);background:var(--bg-surface-1);box-shadow:0 0 0 1px var(--teal-600) inset;}
 .audit-pick .ap-line1{display:block;font-weight:600;}
-.audit-pick .ap-line2{display:block;font-size:12.5px;color:#5f6f6e;margin-top:2px;}
+.audit-pick .ap-line2{display:block;font-size:12.5px;color:var(--fg-tertiary);margin-top:2px;}
 .audit-ctx{
-  background:#eef7f5;border:1px solid #cfe3df;border-radius:10px;
+  background:var(--bg-surface-1);border:1px solid var(--border-blueprint);border-radius:4px;
   padding:10px 14px;margin:0 0 14px;
 }
 .audit-ctx .ac-line1{font-weight:700;}
-.audit-ctx .ac-line2{font-size:13px;color:#42615d;margin-top:2px;}
-.audit-item{border:1px solid var(--line, #dce5e3);border-radius:10px;padding:8px 12px;margin-bottom:8px;background:#fff;}
-.audit-item.bad{border-color:#e6b8b8;background:#fdf7f7;}
+.audit-ctx .ac-line2{font-size:13px;color:var(--fg-secondary);margin-top:2px;}
+.audit-item{border:1px solid var(--line, var(--border-light));border-radius:4px;padding:8px 12px;margin-bottom:8px;background:#fff;}
+.audit-item.bad{border-color:#D9BDBD;background:#FAF3F3;}
 .audit-item .ai-row{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;}
 .audit-item .ai-text{font-size:14px;}
 .audit-item .ai-btns{display:inline-flex;gap:6px;flex-shrink:0;}
 .ai-btn{
   font:inherit;font-size:13px;padding:4px 14px;border-radius:999px;cursor:pointer;
-  background:#fff;border:1px solid #c8d4d2;color:#5f6f6e;
+  background:#fff;border:1px solid var(--border-medium);color:var(--fg-tertiary);
 }
-.ai-btn.ok.active{background:#e2f5ea;border-color:#1c7d43;color:#1c7d43;font-weight:700;}
-.ai-btn.bad.active{background:#fbe6e6;border-color:var(--red-500);color:var(--red-500);font-weight:700;}
-.ai-reason{width:100%;margin-top:8px;font:inherit;font-size:13px;padding:7px 10px;border:1px solid #e6b8b8;border-radius:8px;}
-.audit-ctx.editing{border-color:#e3c98a;background:#fdf6e8;}
-.edited-mark{font-size:11.5px;color:#9a7b2d;margin-left:2px;}
+.ai-btn.ok.active{background:#E4EDE8;border-color:var(--color-success);color:var(--color-success);font-weight:700;}
+.ai-btn.bad.active{background:#F2E2E2;border-color:var(--red-500);color:var(--red-500);font-weight:700;}
+.ai-reason{width:100%;margin-top:8px;font:inherit;font-size:13px;padding:7px 10px;border:1px solid #D9BDBD;border-radius:4px;}
+.audit-ctx.editing{border-color:#C9B481;background:#F5EFE2;}
+.edited-mark{font-size:11.5px;color:var(--color-warning);margin-left:2px;}
 
 /* ---------- 附件（v14） ---------- */
 .att-strip{display:flex;flex-wrap:wrap;gap:10px;align-items:center;min-height:8px;}
 .att-strip.readonly{margin-top:8px;}
-.att-cell{position:relative;width:84px;height:84px;border:1px solid var(--line, #dce5e3);border-radius:10px;overflow:hidden;background:#fff;display:flex;align-items:center;justify-content:center;}
+.att-cell{position:relative;width:84px;height:84px;border:1px solid var(--line, var(--border-light));border-radius:4px;overflow:hidden;background:#fff;display:flex;align-items:center;justify-content:center;}
 .att-cell img{width:100%;height:100%;object-fit:cover;display:block;}
 .att-cell.pending{border-style:dashed;border-color:var(--teal-600);}
 .att-pdf{font-weight:700;font-size:13px;color:var(--red-500);letter-spacing:1px;}
 .att-del{
   position:absolute;top:2px;right:2px;width:22px;height:22px;border-radius:50%;
-  border:none;background:rgba(0,0,0,.55);color:#fff;font-size:14px;line-height:1;cursor:pointer;
+  border:none;background:rgba(28,28,28,0.55);color:#fff;font-size:14px;line-height:1;cursor:pointer;
 }
 .att-del:hover{background:var(--red-500);}
-.att-new{position:absolute;left:0;bottom:0;background:var(--teal-600);color:#fff;font-size:10.5px;padding:1px 6px;border-radius:0 8px 0 0;}
+.att-new{position:absolute;left:0;bottom:0;background:var(--teal-600);color:#fff;font-size:10.5px;padding:1px 6px;border-radius:0 4px 0 0;}
 .att-add{
-  width:84px;height:84px;border:1.5px dashed #b8c6c3;border-radius:10px;background:#f7faf9;
-  color:#5f6f6e;font:inherit;font-size:12.5px;cursor:pointer;
+  width:84px;height:84px;border:1.5px dashed var(--border-strong);border-radius:4px;background:var(--bg-surface-1);
+  color:var(--fg-tertiary);font:inherit;font-size:12.5px;cursor:pointer;
 }
 .att-add:hover{border-color:var(--teal-600);color:var(--teal-700);}
 a.att-cell{text-decoration:none;}
@@ -525,8 +555,8 @@ a.att-cell{text-decoration:none;}
 /* ---------- 收合式表單面板（v15） ---------- */
 .panel.collapsible > .panel-head{cursor:pointer;user-select:none;position:relative;padding-right:96px;}
 .panel.collapsible > .panel-head::after{
-  content:"▲ 收合";position:absolute;right:0;top:2px;font-size:12.5px;color:#5f6f6e;
-  border:1px solid #c8d4d2;border-radius:999px;padding:3px 12px;background:#fff;
+  content:"▲ 收合";position:absolute;right:0;top:2px;font-size:12.5px;color:var(--fg-tertiary);
+  border:1px solid var(--border-medium);border-radius:999px;padding:3px 12px;background:#fff;
 }
 .panel.collapsible.collapsed > .panel-head::after{content:"▼ 展開填寫";color:var(--teal-700);border-color:var(--teal-500);}
 .panel.collapsible.collapsed > .panel-head .hint{display:none;}
@@ -537,5 +567,47 @@ a.att-cell{text-decoration:none;}
 
 /* ---------- 清單分頁（v15.2，取代 v15.1 list-more） ---------- */
 .list-pager{display:flex;align-items:center;justify-content:center;gap:14px;padding:12px 0 4px;position:sticky;left:0;}
-.list-pager .pager-info{font-size:13px;color:#5f6f6e;}
+.list-pager .pager-info{font-size:13px;color:var(--fg-tertiary);}
 .list-pager button[disabled]{opacity:.4;cursor:default;}
+
+/* ==========================================================
+   根基營造品牌識別強化（Kedge Construction）
+   標題 Space Grotesk｜數據 DM Mono｜▎區塊標記｜字距規範
+   ========================================================== */
+.panel-head h2, .brand-title, .overlay-card h2{
+  font-family:'Space Grotesk','Noto Sans TC','Microsoft JhengHei',sans-serif;
+  letter-spacing:-0.02em;
+}
+/* ▎品牌區塊標記（取代原本純文字標題） */
+.panel-head h2::before{
+  content:"▎";
+  color:var(--slate-700);
+  margin-right:6px;
+  font-weight:400;
+}
+.panel.collapsible.collapsed > .panel-head h2::before{color:var(--fg-muted);}
+
+/* 數據以等寬字呈現（KPI 數字、表格數值、頁碼、金額） */
+.card .num, .pager-info, .report-count, .att-new{
+  font-family:'DM Mono','SF Mono','Consolas',monospace;
+  font-variant-numeric:tabular-nums;
+}
+table td{font-variant-numeric:tabular-nums;}
+
+/* 標籤字距（品牌規範 tracking-wide） */
+.tabs .tab, .subtab, .rtab, .akind{letter-spacing:0.04em;}
+.field > label, .report-filter > label{letter-spacing:0.02em;}
+
+/* 表頭：暖中性底＋板岩藍字（取代原飽和色塊） */
+th{
+  background:var(--bg-surface-1);
+  color:var(--slate-800);
+  border-bottom:1px solid var(--border-medium);
+  letter-spacing:0.02em;
+}
+
+/* 品牌標記方塊：尖角、板岩藍 */
+.brand-mark{border-radius:2px;}
+
+/* 轉場：一律 200ms 溫和淡入，無彈跳 */
+*{transition-duration:var(--duration-normal);transition-timing-function:var(--ease-default);}

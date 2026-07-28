@@ -1549,7 +1549,7 @@ function renderSiteBreakdown(){
   </tr></thead><tbody>
     ${rows.map(r=>`
       <tr class="clickable ${r.site===MASTER.currentSite?'current-site-row':''}" data-site="${esc(r.site)}">
-        <td class="site-name-cell">${esc(r.site)}${r.site===MASTER.currentSite?'<span class="tag ok" style="margin-left:6px;">目前</span>':''}${r.total===0?'<span class="tag" style="margin-left:6px;background:#eef1f0;color:var(--ink-400);">尚無紀錄</span>':''}</td>
+        <td class="site-name-cell">${esc(r.site)}${r.site===MASTER.currentSite?'<span class="tag ok" style="margin-left:6px;">目前</span>':''}${r.total===0?'<span class="tag" style="margin-left:6px;background:var(--bg-surface-2);color:var(--fg-muted);">尚無紀錄</span>':''}</td>
         <td>${r.lPending? '<span class="tag warn">'+r.lPending+'</span>' : '0'}</td>
         <td>${r.ePending? '<span class="tag warn">'+r.ePending+'</span>' : '0'}</td>
         <td>${r.reportedCount}</td>
@@ -2453,19 +2453,19 @@ function auditReportHTML(entries, subtitle){
 
   return `<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8"><title>成控現場稽核報告</title>
   <style>
-    body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;color:#1c2b2a;margin:32px;font-size:13px;}
-    h1{font-size:20px;margin:0 0 4px;} .sub{color:#5f6f6e;margin:0 0 20px;}
-    h2{font-size:15px;border-left:4px solid #0f6e56;padding-left:8px;margin:24px 0 8px;}
+    body{font-family:"Noto Sans TC","Microsoft JhengHei","PingFang TC",sans-serif;color:#1C1C1C;margin:32px;font-size:13px;}
+    h1{font-size:20px;margin:0 0 4px;} .sub{color:#76736C;margin:0 0 20px;}
+    h2{font-size:15px;border-left:4px solid #2E3F5A;padding-left:8px;margin:24px 0 8px;}
     h3{font-size:14px;margin:20px 0 6px;}
     table{border-collapse:collapse;width:100%;margin:4px 0 8px;}
-    th,td{border:1px solid #c8d4d2;padding:4px 8px;text-align:left;vertical-align:top;}
-    thead th{background:#eef4f3;}
-    .info th{background:#eef4f3;width:110px;white-space:nowrap;}
+    th,td{border:1px solid #D0C9BE;padding:4px 8px;text-align:left;vertical-align:top;}
+    thead th{background:#F5F1EC;}
+    .info th{background:#F5F1EC;width:110px;white-space:nowrap;}
     .w1{width:64px;white-space:nowrap;}
-    .r-ok{color:#1c7d43;font-weight:bold;} .r-bad{color:#b93226;font-weight:bold;}
-    .note{margin:4px 0;white-space:pre-wrap;} .meta{color:#5f6f6e;margin:2px 0 0;}
+    .r-ok{color:#3A6B52;font-weight:bold;} .r-bad{color:#8B3A3A;font-weight:bold;}
+    .note{margin:4px 0;white-space:pre-wrap;} .meta{color:#76736C;margin:2px 0 0;}
     .photos{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0;}
-    .photos img{max-width:46%;max-height:300px;border:1px solid #c8d4d2;object-fit:contain;}
+    .photos img{max-width:46%;max-height:300px;border:1px solid #D0C9BE;object-fit:contain;}
     .sec{page-break-inside:avoid;}
     .signs{display:flex;gap:40px;flex-wrap:wrap;margin-top:36px;page-break-inside:avoid;font-size:13px;}
     .toolbar{margin:0 0 16px;}

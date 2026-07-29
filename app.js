@@ -294,13 +294,14 @@ const listFilter = {
 /* v15.2：清單分頁（每頁 20 筆，取代 v15.1「顯示全部」展開——展開後仍是長頁面）。
    套用：點工清單、機具清單、稽核紀錄清單；篩選/切站自動回第 1 頁 */
 const LIST_PAGE_SIZE = 10;   // v15.3：每頁 10 筆，配合放寬版面讓一頁清單盡量落在單一畫面內
-const listPage = { labor: 1, equipment: 1, auditlog: 1 };
+const listPage = { labor: 1, equipment: 1, auditlog: 1, report: 1 };
 function resetListFilters(){
   listFilter.labor = { date: "", vendor: "" };
   listFilter.equipment = { date: "", vendor: "" };
   listPage.labor = 1;
   listPage.equipment = 1;
   listPage.auditlog = 1;
+  listPage.report = 1;
   ["laborListDate","equipListDate"].forEach(id=>{ const el = document.getElementById(id); if(el) el.value = ""; });
   ["laborListVendor","equipListVendor"].forEach(id=>{ const el = document.getElementById(id); if(el) el.value = ""; });
 }
@@ -1731,6 +1732,7 @@ function initReportTabs(){
       document.querySelectorAll(".rtab").forEach(b=>b.classList.remove("active"));
       btn.classList.add("active");
       currentReport = btn.dataset.r;
+      listPage.report = 1;
       reportCat = "";           // 點工/機具的內容池不同，切換頁籤時重置內容篩選
       document.getElementById("reportCat").value = "";
       reportEngineer = "";      // 工程師池亦分屬兩類（engineer/checker），一併重置
@@ -1742,14 +1744,17 @@ function initReportTabs(){
   document.getElementById("exportSummaryBtn").addEventListener("click", ()=>exportSummaryCSV(currentReport));
   document.getElementById("reportVendor").addEventListener("change", e=>{
     reportVendor = e.target.value;
+    listPage.report = 1;
     renderReport(currentReport);
   });
   document.getElementById("reportCat").addEventListener("change", e=>{
     reportCat = e.target.value;
+    listPage.report = 1;
     renderReport(currentReport);
   });
   document.getElementById("reportEngineer").addEventListener("change", e=>{
     reportEngineer = e.target.value;
+    listPage.report = 1;
     renderReport(currentReport);
   });
 
@@ -1758,6 +1763,7 @@ function initReportTabs(){
   const syncRange = ()=>{
     reportFrom = fromEl.value || "";
     reportTo = toEl.value || "";
+    listPage.report = 1;
     renderReport(currentReport);
   };
   fromEl.addEventListener("change", syncRange);
@@ -1809,8 +1815,11 @@ function renderReport(key){
   const el = document.getElementById("reportTable");
   if(!rows.length){ el.innerHTML = '<div class="empty-row">此條件內尚無「'+esc(def.title)+'」資料</div>'; }
   else{
+    // v16.3：明細分頁（每頁 10 筆）——CSV 匯出仍取 def.rows() 全量，不受分頁影響
+    const { shown, pagerHTML } = paginate("report", rows);
     el.innerHTML = `<table><thead><tr>${def.headers.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead>
-      <tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${esc(c===undefined||c===null?"":c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+      <tbody>${shown.map(r=>`<tr>${r.map(c=>`<td>${esc(c===undefined||c===null?"":c)}</td>`).join("")}</tr>`).join("")}</tbody></table>${pagerHTML}`;
+    bindPager(el, "report", ()=>renderReport(key));
   }
   renderPricingSummary(key);
 }

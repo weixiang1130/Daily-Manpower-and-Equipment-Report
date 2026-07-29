@@ -2203,15 +2203,15 @@ function renderAuditForm(rec, editA){
     </div>
     <div class="form-grid">
       <div class="field field-num">
-        <label>${auditAppliedLabel()}（依申請單）</label>
+        <label title="依申請單帶入">${auditAppliedLabel()}</label>
         <input type="text" readonly class="readonly-field" value="${fmt(applied)}">
       </div>
       <div class="field field-num">
-        <label>${auditCountLabel()}（現場清點）</label>
+        <label title="現場清點數">${auditCountLabel()}</label>
         <input type="number" id="auditCount" min="0" step="0.5" value="${editA?fmt(editA.actualCount):""}">
       </div>
       <div class="field field-num">
-        <label>差異（自動計算）</label>
+        <label title="現場實點與申請數的差異">差異</label>
         <input type="text" id="auditCountDiff" readonly class="readonly-field" value="${editA?fmt((editA.actualCount||0)-applied):""}">
       </div>
       <div class="field field-num">

@@ -124,15 +124,15 @@ body{
   background:var(--card);
   border:1px solid var(--line);
   border-radius:var(--radius);
-  padding:18px 20px;
-  margin-bottom:18px;
+  padding:14px 16px;
+  margin-bottom:14px;
 }
 .panel.highlight{border-color:var(--teal-500);box-shadow:0 0 0 3px var(--teal-100);}
 .panel.danger-zone{border-color:#DFC4C4;background:#FAF3F3;}
 
 .panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
 .panel-head h2{margin:0 0 4px;font-size:17px;color:var(--teal-800);}
-.hint{margin:0 0 14px;font-size:13px;color:var(--ink-600);line-height:1.5;flex-basis:100%;}
+.hint{margin:0 0 10px;font-size:13px;color:var(--ink-600);line-height:1.5;flex-basis:100%;}
 
 .list-filter{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-600);font-weight:600;}
 .list-filter select{
@@ -161,21 +161,21 @@ body{
 /* ---------- Forms ---------- */
 .form-grid{
   display:grid;
-  grid-template-columns:repeat(12,1fr);   /* v16.1：細格線，數字欄可縮窄、畫面更緊湊 */
-  gap:14px 18px;
+  grid-template-columns:repeat(12,1fr);   /* v16.2：細格線＋更緊湊的欄寬與間距 */
+  gap:10px 14px;
 }
-.field{grid-column:span 6;}               /* 一般欄位＝半版（同改版前） */
-.field{display:flex;flex-direction:column;gap:6px;}
+.field{grid-column:span 4;}               /* 一般欄位＝1/3 版面（人名、廠商等短內容足夠） */
+.field{display:flex;flex-direction:column;gap:4px;}
 .field-wide{grid-column:1 / -1;}
 /* 純數字／日期欄位：佔 1/4 版面且輸入框限寬，避免大框留白（大框留給說明類欄位） */
-.field-num{grid-column:span 3;}
-.field-num input{max-width:190px;}
+.field-num{grid-column:span 2;}
+.field-num input{max-width:130px;}
 .field-num label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.field label{font-size:13px;font-weight:700;color:var(--ink-700,var(--fg-secondary));}
+.field label{font-size:12.5px;font-weight:700;color:var(--ink-700,var(--fg-secondary));}
 
 input[type=text],input[type=number],input[type=date],input[type=time],
 input[type=datetime-local],select,textarea{
-  padding:10px 12px;
+  padding:7px 10px;
   border:1px solid var(--line);
   border-radius:4px;
   font-size:15px;

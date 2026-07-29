@@ -32,3 +32,11 @@
 - 品牌屬性 computed style 逐項驗證：底色 #FAFAF7、重點色 #2E3F5A、相容映射生效、圓角 4px、頁首純色且全站漸層元素數＝0、標題 Space Grotesk＋▎標記、表頭暖中性底＋板岩藍字、語意色（成功 #3A6B52／警告 #8B6D2E）
 - 功能回歸：申請送出、回報送出、分頁、收合面板、篩選、稽核 PDF 產出全數正常；console 零錯誤
 - PDF 報告：板岩藍區塊線、暖中性表頭、Noto Sans TC、無舊配色殘留
+
+## v16.1 補強（2026-07-29，畫面密度回饋）
+
+- **清單內部捲軸移除**：v15.2 為讓表頭 sticky 生效而把 .table-wrap 設為捲動容器（max-height:72vh），導致滿頁 10 筆時出現內部小捲軸——改為 `overflow:visible` 整頁捲動，表頭 sticky 基準改為視窗並設 `--sticky-offset:122px`（頁首 66＋頁籤 56），實測捲動後表頭 top=122 恰貼頁籤底緣、零內部捲軸；窄螢幕（≤900px）保留 `overflow-x:auto`
+- **表單欄位緊湊化**：`.form-grid` 改 `repeat(12,1fr)`；`.field` span 6（半版，同前）、新增 `.field-num` span 3＋`input{max-width:190px}`（純數字/日期）、`.field-wide` 全寬（說明類）。index.html 16 個欄位＋app.js 稽核表單 4 個欄位標記為 field-num
+- 實測：需求工數欄 282px（框 190px）＜ 分包商欄 583px ＜ 工作內容欄 1183px；回報表單 7 個數字欄由 7 列壓成 3 列（第 1 列並排 4 個）
+- 手機版（≤720px）覆蓋回單欄並解除框寬限制，避免 span 產生隱式欄位破版
+- 驗證：申請/回報全流程、機具與稽核表單同步、分頁與表頭、console 零錯誤

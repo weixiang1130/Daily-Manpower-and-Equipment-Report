@@ -2202,19 +2202,19 @@ function renderAuditForm(rec, editA){
       <div class="ac-line2">${esc(auditRecCats(auditKind, rec)||"—")}｜${esc((rec.locations||[]).join("、")||"—")}｜申請人：${esc(rec.applicant||"—")}</div>
     </div>
     <div class="form-grid">
-      <div class="field">
+      <div class="field field-num">
         <label>${auditAppliedLabel()}（依申請單）</label>
         <input type="text" readonly class="readonly-field" value="${fmt(applied)}">
       </div>
-      <div class="field">
+      <div class="field field-num">
         <label>${auditCountLabel()}（現場清點）</label>
         <input type="number" id="auditCount" min="0" step="0.5" value="${editA?fmt(editA.actualCount):""}">
       </div>
-      <div class="field">
+      <div class="field field-num">
         <label>差異（自動計算）</label>
         <input type="text" id="auditCountDiff" readonly class="readonly-field" value="${editA?fmt((editA.actualCount||0)-applied):""}">
       </div>
-      <div class="field">
+      <div class="field field-num">
         <label>稽核人</label>
         <input type="text" id="auditAuditor" placeholder="例：成控－某某某" value="${esc(editA?(editA.auditor||""):(sessionStorage.getItem("dm_auditor")||""))}">
       </div>

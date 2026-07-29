@@ -45,6 +45,7 @@
   --bg:var(--bg-canvas);
   --card:#FFFFFF;
   --radius:4px;              /* 品牌規範：尖角 0–4px */
+  --sticky-offset:122px;     /* 頁首 66 ＋ 頁籤 56：表頭黏著位置 */
   font-size:16px;
 }
 
@@ -160,11 +161,16 @@ body{
 /* ---------- Forms ---------- */
 .form-grid{
   display:grid;
-  grid-template-columns:1fr 1fr;
-  gap:16px 20px;
+  grid-template-columns:repeat(12,1fr);   /* v16.1：細格線，數字欄可縮窄、畫面更緊湊 */
+  gap:14px 18px;
 }
+.field{grid-column:span 6;}               /* 一般欄位＝半版（同改版前） */
 .field{display:flex;flex-direction:column;gap:6px;}
 .field-wide{grid-column:1 / -1;}
+/* 純數字／日期欄位：佔 1/4 版面且輸入框限寬，避免大框留白（大框留給說明類欄位） */
+.field-num{grid-column:span 3;}
+.field-num input{max-width:190px;}
+.field-num label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .field label{font-size:13px;font-weight:700;color:var(--ink-700,var(--fg-secondary));}
 
 input[type=text],input[type=number],input[type=date],input[type=time],
@@ -401,10 +407,13 @@ tr.current-site-row td{background:var(--bg-surface-1);}
 textarea[readonly]{background:var(--bg-surface-1);color:var(--ink-400);cursor:not-allowed;}
 
 /* ---------- Tables / Lists ---------- */
-.table-wrap{overflow:auto;max-height:72vh;}   /* v15.2：垂直滾動移入容器內，th 的 sticky 表頭才會生效 */
+.table-wrap{overflow:visible;}   /* v16.1：不再有內部小捲軸——整頁捲動，表頭改黏在頁籤下方 */
+@media (max-width:900px){
+  .table-wrap{overflow-x:auto;}   /* 窄螢幕表格較寬，保留橫向捲動 */
+}
 table{width:100%;border-collapse:collapse;font-size:13.5px;}
 th,td{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;}
-th{background:var(--teal-100);color:var(--teal-800);font-weight:700;position:sticky;top:0;z-index:2;}
+th{background:var(--teal-100);color:var(--teal-800);font-weight:700;position:sticky;top:var(--sticky-offset);z-index:2;}
 tr:hover td{background:var(--bg-canvas);}
 tr.clickable{cursor:pointer;}
 tr.clickable:hover td{background:var(--teal-100);}
@@ -492,6 +501,8 @@ tr.clickable:hover td{background:var(--teal-100);}
 /* ---------- Responsive ---------- */
 @media (max-width:720px){
   .form-grid{grid-template-columns:1fr;}
+  .field,.field-num,.field-wide{grid-column:1 / -1;}
+  .field-num input{max-width:none;}
   .topbar{padding:12px 14px;}
   .brand-title{font-size:14px;}
   .site-picker select{min-width:130px;}
@@ -566,7 +577,7 @@ a.att-cell{text-decoration:none;}
 .list-more{text-align:center;padding:12px 0 4px;}
 
 /* ---------- 清單分頁（v15.2，取代 v15.1 list-more） ---------- */
-.list-pager{display:flex;align-items:center;justify-content:center;gap:14px;padding:12px 0 4px;position:sticky;left:0;}
+.list-pager{display:flex;align-items:center;justify-content:center;gap:14px;padding:12px 0 4px;}
 .list-pager .pager-info{font-size:13px;color:var(--fg-tertiary);}
 .list-pager button[disabled]{opacity:.4;cursor:default;}
 

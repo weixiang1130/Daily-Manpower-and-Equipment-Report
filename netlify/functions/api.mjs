@@ -3,11 +3,13 @@
 
    儲存結構（Blobs store: audit-data）
    - master                     全域工地清單 { sites: [...] }
-   - cfg:<encodeURI(工地)>       該工地基礎資料（分包商/人員/地點…）
-   - rec:<encodeURI(工地)>:<labor|equipment>:<id>   單筆紀錄
+   - cfg2:<b64url(工地)>        該工地基礎資料（名單池＋lockDate）
+   - rec2:<b64url(工地)>:<labor|equipment>:<id>    單筆紀錄（含 report/audits/attachments 描述）
+   - att2:<b64url(工地)>:<附件id>                   附件檔案本體（v14；不含在 scope=all 備份內）
+   （舊 cfg:/rec: 命名空間由 GET 時 migrateLegacyKeys() 一次性搬移）
 
    逐筆紀錄各自一把 key：不同紀錄的同時寫入互不影響；同一筆
-   紀錄同時被兩人編輯時為後寫者覆蓋（last-write-wins）。
+   紀錄寫入採版本檢查（baseV 與現存 v 不符回 409），無 last-write-wins。
 
    驗證：與整站 Edge Function 相同的 Basic Auth（SITE_AUTH_USER /
    SITE_AUTH_PASS 環境變數），函式內再驗一次作為第二道防線。 */

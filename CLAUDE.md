@@ -26,13 +26,13 @@ netlify/functions/api.mjs        資料 API（函式內二次驗證同一組帳�
 | Key | 內容 |
 |---|---|
 | `master` | `{ sites: [...] }` 全域工地清單 |
-| `cfg2:<b64url(工地)>` | 該工地基礎資料：vendors/locations/categories/equipTypes/people/workers/laborTypes 陣列 ＋ `lockDate` 字串（**v17 起各站自建，新工地六池全空**） |
+| `cfg2:<b64url(工地)>` | 該工地基礎資料：vendors/locations/categories/equipTypes/people/workers/laborTypes 陣列 ＋ `lockDate` 字串（**v17 起各站自建，新工地全部名單池皆空**；workers 為 v11 起棄用的舊池，僅相容保留） |
 | `rec2:<b64url(工地)>:<labor\|equipment>:<id>` | 單筆紀錄（父單含子層 `report`、`audits[]`、`attachments[]`） |
 | `att2:<b64url(工地)>:<附件id>` | **附件檔案本體**（二進位＋name/type metadata；v14）——不進單據 JSON，JSON 備份亦不含 |
 
 - **工地段必須 base64url**：Blobs 後端會解碼 key 中的 `%` 序列，encodeURIComponent 不可靠（節點 10/11 踩過的坑）。舊 `rec:`/`cfg:` 命名空間由 GET 時的 `migrateLegacyKeys()` 一次性搬移。
-- **紀錄結構**：`{ id, date, vendor, applicant, ..., status: "待回報"|"已回報", report: null|{...}, audits: [...], v, updatedAt }`。點工父單有 `workers[]`（預計進場名單）、子層 `report.attendance[]`（逐人 present/work/ot）；機具子層 `report.usage[]`（逐台 present/hours）。`report.zeroWork`/`zeroUse` 為 0 工/0 使用確認旗標。`audits[]`（v13）＝成控現場稽核紀錄（合約 §4.5），查核項目文字可由 config.local.js `auditItems` 覆蓋。
-- **樂觀並發**：寫入附 `baseV`，與現存 `v` 不符回 409（含「已被刪除但 baseV>0」）；成功回 `{v, updatedAt}`。**v18 起前端改樂觀渲染**：開表單即快照 baseV、背景才刷新，送出一律以快照為 baseV（合約 §3.3）——避免背景刷新讓版本漂移而繞過 409。
+- **紀錄結構**：`{ id, date, vendor, applicant, ..., status: "待回報"|"已回報", report: null|{...}, audits: [...], v, updatedAt }`。點工父單的 `workers[]` 為 v11 前的預計進場名單（**v11 起新單一律空陣列**，僅舊單保留）、子層 `report.attendance[]`（逐人 present/work/ot）；機具子層 `report.usage[]`（逐台 present/hours）。`report.zeroWork`/`zeroUse` 為 0 工/0 使用確認旗標。`audits[]`（v13）＝成控現場稽核紀錄（合約 §4.5），查核項目文字可由 config.local.js `auditItems` 覆蓋。
+- **樂觀並發**：寫入附 `baseV`，與現存 `v` 不符回 409（含「已被刪除但 baseV>0」）；成功回 `{v, updatedAt}`。**v18 起點工/機具四表單改樂觀渲染**：開表單即快照 baseV、背景才刷新，送出以快照為 baseV（合約 §3.3 v18 補充）——避免背景刷新讓版本漂移而繞過 409。**稽核模組例外**：saveAudit/deleteAudit 送出時讀快取即時 v，因此任何整批刷新（含 bgRefetchVerify 與四個載入 fallback）都必須在稽核表單編輯中（auditSelectedId）時跳過，與稽核側以 otherFormEditing 把關互為對稱——兩道守衛缺一不可。
 - **選項新增**：`op:addOption` 伺服器端 read-merge-write，避免兩人同時新增互相覆蓋。整包 config 覆蓋只用於管理員批次儲存。
 
 ## 前端要點（app.js）
@@ -53,7 +53,7 @@ netlify/functions/api.mjs        資料 API（函式內二次驗證同一組帳�
 ## 檔案地圖
 
 ```
-index.html                     頁面結構（5 頁籤＋申請/回報子頁＋overlay 們）
+index.html                     頁面結構（6 頁籤含管理員限定稽核頁＋申請/回報子頁＋overlay 們）
 app.js                         全部前端邏輯（約 2900 行，區塊註解分段）
 style.css                      樣式（根基營造品牌設計系統：暖中性＋深板岩藍、尖角、無漸層）
 config.local.js                （gitignored）真實名單；格式見 app.js 開頭註解
@@ -61,7 +61,7 @@ netlify/functions/api.mjs      資料 API（op: master/config/record/addOption/d
 netlify/edge-functions/auth.ts 整站 Basic Auth
 scripts/build-config.mjs       建置時由環境變數產生 config.local.js
 server/server.mjs              可攜式伺服器（地端部署用，零依賴 Node 18+；同一 API 合約＋靜態服務＋Basic Auth）
-server/import-backup.mjs       資料遷移工具（完整備份 JSON → 地端資料目錄）
+server/import-backup.mjs       資料遷移工具（備份 JSON → 地端資料目錄；**不含附件本體**，附件另依 DEPLOYMENT §4 搬運）
 DEPLOYMENT.md                  地端部署手冊（給 IT：環境需求/步驟/遷移/維運/改接公司後端）
 docs/MIGRATION-PLAN.md        ★ 地端移轉計畫（現況/目標架構/分工/資料與附件移轉/三階段時程/回退）
 docs/API-CONTRACT.md           ★ 前後端接縫合約（op 規格/409 語意/欄位字典/資料表建議）——重寫後端唯一依據；改欄位先改這份

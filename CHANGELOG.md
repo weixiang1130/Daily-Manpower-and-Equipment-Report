@@ -2,6 +2,11 @@
 
 版本異動摘要。完整背景與設計決策請見 [`docs/milestones/`](docs/milestones/README.md)。
 
+## [節點 24 補強] 2026-07-30 — 稽核側 409 守衛與文件全面清理（v18.1） ※待部署
+- **修復 XHIGH 審查發現的 409 繞過**：管理員開著稽核表單時，到點工/機具頁開任一表單會觸發 v18 背景整批刷新，使 saveAudit/deleteAudit 送出時的 baseV 漂移、繞過 409（v13.1 修過問題的鏡像）——bgRefetchVerify 與四個載入 fallback 改為稽核表單編輯中（auditSelectedId）時跳過刷新；兩道守衛互為對稱，CLAUDE.md 記載此不變式
+- 文件清理 11 處過時內容：README（localStorage/last-write-wins）、app.js 與 api.mjs 檔頭（v8/舊命名空間）、合約（laborTypes 補預設已移除、版本標頭 v14→v18、§3.3 補 v18 快照紀律）、sql/README（7→9 op）、DEPLOYMENT（DATA_DIR 含附件二進位、server.mjs 附件搬運需 attmeta、兩實作已知差異）、import-backup 檔頭附件警語、MIGRATION-PLAN（機具三表為合成資料驗證之限定語）、CLAUDE.md（六池/workers/頁籤數/v18 適用範圍）
+- 補寫節點 23、24 的 milestone 文件與索引（v17/v18 當時未依規範建檔）
+
 ## [節點 24] 2026-07-29 — 開表單樂觀渲染與 baseV 快照（v18） ※待部署
 - **問題**：點「填寫回報／編輯申請」會先向雲端重抓整個工地資料才渲染，實測正式站需等 1.1～3.7 秒（單一工地 149KB／212 筆，冷啟更久）
 - **改法**：四個載入入口（點工/機具 × 申請/回報）改為**先用快取即時開表單**，再於背景抓最新版校正；快取沒有該筆時才退回等待網路。慢速網路（1.5s）實測開表單由 1500ms+ 降至 **61ms**

@@ -12,7 +12,7 @@
 | 靜態檔案 | Netlify CDN | `server/server.mjs` 內建靜態服務 |
 | 資料 API `/api/data` | `netlify/functions/api.mjs` | `server/server.mjs`（同一 API 合約） |
 | Basic Auth | `netlify/edge-functions/auth.ts` | `server/server.mjs`（同一邏輯） |
-| 資料儲存 | Netlify Blobs（一筆一 blob） | 檔案系統 `DATA_DIR`（一筆一 JSON 檔，同構） |
+| 資料儲存 | Netlify Blobs（一筆一 blob） | 檔案系統 `DATA_DIR`（紀錄＝一筆一 JSON 檔；附件本體在 `attachments/` 子目錄） |
 
 前端 `app.js` 對兩種形態**完全無感**——只呼叫 `/api/data`。
 
@@ -62,7 +62,7 @@ node server/server.mjs
 
 1. 公告停機時段（避免切換期間有人寫入舊站）
 2. 舊站：管理員「下載完整備份（JSON）」
-3. **附件搬運（v14 起必做）**：JSON 備份只含附件描述資料、**不含檔案本體**——依備份中各單據/稽核的 `attachments[].id`，以 `GET ?site=<工地>&attachment=<id>`（帶 Basic Auth）逐一下載存入地端附件目錄（詳見 docs/sql/README.md 附件搬運節）
+3. **附件搬運（v14 起必做）**：JSON 備份只含附件描述資料、**不含檔案本體**——依備份中各單據/稽核的 `attachments[].id`，以 `GET ?site=<工地>&attachment=<id>`（帶 Basic Auth）逐一下載存入地端附件目錄。**server.mjs 形態注意**：檔名須為 `<b64url(工地)>_<附件id>`（無副檔名），並須同步建立 `attmeta:` 中繼資料（名稱/型別），否則下載會退化為 octet-stream 與亂檔名；SQL 形態則回填 `file_path`（詳見 docs/sql/README.md 附件搬運節）
 4. 地端：`node server/import-backup.mjs <備份檔>` → 啟動服務
 5. 驗證清單（缺一不可）：
    - 開站出現 Basic Auth 登入 → 選工地攔截頁 → 各工地資料筆數與舊站一致
@@ -77,7 +77,7 @@ node server/server.mjs
 
 | 項目 | 建議 |
 |---|---|
-| 備份 | 每日排程壓縮整個 `DATA_DIR`（全部即純 JSON 檔）；另保留管理員手動 JSON 備份於月結時點 |
+| 備份 | 每日排程壓縮整個 `DATA_DIR`（含 JSON 檔與 `attachments/` 子目錄的附件二進位——**備份規則勿只挑 .json**）；另保留管理員手動 JSON 備份於月結時點 |
 | 監控 | 服務存活（HTTP 200 於 `/`）＋磁碟空間 |
 | 密碼輪替 | 人員異動時更換 `SITE_AUTH_PASS` 並重啟服務 |
 | 日誌 | stdout（systemd journal / NSSM 日誌檔）；本系統不記錄操作者身分（見下） |
@@ -101,7 +101,7 @@ node server/server.mjs
 - **只需實作一份合約**：[`docs/API-CONTRACT.md`](docs/API-CONTRACT.md) 完整定義了前後端唯一接縫（單一端點、9 個操作＋附件下載、409 並發語意、全部欄位字典、資料表設計建議與驗收方式）。新後端符合該合約，**前端 `app.js` 零修改**
 - **API 路徑可配置**：後端若掛在其他路徑（如 `/kg-audit/api/data`），在 `config.local.js` 加一行 `apiBase: "<路徑>"` 即可，不改程式
 - **驗收**：以現行前端直接跑本文件 §4 驗證清單＋雙瀏覽器並發 409 測試
-- 兩份參考實作（`netlify/functions/api.mjs`、`server/server.mjs`）行為一致，可作為重寫時的對照組
+- 兩份參考實作（`netlify/functions/api.mjs`、`server/server.mjs`）API 合約行為一致，可作為重寫時的對照組（已知差異：server.mjs 無舊命名空間 `migrateLegacyKeys` 搬移——僅影響從未經雲端 GET 的極舊資料）
 
 ## 8. 測試狀態聲明
 

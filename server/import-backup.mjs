@@ -14,7 +14,8 @@
    行為：
    - master（工地清單）、各工地 config、各筆紀錄逐一寫入
    - 已存在的同名資料會被備份檔內容覆蓋（以備份檔為準）
-   - 匯入完成後啟動 server.mjs 即可看到完整資料
+   - 匯入完成後啟動 server.mjs 即可看到全部單據與名單
+   - ⚠ 附件檔案本體不在 JSON 備份內、本工具不處理——須另依 DEPLOYMENT.md §4 步驟 3 搬運，否則附件全數缺失
    ========================================================== */
 import { promises as fs } from "node:fs";
 import path from "node:path";

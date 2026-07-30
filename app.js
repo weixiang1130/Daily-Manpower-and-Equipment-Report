@@ -1,5 +1,5 @@
 /* ==========================================================
-   點工機具稽核系統 - 前端 v8（共用資料庫版）
+   點工機具稽核系統 - 前端（雲端共用資料庫版；版本沿革見 CHANGELOG.md）
 
    v8 重點：
    1. 資料改存雲端共用資料庫（Netlify Functions + Blobs，
@@ -10,7 +10,7 @@
       a. 每次開啟頁面必須先在攔截頁明確選定工地
       b. 申請/回報表單面板常駐醒目的目前工地徽章
       c. 送出「申請」前彈出工地確認視窗
-   3. 同筆紀錄若兩人同時編輯為後寫者覆蓋（last-write-wins）；
+   3. 同筆紀錄並發編輯以版本檢查保護（baseV/409，v9 起；v18 起 baseV＝開表單當下快照）；
       不同紀錄互不影響（每筆獨立儲存）。
 
    注意：以下 GENERIC_CONFIG 僅為範例佔位資料。實際名單由
@@ -604,6 +604,10 @@ let editingLaborApplyBaseV = 0;   // v18：開表單當下的版本快照（送�
    ========================================================== */
 let bgVerifySeq = 0;
 function bgRefetchVerify(kind, id, baseV, stillEditing, onGone){
+  // 稽核表單編輯中不整批刷新：saveAudit/deleteAudit 送出時讀快取即時 v，
+  // 刷新會讓其 baseV 漂移繞過 409（對稱於稽核側以 otherFormEditing 把關）。
+  // 跳過只是少了背景校正提示，本表單送出仍有自身快照的 409 保護。
+  if(auditSelectedId) return;
   const seq = ++bgVerifySeq;
   refetchSite(MASTER.currentSite).then(()=>{
     if(seq !== bgVerifySeq || !stillEditing()) return;   // 使用者已切走，放棄
@@ -717,6 +721,7 @@ async function loadLaborApplyRecord(id){
   // v18 樂觀渲染：優先用快取立即開表單；快取沒有才等待網路
   let rec = cur().labor.find(r=>r.id===id);
   if(!rec){
+    if(auditSelectedId){ toast("稽核表單編輯中，請先儲存或取消稽核再操作"); return; }   // 同 bgRefetchVerify 守衛
     try{ await refetchSite(MASTER.currentSite); }catch(e){ toast("⚠ 無法載入最新資料，請檢查網路後再試"); return; }
     rec = cur().labor.find(r=>r.id===id);
   }
@@ -982,6 +987,7 @@ async function loadLaborReportRecord(id){
   // v18 樂觀渲染：優先用快取立即開表單；快取沒有才等待網路
   let rec = cur().labor.find(r=>r.id===id);
   if(!rec){
+    if(auditSelectedId){ toast("稽核表單編輯中，請先儲存或取消稽核再操作"); return; }   // 同 bgRefetchVerify 守衛
     try{ await refetchSite(MASTER.currentSite); }catch(e){ toast("⚠ 無法載入最新資料，請檢查網路後再試"); return; }
     rec = cur().labor.find(r=>r.id===id);
   }
@@ -1205,6 +1211,7 @@ async function loadEquipApplyRecord(id){
   // v18 樂觀渲染：優先用快取立即開表單；快取沒有才等待網路
   let rec = cur().equipment.find(r=>r.id===id);
   if(!rec){
+    if(auditSelectedId){ toast("稽核表單編輯中，請先儲存或取消稽核再操作"); return; }   // 同 bgRefetchVerify 守衛
     try{ await refetchSite(MASTER.currentSite); }catch(e){ toast("⚠ 無法載入最新資料，請檢查網路後再試"); return; }
     rec = cur().equipment.find(r=>r.id===id);
   }
@@ -1426,6 +1433,7 @@ async function loadEquipReportRecord(id){
   // v18 樂觀渲染：優先用快取立即開表單；快取沒有才等待網路
   let rec = cur().equipment.find(r=>r.id===id);
   if(!rec){
+    if(auditSelectedId){ toast("稽核表單編輯中，請先儲存或取消稽核再操作"); return; }   // 同 bgRefetchVerify 守衛
     try{ await refetchSite(MASTER.currentSite); }catch(e){ toast("⚠ 無法載入最新資料，請檢查網路後再試"); return; }
     rec = cur().equipment.find(r=>r.id===id);
   }

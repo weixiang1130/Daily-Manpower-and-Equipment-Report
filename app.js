@@ -592,6 +592,30 @@ function setStepper(){
    點工 — 申請（父層）
    ========================================================== */
 let editingLaborApplyId = null;
+let editingLaborApplyBaseV = 0;   // v18：開表單當下的版本快照（送出以此為 baseV）
+
+
+/* ==========================================================
+   樂觀渲染（v18）：點「編輯/填寫回報」先以快取即時開表單（免等 1–3 秒
+   網路往返），再於背景抓最新版校正。
+   併發安全：表單開啟當下即快照 baseV，送出一律以該快照為準
+   （合約 §3.3「baseV＝前端載入當下的版本」），因此背景刷新不會讓
+   版本號漂移而繞過 409——他人若已改過，送出時仍會正確衝突。
+   ========================================================== */
+let bgVerifySeq = 0;
+function bgRefetchVerify(kind, id, baseV, stillEditing, onGone){
+  const seq = ++bgVerifySeq;
+  refetchSite(MASTER.currentSite).then(()=>{
+    if(seq !== bgVerifySeq || !stillEditing()) return;   // 使用者已切走，放棄
+    const list = kind === "labor" ? cur().labor : cur().equipment;
+    const fresh = list.find(r=>r.id===id);
+    if(!fresh){ toast("⚠ 此單剛被其他人刪除，請重新選擇"); onGone(); return; }
+    if((fresh.v || 0) !== baseV){
+      toast("⚠ 此單剛被其他人更新；您填寫的內容已保留，送出時若衝突系統會提示重填");
+    }
+    renderLaborList(); renderEquipList();
+  }).catch(()=>{ /* 網路失敗：維持快取內容，送出時仍有 409 保護 */ });
+}
 
 function initLaborApplyForm(){
   document.getElementById("l_date").valueAsDate = new Date(Date.now()+86400000);
@@ -642,7 +666,7 @@ function initLaborApplyForm(){
     };
 
     try{
-      const resp = await apiSaveRecord("labor", rec, existing ? existing.v : 0);
+      const resp = await apiSaveRecord("labor", rec, existing ? editingLaborApplyBaseV : 0);   // v18：編輯時以開表單快照為 baseV
       rec.v = resp.v; rec.updatedAt = resp.updatedAt;
     }catch(err){
       if(err.status === 409){
@@ -674,6 +698,7 @@ function initLaborApplyForm(){
 
 function resetLaborApplyForm(){
   editingLaborApplyId = null;
+  editingLaborApplyBaseV = 0;
   document.getElementById("laborApplyForm").reset();
   document.getElementById("l_date").valueAsDate = new Date(Date.now()+86400000);
   document.getElementById("l_required").value = 0;
@@ -689,11 +714,16 @@ function resetLaborApplyForm(){
 }
 
 async function loadLaborApplyRecord(id){
-  try{ await refetchSite(MASTER.currentSite); }catch(e){ toast("⚠ 無法載入最新資料，請檢查網路後再試"); return; }
-  const rec = cur().labor.find(r=>r.id===id);
+  // v18 樂觀渲染：優先用快取立即開表單；快取沒有才等待網路
+  let rec = cur().labor.find(r=>r.id===id);
+  if(!rec){
+    try{ await refetchSite(MASTER.currentSite); }catch(e){ toast("⚠ 無法載入最新資料，請檢查網路後再試"); return; }
+    rec = cur().labor.find(r=>r.id===id);
+  }
   if(!rec){ toast("此紀錄已被其他人刪除"); renderAll(); return; }
   if(isLockedDate(rec.date)){ toast(`此單日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員修改`); renderLaborList(); return; }
   editingLaborApplyId = id;
+  editingLaborApplyBaseV = rec.v || 0;   // v18：版本快照，送出以此為 baseV
 
   document.getElementById("l_date").value = rec.date;
   setCombo("cb_l_vendor", rec.vendor);
@@ -713,12 +743,16 @@ async function loadLaborApplyRecord(id){
   expandPanel("laborApplyPanel");
   switchSubTab("tab-labor", "labor-apply");
   document.getElementById("tab-labor").scrollIntoView({behavior:"smooth", block:"start"});
+
+  // v18：表單已即時開啟，於背景抓最新版校正（不擋畫面）
+  bgRefetchVerify("labor", id, editingLaborApplyBaseV, ()=>editingLaborApplyId === id, ()=>{ resetLaborApplyForm(); collapsePanel("laborApplyPanel"); });
 }
 
 /* ==========================================================
    點工 — 回報覆核（子層）
    ========================================================== */
 let editingLaborReportId = null;
+let editingLaborReportBaseV = 0;
 let typeState = [];   // v11：逐工種覆核列 [{type, work, ot2, otOver}]
 
 /* 數字欄位取值：空白回 null（與 0 區分），其餘轉數字 */
@@ -822,7 +856,7 @@ function initLaborReportForm(){
     });
 
     try{
-      const resp = await apiSaveRecord("labor", updated, rec.v || 0);
+      const resp = await apiSaveRecord("labor", updated, editingLaborReportBaseV);   // v18：以開表單快照為 baseV（合約 §3.3）
       updated.v = resp.v; updated.updatedAt = resp.updatedAt;
     }catch(err){
       if(err.status === 409){
@@ -933,6 +967,7 @@ function updateLaborDiff(){
 
 function resetLaborReportForm(){
   editingLaborReportId = null;
+  editingLaborReportBaseV = 0;
   typeState = [];
   document.getElementById("laborReportForm").reset();
   setCombo("cb_l_engineer", "");
@@ -944,11 +979,16 @@ function resetLaborReportForm(){
 }
 
 async function loadLaborReportRecord(id){
-  try{ await refetchSite(MASTER.currentSite); }catch(e){ toast("⚠ 無法載入最新資料，請檢查網路後再試"); return; }
-  const rec = cur().labor.find(r=>r.id===id);
+  // v18 樂觀渲染：優先用快取立即開表單；快取沒有才等待網路
+  let rec = cur().labor.find(r=>r.id===id);
+  if(!rec){
+    try{ await refetchSite(MASTER.currentSite); }catch(e){ toast("⚠ 無法載入最新資料，請檢查網路後再試"); return; }
+    rec = cur().labor.find(r=>r.id===id);
+  }
   if(!rec){ toast("此紀錄已被其他人刪除"); renderAll(); return; }
   if(isLockedDate(rec.date)){ toast(`此單日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員修改`); renderLaborList(); return; }
   editingLaborReportId = id;
+  editingLaborReportBaseV = rec.v || 0;   // v18：版本快照，送出以此為 baseV
 
   // v11：逐工種覆核；舊單（僅逐人 attendance）帶總數手填即可
   const prevTypes = (rec.report && rec.report.workTypes) || [];
@@ -982,6 +1022,9 @@ async function loadLaborReportRecord(id){
   expandPanel("laborReportPanel");
   switchSubTab("tab-labor", "labor-report");
   document.getElementById("tab-labor").scrollIntoView({behavior:"smooth", block:"start"});
+
+  // v18：表單已即時開啟，於背景抓最新版校正（不擋畫面）
+  bgRefetchVerify("labor", id, editingLaborReportBaseV, ()=>editingLaborReportId === id, ()=>{ resetLaborReportForm(); collapsePanel("laborReportPanel"); });
 }
 
 async function deleteLaborRecord(id){
@@ -1057,6 +1100,7 @@ function renderLaborList(){
    機具 — 申請
    ========================================================== */
 let editingEquipApplyId = null;
+let editingEquipApplyBaseV = 0;
 
 function initEquipApplyForm(){
   document.getElementById("e_date").valueAsDate = new Date(Date.now()+86400000);
@@ -1110,7 +1154,7 @@ function initEquipApplyForm(){
     };
 
     try{
-      const resp = await apiSaveRecord("equipment", rec, existing ? existing.v : 0);
+      const resp = await apiSaveRecord("equipment", rec, existing ? editingEquipApplyBaseV : 0);   // v18：同上
       rec.v = resp.v; rec.updatedAt = resp.updatedAt;
     }catch(err){
       if(err.status === 409){
@@ -1142,6 +1186,7 @@ function initEquipApplyForm(){
 
 function resetEquipApplyForm(){
   editingEquipApplyId = null;
+  editingEquipApplyBaseV = 0;
   document.getElementById("equipApplyForm").reset();
   document.getElementById("e_date").valueAsDate = new Date(Date.now()+86400000);
   document.getElementById("e_requiredQty").value = 1;
@@ -1157,11 +1202,16 @@ function resetEquipApplyForm(){
 }
 
 async function loadEquipApplyRecord(id){
-  try{ await refetchSite(MASTER.currentSite); }catch(e){ toast("⚠ 無法載入最新資料，請檢查網路後再試"); return; }
-  const rec = cur().equipment.find(r=>r.id===id);
+  // v18 樂觀渲染：優先用快取立即開表單；快取沒有才等待網路
+  let rec = cur().equipment.find(r=>r.id===id);
+  if(!rec){
+    try{ await refetchSite(MASTER.currentSite); }catch(e){ toast("⚠ 無法載入最新資料，請檢查網路後再試"); return; }
+    rec = cur().equipment.find(r=>r.id===id);
+  }
   if(!rec){ toast("此紀錄已被其他人刪除"); renderAll(); return; }
   if(isLockedDate(rec.date)){ toast(`此單日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員修改`); renderEquipList(); return; }
   editingEquipApplyId = id;
+  editingEquipApplyBaseV = rec.v || 0;   // v18：版本快照，送出以此為 baseV
 
   document.getElementById("e_date").value = rec.date;
   setCombo("cb_e_vendor", rec.vendor);
@@ -1183,12 +1233,16 @@ async function loadEquipApplyRecord(id){
   expandPanel("equipApplyPanel");
   switchSubTab("tab-equipment", "equip-apply");
   document.getElementById("tab-equipment").scrollIntoView({behavior:"smooth", block:"start"});
+
+  // v18：表單已即時開啟，於背景抓最新版校正（不擋畫面）
+  bgRefetchVerify("equipment", id, editingEquipApplyBaseV, ()=>editingEquipApplyId === id, ()=>{ resetEquipApplyForm(); collapsePanel("equipApplyPanel"); });
 }
 
 /* ==========================================================
    機具 — 回報覆核
    ========================================================== */
 let editingEquipReportId = null;
+let editingEquipReportBaseV = 0;
 let usageState = [];
 
 function initEquipReportForm(){
@@ -1274,7 +1328,7 @@ function initEquipReportForm(){
     });
 
     try{
-      const resp = await apiSaveRecord("equipment", updated, rec.v || 0);
+      const resp = await apiSaveRecord("equipment", updated, editingEquipReportBaseV);   // v18：同上
       updated.v = resp.v; updated.updatedAt = resp.updatedAt;
     }catch(err){
       if(err.status === 409){
@@ -1357,6 +1411,7 @@ function updateEquipDiff(){
 
 function resetEquipReportForm(){
   editingEquipReportId = null;
+  editingEquipReportBaseV = 0;
   usageState = [];
   document.getElementById("equipReportForm").reset();
   setCombo("cb_e_checker", "");
@@ -1368,11 +1423,16 @@ function resetEquipReportForm(){
 }
 
 async function loadEquipReportRecord(id){
-  try{ await refetchSite(MASTER.currentSite); }catch(e){ toast("⚠ 無法載入最新資料，請檢查網路後再試"); return; }
-  const rec = cur().equipment.find(r=>r.id===id);
+  // v18 樂觀渲染：優先用快取立即開表單；快取沒有才等待網路
+  let rec = cur().equipment.find(r=>r.id===id);
+  if(!rec){
+    try{ await refetchSite(MASTER.currentSite); }catch(e){ toast("⚠ 無法載入最新資料，請檢查網路後再試"); return; }
+    rec = cur().equipment.find(r=>r.id===id);
+  }
   if(!rec){ toast("此紀錄已被其他人刪除"); renderAll(); return; }
   if(isLockedDate(rec.date)){ toast(`此單日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員修改`); renderEquipList(); return; }
   editingEquipReportId = id;
+  editingEquipReportBaseV = rec.v || 0;   // v18：版本快照，送出以此為 baseV
 
   const prev = (rec.report && rec.report.usage) || [];
   usageState = (rec.types||[]).map(type=>{
@@ -1399,6 +1459,9 @@ async function loadEquipReportRecord(id){
   expandPanel("equipReportPanel");
   switchSubTab("tab-equipment", "equip-report");
   document.getElementById("tab-equipment").scrollIntoView({behavior:"smooth", block:"start"});
+
+  // v18：表單已即時開啟，於背景抓最新版校正（不擋畫面）
+  bgRefetchVerify("equipment", id, editingEquipReportBaseV, ()=>editingEquipReportId === id, ()=>{ resetEquipReportForm(); collapsePanel("equipReportPanel"); });
 }
 
 async function deleteEquipRecord(id){

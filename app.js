@@ -115,13 +115,16 @@ function sortRecords(store){
   }
 }
 
+/* 各工地獨立管理名單（v17）：新建工地不再帶入分包商與工程師種子名單——
+   兩者屬各工地自有的組織資料，須由該工地自行建立，避免 A 站名單出現在 B 站。
+   工作地點／工作內容／機具類型／工種為泛用詞彙，仍給預設值以免新站無從填起。 */
 function defaultSiteConfig(){
   return {
-    vendors: (LOCAL.vendors && LOCAL.vendors.length ? LOCAL.vendors : GENERIC_CONFIG.vendors).slice(),
+    vendors: [],
     locations: GENERIC_CONFIG.locations.slice(),
     categories: GENERIC_CONFIG.categories.slice(),
     equipTypes: GENERIC_CONFIG.equipTypes.slice(),
-    people: (LOCAL.people && LOCAL.people.length ? LOCAL.people : GENERIC_CONFIG.people).slice(),
+    people: [],
     workers: [],
     laborTypes: GENERIC_CONFIG.laborTypes.slice(),
     lockDate: ""

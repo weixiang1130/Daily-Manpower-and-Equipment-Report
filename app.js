@@ -109,24 +109,24 @@ function sortRecords(store){
   const byNewest = (a,b)=> String(b.id).localeCompare(String(a.id));
   store.labor.sort(byNewest);
   store.equipment.sort(byNewest);
-  // 既有工地的 config 可能缺少後來新增的名單池（v11 工種），載入時補預設值
-  if(store.config && (!Array.isArray(store.config.laborTypes) || !store.config.laborTypes.length)){
-    store.config.laborTypes = GENERIC_CONFIG.laborTypes.slice();
-  }
+  // v17.1：各工地名單一律自建，不再自動補預設工種（原 v11 相容邏輯移除）；
+  // 僅確保欄位存在為陣列，避免舊資料缺鍵造成 render 出錯
+  if(store.config && !Array.isArray(store.config.laborTypes)) store.config.laborTypes = [];
 }
 
-/* 各工地獨立管理名單（v17）：新建工地不再帶入分包商與工程師種子名單——
-   兩者屬各工地自有的組織資料，須由該工地自行建立，避免 A 站名單出現在 B 站。
-   工作地點／工作內容／機具類型／工種為泛用詞彙，仍給預設值以免新站無從填起。 */
+/* 各工地獨立管理名單（v17／v17.1）：新建工地一律不帶任何種子名單——
+   分包商、工程師、工作地點、工作內容、機具類型、工種全部由該工地自行建立，
+   確保 A 站建立的選項不會出現在 B 站。使用者可於表單「＋新增選項」或
+   設定頁批次貼上建立。 */
 function defaultSiteConfig(){
   return {
     vendors: [],
-    locations: GENERIC_CONFIG.locations.slice(),
-    categories: GENERIC_CONFIG.categories.slice(),
-    equipTypes: GENERIC_CONFIG.equipTypes.slice(),
+    locations: [],
+    categories: [],
+    equipTypes: [],
     people: [],
     workers: [],
-    laborTypes: GENERIC_CONFIG.laborTypes.slice(),
+    laborTypes: [],
     lockDate: ""
   };
 }

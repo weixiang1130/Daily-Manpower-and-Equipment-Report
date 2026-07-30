@@ -91,6 +91,10 @@ node server/server.mjs
 
 ## 7. 未來改接公司標準後端（重寫資料層）
 
+> **移轉主文件**：公司內網（.NET 8 + SQL Server）的完整移轉計畫、分工、三階段時程與切換日程序，
+> 見 [`docs/MIGRATION-PLAN.md`](docs/MIGRATION-PLAN.md)。本節僅保留資料層起點說明。
+
+
 若 IT 評估後決定不使用 `server/server.mjs`，而以公司標準技術（自選語言＋資料庫）重寫後端：
 
 - **資料層起點包已備妥**：[`docs/sql/`](docs/sql/README.md) 內含經實測的 SQL Server 建表 DDL（8 表＋4 VIEW）、備份 JSON→SQL 遷移工具、逐操作 SQL 對照與並發寫法——**請從 docs/sql/README.md 讀起**，不必從零設計 schema

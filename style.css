@@ -622,3 +622,7 @@ th{
 
 /* 轉場：一律 200ms 溫和淡入，無彈跳 */
 *{transition-duration:var(--duration-normal);transition-timing-function:var(--ease-default);}
+
+/* 叫工排名小計列（v19.2） */
+.rank-subtotal td{background:var(--bg-surface-1);border-top:1.5px solid var(--border-medium);}
+td.num,th.num{font-family:'DM Mono',Consolas,monospace;font-variant-numeric:tabular-nums;text-align:right;}

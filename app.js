@@ -2051,7 +2051,12 @@ function renderRankingReport(){
     document.getElementById("reportSummary").innerHTML = "";
     return;
   }
-  const heads = ["工種", "排名", "簽單責任工程師", "本工", "加班前2h", "加班2h後", "總工數"];
+  // 欄位定義：num=數值欄（右對齊、等寬字），w=欄寬百分比
+  const cols = [
+    { t: "工種", w: 16 }, { t: "排名", w: 7, num: 1 }, { t: "簽單責任工程師", w: 19 },
+    { t: "本工", w: 12, num: 1 }, { t: "加班前2h", w: 14, num: 1 },
+    { t: "加班2h後", w: 14, num: 1 }, { t: "總工數", w: 18, num: 1 }
+  ];
   const body = rows.map(r => {
     const lines = r.ranked.map((e, i) => "<tr>"
       + "<td>" + (i === 0 ? "<strong>" + esc(r.type) + "</strong>" : "") + "</td>"
@@ -2062,13 +2067,15 @@ function renderRankingReport(){
       + '<td class="num">' + (e.otOver ? fmtRank(e.otOver) : "") + "</td>"
       + '<td class="num"><strong>' + fmtRank(e.units) + "</strong></td></tr>").join("");
     return lines + '<tr class="rank-subtotal"><td></td>'
-      + '<td colspan="2"><strong>' + esc(r.type) + " 小計（" + r.ranked.length + " 人）</strong></td>"
+      + '<td colspan="2" class="subtotal-label"><strong>小計（' + r.ranked.length + " 人）</strong></td>"
       + '<td class="num"><strong>' + fmtRank(r.sum.work) + "</strong></td>"
       + '<td class="num"><strong>' + (r.sum.ot2 ? fmtRank(r.sum.ot2) : "") + "</strong></td>"
       + '<td class="num"><strong>' + (r.sum.otOver ? fmtRank(r.sum.otOver) : "") + "</strong></td>"
       + '<td class="num"><strong>' + fmtRank(r.units) + "</strong></td></tr>";
   }).join("");
-  el.innerHTML = "<table><thead><tr>" + heads.map(h => "<th>" + esc(h) + "</th>").join("") + "</tr></thead>"
+  el.innerHTML = '<table class="rank-table">'
+    + "<colgroup>" + cols.map(c => '<col style="width:' + c.w + '%">').join("") + "</colgroup>"
+    + "<thead><tr>" + cols.map(c => "<th" + (c.num ? ' class="num"' : "") + ">" + esc(c.t) + "</th>").join("") + "</tr></thead>"
     + "<tbody>" + body + "</tbody></table>"
     + '<p class="hint">本工＝回報的工種出工數（可含 0.5 工）；加班為時數。'
     + "<strong>總工數＝本工＋(加班前2h＋加班2h後)÷8</strong>（工數以 8 小時換算），排名依總工數。僅計已回報單。</p>";

@@ -623,6 +623,10 @@ th{
 /* 轉場：一律 200ms 溫和淡入，無彈跳 */
 *{transition-duration:var(--duration-normal);transition-timing-function:var(--ease-default);}
 
-/* 叫工排名小計列（v19.2） */
+/* ---------- 叫工排名報表（v19.2；v19.3 對齊修正） ---------- */
+.rank-table{max-width:1080px;}                       /* 不撐滿寬版面，避免欄距過鬆 */
+.rank-table th.num,.rank-table td.num{text-align:right;padding-right:18px;}
+td.num,th.num{font-variant-numeric:tabular-nums;}    /* 數字等寬對齊（整數位對整數位） */
+td.num{font-family:'DM Mono',Consolas,monospace;}
 .rank-subtotal td{background:var(--bg-surface-1);border-top:1.5px solid var(--border-medium);}
-td.num,th.num{font-family:'DM Mono',Consolas,monospace;font-variant-numeric:tabular-nums;text-align:right;}
+.rank-subtotal .subtotal-label{text-align:right;color:var(--slate-700);}

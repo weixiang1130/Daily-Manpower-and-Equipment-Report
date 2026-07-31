@@ -33,6 +33,9 @@ const GENERIC_CONFIG = {
 const LOCAL = (typeof window !== "undefined" && window.LOCAL_CONFIG) ? window.LOCAL_CONFIG : {};
 
 let MASTER = { sites: [], currentSite: null };
+/* v20：URL ?site=<工地> 鎖站模式——開啟即鎖定單一工地（免選站、隱藏
+   其他工地與總覽）。屬防呆便利機制，非資安權限；真權限待地端 AD 整合。 */
+let LOCKED_SITE = null;
 let SITE_CACHE = {};
 let READY = false;
 
@@ -183,11 +186,20 @@ async function boot(){
 
     showLoading(false);
 
-    const remembered = sessionStorage.getItem("dm_site");
-    if(remembered && MASTER.sites.includes(remembered)){
-      enterSite(remembered);
+    const urlSite = new URLSearchParams(location.search).get("site");
+    if(urlSite && MASTER.sites.includes(urlSite)){
+      LOCKED_SITE = urlSite;               // v20：專屬連結鎖站
+      applyLockedSiteUI();
+      enterSite(urlSite);
     }else{
-      showSiteGate();
+      const remembered = sessionStorage.getItem("dm_site");
+      if(remembered && MASTER.sites.includes(remembered)){
+        enterSite(remembered);
+      }else if(MASTER.sites.length === 1){
+        enterSite(MASTER.sites[0]);        // v20：只有一個工地（如未來權限過濾後）免選直進
+      }else{
+        showSiteGate();
+      }
     }
   }catch(e){
     showLoading(false);
@@ -212,6 +224,15 @@ function enterSite(site){
   sessionStorage.setItem("dm_site", site);
   READY = true;
   renderAll();
+  switchMainTab("labor");   // v20：選定工地即進入點工頁開工，免再點一次（總覽仍在頁籤可隨時回）
+}
+
+/* v20：鎖站模式 UI——隱藏總覽頁籤與工地切換器（換成固定工地名） */
+function applyLockedSiteUI(){
+  if(!LOCKED_SITE) return;
+  document.querySelector('.tab[data-tab="dashboard"]').hidden = true;
+  const picker = document.querySelector(".site-picker");
+  if(picker) picker.innerHTML = '<label>目前工地</label><span style="color:#fff;font-weight:700;">' + esc(LOCKED_SITE) + "</span>";
 }
 
 /* 重新整理：從共用資料庫重新載入全部資料 */
@@ -250,6 +271,7 @@ async function refreshData(silent){
    工地切換（Context Switch）
    ========================================================== */
 function renderSitePicker(){
+  if(LOCKED_SITE) return;   // v20：鎖站模式無切換器
   const sel = document.getElementById("currentSite");
   sel.innerHTML = MASTER.sites.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join("");
   sel.value = MASTER.currentSite;
@@ -266,6 +288,7 @@ function switchSiteContext(site, silent){
   auditVendor = "";
   resetListFilters();   // v15：清單篩選屬於單一工地的檢視狀態，切站即重置
   renderAll();
+  if(isAdmin()) refreshSiteLink();
   if(!silent) toast(`已切換至：${site}`);
   refreshData(true);
 }
@@ -2831,6 +2854,15 @@ const ADMIN_PIN = (LOCAL.adminPin != null) ? String(LOCAL.adminPin) : "0000";
 function isAdmin(){ return sessionStorage.getItem("dm_admin") === "1"; }
 
 function initAdmin(){
+  document.getElementById("copySiteLinkBtn").addEventListener("click", ()=>{
+    refreshSiteLink();
+    const el = document.getElementById("siteLinkUrl");
+    el.select();
+    navigator.clipboard.writeText(el.value).then(
+      ()=>toast("已複製「" + MASTER.currentSite + "」的專屬連結"),
+      ()=>{ document.execCommand("copy"); toast("已複製連結"); }
+    );
+  });
   document.getElementById("adminToggleBtn").addEventListener("click", ()=>{
     if(isAdmin()){
       sessionStorage.removeItem("dm_admin");
@@ -2864,6 +2896,12 @@ function applyAdminUI(){
   document.getElementById("saveSettings").style.display = admin ? "" : "none";
   document.getElementById("resetSettings").style.display = admin ? "" : "none";
   document.getElementById("dangerZone").style.display = admin ? "" : "none";
+  // v20：工地專屬連結（管理員發給各站的直達鎖站連結）
+  const linkPanel = document.getElementById("siteLinkPanel");
+  if(linkPanel){
+    linkPanel.style.display = admin ? "" : "none";
+    if(admin) refreshSiteLink();
+  }
 
   // v13：成控現場稽核頁籤——非管理員完全隱藏；登出時若正在稽核頁則跳回總覽，
   // 並重置稽核選取狀態（否則 auditSelectedId 殘留會讓 anyEditing() 卡在 true，
@@ -2876,6 +2914,12 @@ function applyAdminUI(){
     switchMainTab("dashboard");
   }
 }
+
+function refreshSiteLink(){
+  const el = document.getElementById("siteLinkUrl");
+  if(el) el.value = location.origin + location.pathname + "?site=" + encodeURIComponent(MASTER.currentSite || "");
+}
+
 
 /* ==========================================================
    設定（工地清單為全域；其餘基礎資料屬於目前工地）

@@ -2096,46 +2096,182 @@ function renderRankingReport(){
   bindPager(el, "ranking", renderRankingReport);
 }
 
+/* ==========================================================
+   最小 xlsx 產生器（v19.5）：零依賴，直接組 OOXML 檔案包
+
+   為什麼不繼續用「HTML 表格存成 .xls」：Excel 2007 起會比對副檔名與實際
+   格式，開檔前跳出「檔案格式與副檔名不相符…可能已損毀或不安全」的警告，
+   工地同仁每次匯出都要按一次「是」。改產生真正的 xlsx（ZIP 內含 XML）
+   即無此警告，且數值是真數值（不必再靠 mso-number-format 硬套格式）。
+
+   ZIP 一律用 STORED（不壓縮）：報表檔僅數十 KB，省下實作 deflate 的風險。
+   ========================================================== */
+const CRC32_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for(let n = 0; n < 256; n++){
+    let c = n;
+    for(let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(u8){
+  let c = 0xFFFFFFFF;
+  for(let i = 0; i < u8.length; i++) c = CRC32_TABLE[(c ^ u8[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+/* entries: [{name, data:字串}] → Blob（ZIP，STORED 不壓縮） */
+function zipStore(entries, mime){
+  const enc = new TextEncoder();
+  const d = new Date();
+  const dosTime = ((d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1)) & 0xFFFF;
+  const dosDate = (((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate()) & 0xFFFF;
+  const local = [], central = [];
+  let offset = 0;
+  entries.forEach(e => {
+    const name = enc.encode(e.name), data = enc.encode(e.data), crc = crc32(data);
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true);
+    lh.setUint16(6, 0x0800, true);          // 檔名為 UTF-8
+    lh.setUint16(8, 0, true);               // 0 = stored
+    lh.setUint16(10, dosTime, true); lh.setUint16(12, dosDate, true);
+    lh.setUint32(14, crc, true); lh.setUint32(18, data.length, true); lh.setUint32(22, data.length, true);
+    lh.setUint16(26, name.length, true); lh.setUint16(28, 0, true);
+    local.push(new Uint8Array(lh.buffer), name, data);
+    const cd = new DataView(new ArrayBuffer(46));
+    cd.setUint32(0, 0x02014b50, true); cd.setUint16(4, 20, true); cd.setUint16(6, 20, true);
+    cd.setUint16(8, 0x0800, true); cd.setUint16(10, 0, true);
+    cd.setUint16(12, dosTime, true); cd.setUint16(14, dosDate, true);
+    cd.setUint32(16, crc, true); cd.setUint32(20, data.length, true); cd.setUint32(24, data.length, true);
+    cd.setUint16(28, name.length, true); cd.setUint32(42, offset, true);
+    central.push(new Uint8Array(cd.buffer), name);
+    offset += 30 + name.length + data.length;
+  });
+  const cdSize = central.reduce((a, b) => a + b.length, 0);
+  const eo = new DataView(new ArrayBuffer(22));
+  eo.setUint32(0, 0x06054b50, true);
+  eo.setUint16(8, entries.length, true); eo.setUint16(10, entries.length, true);
+  eo.setUint32(12, cdSize, true); eo.setUint32(16, offset, true);
+  return new Blob(local.concat(central, [new Uint8Array(eo.buffer)]), { type: mime });
+}
+
+/* 樣式索引：對應 styles.xml 的 cellXfs 順序，儲存格以 s="N" 引用 */
+const XS = { PLAIN: 0, TITLE: 1, HEAD: 2, GROUP: 3, TEXT: 4, NUM: 5, NUMB: 6, SUBT: 7, SUBN: 8 };
+const XLSX_STYLES = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+  + '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+  + '<numFmts count="1"><numFmt numFmtId="164" formatCode="0.####"/></numFmts>'
+  + '<fonts count="2"><font><sz val="11"/><name val="Microsoft JhengHei"/></font>'
+  + '<font><b/><sz val="11"/><name val="Microsoft JhengHei"/></font></fonts>'
+  + '<fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>'
+  + '<fill><patternFill patternType="solid"><fgColor rgb="FFCCC0DA"/><bgColor indexed="64"/></patternFill></fill>'
+  + '<fill><patternFill patternType="solid"><fgColor rgb="FFF2ABC9"/><bgColor indexed="64"/></patternFill></fill>'
+  + '<fill><patternFill patternType="solid"><fgColor rgb="FFFDE9D9"/><bgColor indexed="64"/></patternFill></fill></fills>'
+  + '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>'
+  + '<border><left style="thin"><color rgb="FF808080"/></left><right style="thin"><color rgb="FF808080"/></right>'
+  + '<top style="thin"><color rgb="FF808080"/></top><bottom style="thin"><color rgb="FF808080"/></bottom><diagonal/></border></borders>'
+  + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+  + '<cellXfs count="9">'
+  + '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+  + '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>'
+  + '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>'
+  + '<xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>'
+  + '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>'
+  + '<xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="right"/></xf>'
+  + '<xf numFmtId="164" fontId="1" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="right"/></xf>'
+  + '<xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="right"/></xf>'
+  + '<xf numFmtId="164" fontId="1" fillId="4" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="right"/></xf>'
+  + '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+
+const colRef = i => String.fromCharCode(65 + i);      // 0→A（本報表 8 欄，不需雙字母）
+/* 合併範圍內的「被蓋住」格仍要輸出空白格，否則該範圍沒有框線 */
+const xlText = (c, r, s, v) => v === "" || v == null
+  ? '<c r="' + colRef(c) + r + '" s="' + s + '"/>'
+  : '<c r="' + colRef(c) + r + '" s="' + s + '" t="inlineStr"><is><t xml:space="preserve">' + esc(v) + "</t></is></c>";
+const xlNum = (c, r, s, v) => v === "" || v == null
+  ? '<c r="' + colRef(c) + r + '" s="' + s + '"/>'
+  : '<c r="' + colRef(c) + r + '" s="' + s + '"><v>' + v + "</v></c>";
+
+/* 組出 xlsx Blob；rowsXml 每列為 <row> 字串，merges 如 "A3:A6" */
+function buildXlsx(sheetName, colWidths, rowsXml, merges){
+  const sheet = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    + "<cols>" + colWidths.map((w, i) => '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>').join("") + "</cols>"
+    + "<sheetData>" + rowsXml.join("") + "</sheetData>"
+    + (merges.length ? '<mergeCells count="' + merges.length + '">' + merges.map(m => '<mergeCell ref="' + m + '"/>').join("") + "</mergeCells>" : "")
+    + "</worksheet>";
+  const REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/";
+  return zipStore([
+    { name: "[Content_Types].xml", data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+      + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+      + '<Default Extension="xml" ContentType="application/xml"/>'
+      + '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+      + '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+      + '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>' },
+    { name: "_rels/.rels", data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+      + '<Relationship Id="rId1" Type="' + REL + 'officeDocument" Target="xl/workbook.xml"/></Relationships>' },
+    { name: "xl/workbook.xml", data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+      + '<sheets><sheet name="' + esc(sheetName) + '" sheetId="1" r:id="rId1"/></sheets></workbook>' },
+    { name: "xl/_rels/workbook.xml.rels", data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+      + '<Relationship Id="rId1" Type="' + REL + 'worksheet" Target="worksheets/sheet1.xml"/>'
+      + '<Relationship Id="rId2" Type="' + REL + 'styles" Target="styles.xml"/></Relationships>' },
+    { name: "xl/styles.xml", data: XLSX_STYLES },
+    { name: "xl/worksheets/sheet1.xml", data: sheet }
+  ], "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+}
+
 function exportRankingXls(){
   const { rows } = buildRankingData();
   if(!rows.length){ toast("此條件內尚無已回報的點工資料可排名"); return; }
-  const B = "border:1px solid #808080;padding:4px 10px;";
-  const HDR = 'style="' + B + 'background:#CCC0DA;font-weight:bold;text-align:center;"';
-  const TYPE = 'style="' + B + 'background:#F2ABC9;font-weight:bold;vertical-align:middle;"';
-  const SUB = 'style="' + B + 'background:#FDE9D9;font-weight:bold;"';
-  const NF = "mso-number-format:'0\\.####';text-align:right;";
-  const SUBN = 'style="' + B + 'background:#FDE9D9;font-weight:bold;' + NF + '"';
-  const CELL = 'style="' + B + '"';
-  const NUM = 'style="' + B + NF + '"';
-  const NUMB = 'style="' + B + NF + 'font-weight:bold;"';
+  const N = RANK_COLS.length;          // 8 欄：工種/排名/工程師/本工/前2h/2h後/加班合計/總工數
+  const xml = [], merges = [];
 
-  let html = '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="UTF-8"><title>叫工排名</title></head><body>';
-  html += '<table border="0" style="border-collapse:collapse;font-family:\'Microsoft JhengHei\';font-size:12px;">';
-  html += '<tr><td colspan="' + RANK_COLS.length + '" style="' + B + 'background:#CCC0DA;font-weight:bold;">期別/月份：' + esc(rankingPeriodLabel())
-       + "　（總工數＝本工＋加班時數÷8；排名依總工數）</td></tr>";
-  html += "<tr>" + RANK_COLS.map(c => "<th " + HDR + ">" + esc(c.t) + "</th>").join("") + "</tr>";
+  // 第 1 列：期別標題（整列合併）
+  xml.push('<row r="1">' + xlText(0, 1, XS.TITLE, "期別/月份：" + rankingPeriodLabel() + "　（總工數＝本工＋加班時數÷8；排名依總工數）")
+    + Array.from({ length: N - 1 }, (_, i) => xlText(i + 1, 1, XS.TITLE, "")).join("") + "</row>");
+  merges.push("A1:" + colRef(N - 1) + "1");
+  // 第 2 列：表頭（沿用 RANK_COLS 單一來源）
+  xml.push('<row r="2">' + RANK_COLS.map((c, i) => xlText(i, 2, XS.HEAD, c.t)).join("") + "</row>");
+
+  let rn = 3;
   rows.forEach(r => {
+    const start = rn;
     r.ranked.forEach((e, i) => {
-      html += "<tr>";
-      if(i === 0) html += "<td " + TYPE + ' rowspan="' + (r.ranked.length + 1) + '">' + esc(r.type) + "</td>";
-      html += "<td " + NUM + ">" + (i + 1) + "</td><td " + CELL + ">" + esc(e.name) + "</td>";
-      html += "<td " + NUM + ">" + fmtRank(e.work) + "</td><td " + NUM + ">" + (e.ot2 ? fmtRank(e.ot2) : "") + "</td>";
-      html += "<td " + NUM + ">" + (e.otOver ? fmtRank(e.otOver) : "") + "</td>";
-      html += "<td " + NUM + ">" + ((e.ot2 + e.otOver) ? fmtRank(e.ot2 + e.otOver) : "") + "</td>";
-      html += "<td " + NUMB + ">" + fmtRank(e.units) + "</td></tr>";
+      const ot = e.ot2 + e.otOver;
+      xml.push('<row r="' + rn + '">'
+        + xlText(0, rn, XS.GROUP, i === 0 ? r.type : "")
+        + xlNum(1, rn, XS.NUM, i + 1)
+        + xlText(2, rn, XS.TEXT, e.name)
+        + xlNum(3, rn, XS.NUM, fmtRank(e.work))
+        + xlNum(4, rn, XS.NUM, e.ot2 ? fmtRank(e.ot2) : "")
+        + xlNum(5, rn, XS.NUM, e.otOver ? fmtRank(e.otOver) : "")
+        + xlNum(6, rn, XS.NUM, ot ? fmtRank(ot) : "")
+        + xlNum(7, rn, XS.NUMB, fmtRank(e.units)) + "</row>");
+      rn++;
     });
-    html += "<tr><td " + SUB + ' colspan="2">小計（' + r.ranked.length + " 人）</td>";
-    html += "<td " + SUBN + ">" + fmtRank(r.sum.work) + "</td><td " + SUBN + ">" + (r.sum.ot2 ? fmtRank(r.sum.ot2) : "") + "</td>";
-    html += "<td " + SUBN + ">" + (r.sum.otOver ? fmtRank(r.sum.otOver) : "") + "</td>";
-    html += "<td " + SUBN + ">" + ((r.sum.ot2 + r.sum.otOver) ? fmtRank(r.sum.ot2 + r.sum.otOver) : "") + "</td>";
-    html += "<td " + SUBN + ">" + fmtRank(r.units) + "</td></tr>";
+    const sot = r.sum.ot2 + r.sum.otOver;
+    xml.push('<row r="' + rn + '">'
+      + xlText(0, rn, XS.GROUP, "")
+      + xlText(1, rn, XS.SUBT, "小計（" + r.ranked.length + " 人）")
+      + xlText(2, rn, XS.SUBT, "")
+      + xlNum(3, rn, XS.SUBN, fmtRank(r.sum.work))
+      + xlNum(4, rn, XS.SUBN, r.sum.ot2 ? fmtRank(r.sum.ot2) : "")
+      + xlNum(5, rn, XS.SUBN, r.sum.otOver ? fmtRank(r.sum.otOver) : "")
+      + xlNum(6, rn, XS.SUBN, sot ? fmtRank(sot) : "")
+      + xlNum(7, rn, XS.SUBN, fmtRank(r.units)) + "</row>");
+    merges.push("A" + start + ":A" + rn);     // 工種格跨資料列＋小計列
+    merges.push("B" + rn + ":C" + rn);        // 小計標籤跨排名＋工程師欄
+    rn++;
   });
-  html += "</table></body></html>";
-  const blob = new Blob(["\ufeff", html], { type: "application/vnd.ms-excel;charset=utf-8" });
+
+  const blob = buildXlsx("叫工排名", [18, 7, 20, 10, 12, 12, 14, 12], xml, merges);
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = MASTER.currentSite + "_工程師叫工排名" + exportFilterTag() + "_" + localDate() + ".xls";
+  a.download = MASTER.currentSite + "_工程師叫工排名" + exportFilterTag() + "_" + localDate() + ".xlsx";
   a.click();
   URL.revokeObjectURL(url);
   toast("排名 Excel 已匯出");

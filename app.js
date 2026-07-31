@@ -1965,11 +1965,13 @@ function exportSummaryCSV(key){
 
 
 /* ==========================================================
-   叫工排名（v19）：統計各簽單責任工程師「叫了什麼工種、多少工數」
-   並依工種逐列排名。口徑（Scott 2026-07-31 裁示）：
-   總工數 = Σ出工數 + Σ(加班前2h＋第3h起)÷8（8 小時折 1 工），
-   排名依折算後總數。僅計已回報單；期間/廠商篩選連動。
-   舊單（v11 前無逐工種明細）以總數歸入「（未分工種）」列，不漏計。
+   叫工排名（v19；v19.1 修正口徑）：統計各簽單責任工程師「叫了什麼
+   工種、多少工數」並依工種逐列排名。
+   口徑（2026-07-31 二次裁示）：總工數＝Σ實際回報的工種出工數
+   （work，可含 0.5），**不做加班折算**——加班換算屬計價階段。
+   僅計已回報單；期間/廠商篩選連動。
+   無逐工種明細的單（v11 前舊制或未加工種列）：以該單申請的
+   「工作內容類別」為列名（顯示實際回報內容，不顯示「未分工種」）。
    ========================================================== */
 const fmtRank = n => String(+n.toFixed(4));   // 最多 4 位小數、去尾零
 
@@ -1990,10 +1992,11 @@ function buildRankingData(){
       t.byEng[eng] = (t.byEng[eng] || 0) + units;
     };
     if(Array.isArray(rep.workTypes) && rep.workTypes.length){
-      rep.workTypes.forEach(t =>
-        add(t.type || "（未填工種）", (t.work || 0) + ((t.ot2 || 0) + (t.otOver || 0)) / 8));
+      rep.workTypes.forEach(t => add(t.type || "（未填工種）", t.work || 0));
     }else if(!rep.zeroWork){
-      add("（未分工種）", (rep.actual || 0) + (rep.totalOT || 0) / 8);
+      // 無逐工種明細：以申請單的工作內容類別為列名（該單實際回報的內容）
+      const label = (r.categories || []).filter(Boolean).join("、") || "（未填工種）";
+      add(label, rep.actual || 0);
     }
     if(counted) recCount++;
   });
@@ -2044,7 +2047,7 @@ function renderRankingReport(){
         }
         return `<tr>${cells.join("")}</tr>`;
       }).join("")}</tbody></table>
-      <p class="hint">口徑：總工數＝出工數＋加班時數折算（8 小時折 1 工）；僅計已回報單。匯出 Excel 為附表格式（排名與工數分欄）。</p>`;
+      <p class="hint">口徑：總工數＝實際回報的工種出工數（可含 0.5 工），不含加班折算（加班換算屬計價階段）；僅計已回報單。匯出 Excel 為附表格式（排名與工數分欄）。</p>`;
   }
   document.getElementById("reportSummary").innerHTML = "";
 }

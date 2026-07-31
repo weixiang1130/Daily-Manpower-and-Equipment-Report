@@ -48,3 +48,34 @@
 - **修法**：欄位改資料驅動（`cols` 陣列帶 `num`／`w`），th 依 `num` 加 class；`<colgroup>` 固定各欄百分比；`.rank-table{max-width:1080px}`；數字欄 `tabular-nums` 等寬對齊、右內距 18px
 - 小計列標籤改靠右並移除重複的工種名（工種欄已有）
 - 驗證：1900×900 實測表格 1080px、五個數值欄表頭與數字右緣差 0px、各欄寬符合設定、console 零錯誤
+
+## v19.4 補強（2026-07-31，code review 修正）
+
+`/code-review xhigh` 對節點 25 的 diff 提出 11 項，全數修正。
+
+**正確性（計價紅線 1）**
+
+- **無工種列的單，加班分段被壓平**：`buildRankingData()` 的 fallback 寫成 `add(label, actual, totalOT, 0)`，把整包加班歸入「前 2 小時」。但只有**舊制單**（僅有 `totalOT`）才適用此規則——回報表單在未新增工種列時仍可直接填總數送出（`workTypes: []` 但 `ot2Total`／`otOverTotal` 有值），這類單會被錯誤歸段，跨越費率分界
+- 改為與計價彙總同一口徑：`ot2Total != null ? ot2Total : (totalOT || 0)`、`otOverTotal || 0`
+- 驗證：`actual 6／ot2Total 2／otOverTotal 8` 的單，修正前顯示 前2h=10、2h後=空；修正後 2／8。舊制單（僅 `totalOT 4`）仍全歸前 2h
+
+**版面**
+
+- `max-width` 無 `table-layout:fixed` 形同虛設：auto 版面下 `<col>` 寬度只是建議值，遇 `th,td{white-space:nowrap}` 會被 min-content 撐開。補 `table-layout:fixed`，工種格改 `white-space:normal` 讓長字串（多個內容類別串接）換行。實測 4 個類別串接的長標籤 scrollWidth 172 ≤ 欄寬 173，不再溢出
+- 欄寬由 JS 內嵌 `style` 移到 `style.css` 的 `col:nth-child()`，版面規則集中一處，並可隨 900px 斷點回退 auto
+- 小計列補回工種錨定：HTML 表比照匯出改用 `rowspan`（資料列＋小計列共用一格），不再出現「捲過 20 列後看到一個沒有工種的小計」
+- 說明段落補 `.rank-hint{max-width:1080px}`，與表格同寬
+- 復原全域 `td.num,th.num{text-align:right}` 約定（v19.3 誤將右對齊縮到 `.rank-table` 內），並刪掉與 `table td` 重複的 `tabular-nums`
+
+**結構**
+
+- 欄位定義收斂成單一 `RANK_COLS`，畫面與 .xls 匯出共用（`xls:1` 者僅匯出有）；匯出表頭與標題列 colspan 均由其推導，不再兩邊手改
+- 排名表補分頁，**以「工種」為單位**分頁（非以列）——小計列才不會與所屬資料列被拆到不同頁；頁碼獨立 `listPage.ranking`，單位詞顯示「個工種」
+- `renderRankingReport()` 補 `#reportTable`／`#reportSummary` 的 null 守衛，與 `renderPricingSummary()` 一致
+
+**驗證（本機 1900×900）**
+
+- 分頁：12 個工種 → 第 1 頁 10 個、第 2 頁 2 個，群組未被拆開；頁碼「第 1／2 頁（共 12 個工種）」
+- 匯出全量不受分頁影響：停在第 2 頁匯出，攔截 blob 得 12 個工種、8 欄表頭、標題列 colspan 8
+- 對齊：五個數值欄表頭與數字右緣差 0px；表格 1080px（面板 1526px）；各欄實測 16/7/19/12/14/14/18%
+- 驗算：粗工小計 16.5 工＋加班 5h＝17.125；模板 6＋10/8＝7.25；拆模（舊制單）3＋4/8＝3.5

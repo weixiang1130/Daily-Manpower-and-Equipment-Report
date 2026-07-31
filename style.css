@@ -623,10 +623,28 @@ th{
 /* 轉場：一律 200ms 溫和淡入，無彈跳 */
 *{transition-duration:var(--duration-normal);transition-timing-function:var(--ease-default);}
 
-/* ---------- 叫工排名報表（v19.2；v19.3 對齊修正） ---------- */
-.rank-table{max-width:1080px;}                       /* 不撐滿寬版面，避免欄距過鬆 */
-.rank-table th.num,.rank-table td.num{text-align:right;padding-right:18px;}
-td.num,th.num{font-variant-numeric:tabular-nums;}    /* 數字等寬對齊（整數位對整數位） */
-td.num{font-family:'DM Mono',Consolas,monospace;}
+/* ---------- 數值欄全域約定（任何表格標 class="num" 即成立） ---------- */
+td.num,th.num{text-align:right;}                     /* 表頭與資料同側對齊，缺一就會參差 */
+td.num{font-family:'DM Mono',Consolas,monospace;}    /* 等寬字讓整數位對整數位（表頭為中文不套） */
+
+/* ---------- 叫工排名報表（v19.2；v19.4 版面修正） ---------- */
+/* table-layout:fixed 是必要的：預設 auto 版面下 col 寬度只是建議值，
+   碰上 th,td{white-space:nowrap} 會被 min-content 撐開，max-width 也擋不住 */
+.rank-table{max-width:1080px;table-layout:fixed;}
+.rank-table col:nth-child(1){width:16%;}
+.rank-table col:nth-child(2){width:7%;}
+.rank-table col:nth-child(3){width:19%;}
+.rank-table col:nth-child(4){width:12%;}
+.rank-table col:nth-child(5){width:14%;}
+.rank-table col:nth-child(6){width:14%;}
+.rank-table col:nth-child(7){width:18%;}
+.rank-table th.num,.rank-table td.num{padding-right:18px;}
+/* 工種格跨整組（含小計列），舊制單的長字串（多個內容類別串接）需換行不得溢出 */
+.rank-table .rank-type{white-space:normal;word-break:break-all;vertical-align:middle;
+  background:var(--bg-surface-1);border-right:1px solid var(--border-medium);}
+.rank-hint{max-width:1080px;}                        /* 說明與表格同寬，不獨自拉滿版面 */
 .rank-subtotal td{background:var(--bg-surface-1);border-top:1.5px solid var(--border-medium);}
 .rank-subtotal .subtotal-label{text-align:right;color:var(--slate-700);}
+@media(max-width:900px){
+  .rank-table{table-layout:auto;}                    /* 窄畫面交還 auto，配合外層水平捲動 */
+}

@@ -46,7 +46,7 @@ netlify/functions/api.mjs        資料 API（函式內二次驗證同一組帳�
 ## 工作規範
 
 1. **去識別化（最高優先）**：進 git 的一切內容不得含真實工地代號、分包商名、人名、密碼。提交前掃描 staged diff。真實名單僅存於本機 `config.local.js`（gitignored）與 Netlify 環境變數。
-2. **PR 流程**：分支 → PR（說明含背景/變更/驗證）→ 合併。每次改版新增 `docs/milestones/NN-描述.md` 並更新索引與 CHANGELOG；營運操作（不改碼）記到 `docs/ops-log.md`（同樣去識別化）。
+2. **改版留痕**：現行實務為**直接 commit 到 main**（每次推送即觸發部署，需先取得專案負責人核准），非 PR 流程。新功能新增 `docs/milestones/NN-描述.md` 並更新索引與 CHANGELOG；同一節點的補強修正**追加到既有 NN 檔案**，不另編號；營運操作（不改碼）記到 `docs/ops-log.md`（同樣去識別化）。
 3. **測試共用資料庫**：用拋棄式工地名寫入，測畢 `op:clearSite` 清除；嚴禁 `clearAll`。
 4. 程式風格：原生 JS、無依賴（僅 @netlify/blobs）、繁體中文 UI 與註解、`esc()` 處理所有插入 DOM 的動態字串。
 

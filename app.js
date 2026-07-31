@@ -301,7 +301,7 @@ const listFilter = {
 /* v15.2：清單分頁（每頁 20 筆，取代 v15.1「顯示全部」展開——展開後仍是長頁面）。
    套用：點工清單、機具清單、稽核紀錄清單；篩選/切站自動回第 1 頁 */
 const LIST_PAGE_SIZE = 10;   // v15.3：每頁 10 筆，配合放寬版面讓一頁清單盡量落在單一畫面內
-const listPage = { labor: 1, equipment: 1, auditlog: 1, report: 1 };
+const listPage = { labor: 1, equipment: 1, auditlog: 1, report: 1, ranking: 1 };
 function resetListFilters(){
   listFilter.labor = { date: "", vendor: "" };
   listFilter.equipment = { date: "", vendor: "" };
@@ -309,11 +309,12 @@ function resetListFilters(){
   listPage.equipment = 1;
   listPage.auditlog = 1;
   listPage.report = 1;
+  listPage.ranking = 1;
   ["laborListDate","equipListDate"].forEach(id=>{ const el = document.getElementById(id); if(el) el.value = ""; });
   ["laborListVendor","equipListVendor"].forEach(id=>{ const el = document.getElementById(id); if(el) el.value = ""; });
 }
-/* 依 listPage[kind] 取當頁資料並產生頁碼列 HTML */
-function paginate(kind, list){
+/* 依 listPage[kind] 取當頁資料並產生頁碼列 HTML；unit＝總量的單位詞（排名報表分的是「個工種」不是「筆」） */
+function paginate(kind, list, unit){
   const pages = Math.max(1, Math.ceil(list.length / LIST_PAGE_SIZE));
   if(listPage[kind] > pages) listPage[kind] = pages;
   if(listPage[kind] < 1) listPage[kind] = 1;
@@ -321,7 +322,7 @@ function paginate(kind, list){
   const shown = list.slice((page - 1) * LIST_PAGE_SIZE, page * LIST_PAGE_SIZE);
   const pagerHTML = pages > 1 ? `<div class="list-pager">
       <button type="button" class="btn-mini pager-prev" data-kind="${kind}" ${page <= 1 ? "disabled" : ""}>‹ 上一頁</button>
-      <span class="pager-info">第 ${page}／${pages} 頁（共 ${list.length} 筆）</span>
+      <span class="pager-info">第 ${page}／${pages} 頁（共 ${list.length} ${unit || "筆"}）</span>
       <button type="button" class="btn-mini pager-next" data-kind="${kind}" ${page >= pages ? "disabled" : ""}>下一頁 ›</button>
     </div>` : "";
   return { shown, pagerHTML };
@@ -1810,7 +1811,7 @@ function initReportTabs(){
       document.querySelectorAll(".rtab").forEach(b=>b.classList.remove("active"));
       btn.classList.add("active");
       currentReport = btn.dataset.r;
-      listPage.report = 1;
+      listPage.report = listPage.ranking = 1;
       reportCat = "";           // 點工/機具的內容池不同，切換頁籤時重置內容篩選
       document.getElementById("reportCat").value = "";
       reportEngineer = "";      // 工程師池亦分屬兩類（engineer/checker），一併重置
@@ -1822,17 +1823,17 @@ function initReportTabs(){
   document.getElementById("exportSummaryBtn").addEventListener("click", ()=>exportSummaryCSV(currentReport));
   document.getElementById("reportVendor").addEventListener("change", e=>{
     reportVendor = e.target.value;
-    listPage.report = 1;
+    listPage.report = listPage.ranking = 1;
     renderReport(currentReport);
   });
   document.getElementById("reportCat").addEventListener("change", e=>{
     reportCat = e.target.value;
-    listPage.report = 1;
+    listPage.report = listPage.ranking = 1;
     renderReport(currentReport);
   });
   document.getElementById("reportEngineer").addEventListener("change", e=>{
     reportEngineer = e.target.value;
-    listPage.report = 1;
+    listPage.report = listPage.ranking = 1;
     renderReport(currentReport);
   });
 
@@ -1841,7 +1842,7 @@ function initReportTabs(){
   const syncRange = ()=>{
     reportFrom = fromEl.value || "";
     reportTo = toEl.value || "";
-    listPage.report = 1;
+    listPage.report = listPage.ranking = 1;
     renderReport(currentReport);
   };
   fromEl.addEventListener("change", syncRange);
@@ -1983,6 +1984,16 @@ const fmtRank = n => String(+n.toFixed(4));   // 最多 4 位小數、去尾零
 const OT_PER_UNIT = 8;                        // 加班換算工數：8 小時＝1 工
 const totalUnits = e => e.work + (e.ot2 + e.otOver) / OT_PER_UNIT;
 
+/* 排名報表欄位定義：畫面與 .xls 匯出共用同一份，改欄位只需改這裡。
+   num=數值欄（右對齊、等寬字）；xls=1 者只出現在匯出檔（畫面用總工數即可，不佔寬）。
+   欄寬屬版面，統一寫在 style.css 的 .rank-table col:nth-child()。 */
+const RANK_COLS = [
+  { t: "工種" }, { t: "排名", num: 1 }, { t: "簽單責任工程師" },
+  { t: "本工", num: 1 }, { t: "加班前2h", num: 1 }, { t: "加班2h後", num: 1 },
+  { t: "加班合計(時)", num: 1, xls: 1 }, { t: "總工數", num: 1 }
+];
+const RANK_COLS_VIEW = RANK_COLS.filter(c => !c.xls);
+
 function buildRankingData(){
   const recs = cur().labor.filter(r =>
     inReportRange(r.date) && matchReportVendor(r) && r.status === "已回報" && r.report);
@@ -2002,9 +2013,12 @@ function buildRankingData(){
     if(Array.isArray(rep.workTypes) && rep.workTypes.length){
       rep.workTypes.forEach(t => add(t.type || "（未填工種）", t.work, t.ot2, t.otOver));
     }else if(!rep.zeroWork){
-      // 舊制單：內容類別為列名；舊 totalOT 依合約歸段規則全歸「前 2 小時」
+      // 未填工種列的單（舊制單或未新增工種列即送出）：以內容類別為列名。
+      // 加班分段口徑必須與計價彙總一致（計價紅線 1）：有 ot2Total 就用分段值，
+      // 「只有 totalOT」的舊單才整包歸前 2 小時——不可一律當作前 2 小時。
       const label = (r.categories || []).filter(Boolean).join("、") || "（未填工種）";
-      add(label, rep.actual, rep.totalOT, 0);
+      const ot2 = rep.ot2Total != null ? rep.ot2Total : (rep.totalOT || 0);
+      add(label, rep.actual, ot2, rep.otOverTotal || 0);
     }
     if(counted) recCount++;
   });
@@ -2046,27 +2060,27 @@ function renderRankingReport(){
     + (filterTags ? "（" + filterTags + "）" : "");
 
   const el = document.getElementById("reportTable");
+  const sumEl = document.getElementById("reportSummary");
+  if(!el) return;
+  if(sumEl) sumEl.innerHTML = "";
   if(!rows.length){
     el.innerHTML = '<div class="empty-row">此條件內尚無已回報的點工資料可排名</div>';
-    document.getElementById("reportSummary").innerHTML = "";
     return;
   }
-  // 欄位定義：num=數值欄（右對齊、等寬字），w=欄寬百分比
-  const cols = [
-    { t: "工種", w: 16 }, { t: "排名", w: 7, num: 1 }, { t: "簽單責任工程師", w: 19 },
-    { t: "本工", w: 12, num: 1 }, { t: "加班前2h", w: 14, num: 1 },
-    { t: "加班2h後", w: 14, num: 1 }, { t: "總工數", w: 18, num: 1 }
-  ];
-  const body = rows.map(r => {
+  // 分頁以「工種」為單位（非以列），小計列才不會與所屬資料列被拆到不同頁；
+  // 匯出仍取 buildRankingData() 全量，不受分頁影響（計價紅線 3）
+  const { shown, pagerHTML } = paginate("ranking", rows, "個工種");
+  const body = shown.map(r => {
+    const span = r.ranked.length + 1;   // 資料列＋小計列共用同一個工種格
     const lines = r.ranked.map((e, i) => "<tr>"
-      + "<td>" + (i === 0 ? "<strong>" + esc(r.type) + "</strong>" : "") + "</td>"
+      + (i === 0 ? '<td class="rank-type" rowspan="' + span + '"><strong>' + esc(r.type) + "</strong></td>" : "")
       + '<td class="num">' + (i + 1) + "</td>"
       + "<td>" + esc(e.name) + "</td>"
       + '<td class="num">' + fmtRank(e.work) + "</td>"
       + '<td class="num">' + (e.ot2 ? fmtRank(e.ot2) : "") + "</td>"
       + '<td class="num">' + (e.otOver ? fmtRank(e.otOver) : "") + "</td>"
       + '<td class="num"><strong>' + fmtRank(e.units) + "</strong></td></tr>").join("");
-    return lines + '<tr class="rank-subtotal"><td></td>'
+    return lines + '<tr class="rank-subtotal">'
       + '<td colspan="2" class="subtotal-label"><strong>小計（' + r.ranked.length + " 人）</strong></td>"
       + '<td class="num"><strong>' + fmtRank(r.sum.work) + "</strong></td>"
       + '<td class="num"><strong>' + (r.sum.ot2 ? fmtRank(r.sum.ot2) : "") + "</strong></td>"
@@ -2074,12 +2088,12 @@ function renderRankingReport(){
       + '<td class="num"><strong>' + fmtRank(r.units) + "</strong></td></tr>";
   }).join("");
   el.innerHTML = '<table class="rank-table">'
-    + "<colgroup>" + cols.map(c => '<col style="width:' + c.w + '%">').join("") + "</colgroup>"
-    + "<thead><tr>" + cols.map(c => "<th" + (c.num ? ' class="num"' : "") + ">" + esc(c.t) + "</th>").join("") + "</tr></thead>"
-    + "<tbody>" + body + "</tbody></table>"
-    + '<p class="hint">本工＝回報的工種出工數（可含 0.5 工）；加班為時數。'
+    + "<colgroup>" + RANK_COLS_VIEW.map(() => "<col>").join("") + "</colgroup>"
+    + "<thead><tr>" + RANK_COLS_VIEW.map(c => "<th" + (c.num ? ' class="num"' : "") + ">" + esc(c.t) + "</th>").join("") + "</tr></thead>"
+    + "<tbody>" + body + "</tbody></table>" + pagerHTML
+    + '<p class="hint rank-hint">本工＝回報的工種出工數（可含 0.5 工）；加班為時數。'
     + "<strong>總工數＝本工＋(加班前2h＋加班2h後)÷8</strong>（工數以 8 小時換算），排名依總工數。僅計已回報單。</p>";
-  document.getElementById("reportSummary").innerHTML = "";
+  bindPager(el, "ranking", renderRankingReport);
 }
 
 function exportRankingXls(){
@@ -2097,10 +2111,9 @@ function exportRankingXls(){
 
   let html = '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="UTF-8"><title>叫工排名</title></head><body>';
   html += '<table border="0" style="border-collapse:collapse;font-family:\'Microsoft JhengHei\';font-size:12px;">';
-  html += '<tr><td colspan="8" style="' + B + 'background:#CCC0DA;font-weight:bold;">期別/月份：' + esc(rankingPeriodLabel())
+  html += '<tr><td colspan="' + RANK_COLS.length + '" style="' + B + 'background:#CCC0DA;font-weight:bold;">期別/月份：' + esc(rankingPeriodLabel())
        + "　（總工數＝本工＋加班時數÷8；排名依總工數）</td></tr>";
-  html += "<tr><th " + HDR + ">工種</th><th " + HDR + ">排名</th><th " + HDR + ">簽單責任工程師</th><th " + HDR + ">本工</th>"
-       + "<th " + HDR + ">加班前2h</th><th " + HDR + ">加班2h後</th><th " + HDR + ">加班合計(時)</th><th " + HDR + ">總工數</th></tr>";
+  html += "<tr>" + RANK_COLS.map(c => "<th " + HDR + ">" + esc(c.t) + "</th>").join("") + "</tr>";
   rows.forEach(r => {
     r.ranked.forEach((e, i) => {
       html += "<tr>";

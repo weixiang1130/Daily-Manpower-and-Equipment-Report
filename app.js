@@ -1814,7 +1814,7 @@ function initReportTabs(){
       renderReport(currentReport);
     });
   });
-  document.getElementById("exportBtn").addEventListener("click", ()=>exportCSV(currentReport));
+  document.getElementById("exportBtn").addEventListener("click", ()=>currentReport === "ranking" ? exportRankingXls() : exportCSV(currentReport));
   document.getElementById("exportSummaryBtn").addEventListener("click", ()=>exportSummaryCSV(currentReport));
   document.getElementById("reportVendor").addEventListener("change", e=>{
     reportVendor = e.target.value;
@@ -1877,6 +1877,13 @@ function populateReportFilters(key){
 
 function renderReport(key){
   if(!READY) return;
+  // v19：叫工排名走專用渲染；內容/工程師篩選對排名無意義，一併隱藏
+  const isRank = key === "ranking";
+  document.getElementById("reportCat").style.display = isRank ? "none" : "";
+  document.getElementById("reportEngineer").style.display = isRank ? "none" : "";
+  document.getElementById("exportSummaryBtn").style.display = isRank ? "none" : "";
+  document.getElementById("exportBtn").textContent = isRank ? "匯出排名 Excel" : "匯出明細 CSV";
+  if(isRank){ renderRankingReport(); return; }
   populateReportFilters(key);
   const def = REPORT_DEFS[key];
   const rows = def.rows();
@@ -1954,6 +1961,126 @@ function exportSummaryCSV(key){
   const sum = pricingSummaryTable(key);
   if(!sum.rows.length){ toast("此條件內尚無已回報資料可彙總"); return; }
   downloadCSV(sum.headers, sum.rows, `${MASTER.currentSite}_${def.title}計價彙總${exportFilterTag()}_${localDate()}.csv`);
+}
+
+
+/* ==========================================================
+   叫工排名（v19）：統計各簽單責任工程師「叫了什麼工種、多少工數」
+   並依工種逐列排名。口徑（Scott 2026-07-31 裁示）：
+   總工數 = Σ出工數 + Σ(加班前2h＋第3h起)÷8（8 小時折 1 工），
+   排名依折算後總數。僅計已回報單；期間/廠商篩選連動。
+   舊單（v11 前無逐工種明細）以總數歸入「（未分工種）」列，不漏計。
+   ========================================================== */
+const fmtRank = n => String(+n.toFixed(4));   // 最多 4 位小數、去尾零
+
+function buildRankingData(){
+  const recs = cur().labor.filter(r =>
+    inReportRange(r.date) && matchReportVendor(r) && r.status === "已回報" && r.report);
+  const agg = {};    // 工種 -> { total, byEng: { 工程師: 工數 } }
+  let recCount = 0;
+  recs.forEach(r => {
+    const rep = r.report;
+    const eng = rep.engineer || "（未填工程師）";
+    let counted = false;
+    const add = (type, units) => {
+      if(!(units > 0)) return;
+      counted = true;
+      const t = agg[type] || (agg[type] = { total: 0, byEng: {} });
+      t.total += units;
+      t.byEng[eng] = (t.byEng[eng] || 0) + units;
+    };
+    if(Array.isArray(rep.workTypes) && rep.workTypes.length){
+      rep.workTypes.forEach(t =>
+        add(t.type || "（未填工種）", (t.work || 0) + ((t.ot2 || 0) + (t.otOver || 0)) / 8));
+    }else if(!rep.zeroWork){
+      add("（未分工種）", (rep.actual || 0) + (rep.totalOT || 0) / 8);
+    }
+    if(counted) recCount++;
+  });
+  const rows = Object.keys(agg).map(type => ({
+    type,
+    total: agg[type].total,
+    ranked: Object.entries(agg[type].byEng).sort((a, b) => b[1] - a[1])
+  }));
+  rows.sort((a, b) => b.total - a.total);   // 量大的工種列在前（同附表慣例）
+  return { rows, recCount };
+}
+
+/* 期別標示：期間落在同一個月 → 民國「YYY.M」；否則顯示起訖 */
+function rankingPeriodLabel(){
+  if(reportFrom && reportTo){
+    const f = new Date(reportFrom + "T00:00:00"), t = new Date(reportTo + "T00:00:00");
+    if(f.getFullYear() === t.getFullYear() && f.getMonth() === t.getMonth()){
+      return `${f.getFullYear() - 1911}.${f.getMonth() + 1}`;
+    }
+  }
+  return (reportFrom || reportTo) ? `${reportFrom || "起"}~${reportTo || "今"}` : "全部期間";
+}
+
+function renderRankingReport(){
+  populateReportFilters("labor");   // 廠商下拉沿用點工池
+  const { rows, recCount } = buildRankingData();
+  const cnt = document.getElementById("reportCount");
+  const filterTags = [
+    (reportFrom || reportTo) ? `${reportFrom || "起"} ~ ${reportTo || "今"}` : "",
+    reportVendor
+  ].filter(Boolean).join("・");
+  const engSet = new Set();
+  rows.forEach(r => r.ranked.forEach(([n]) => engSet.add(n)));
+  if(cnt) cnt.textContent = `已回報 ${recCount} 筆・${rows.length} 個工種・${engSet.size} 位工程師` + (filterTags ? `（${filterTags}）` : "");
+  const el = document.getElementById("reportTable");
+  if(!rows.length){
+    el.innerHTML = '<div class="empty-row">此條件內尚無已回報的點工資料可排名</div>';
+  }else{
+    const maxRank = Math.max(...rows.map(r => r.ranked.length));
+    const heads = ["工種", "總工數"];
+    for(let i = 1; i <= maxRank; i++) heads.push(`排名${i}`);
+    el.innerHTML = `<table><thead><tr>${heads.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead>
+      <tbody>${rows.map(r => {
+        const cells = [`<td><strong>${esc(r.type)}</strong></td>`, `<td class="num">${fmtRank(r.total)}</td>`];
+        for(let i = 0; i < maxRank; i++){
+          const p = r.ranked[i];
+          cells.push(`<td>${p ? esc(p[0]) + "（" + fmtRank(p[1]) + "）" : ""}</td>`);
+        }
+        return `<tr>${cells.join("")}</tr>`;
+      }).join("")}</tbody></table>
+      <p class="hint">口徑：總工數＝出工數＋加班時數折算（8 小時折 1 工）；僅計已回報單。匯出 Excel 為附表格式（排名與工數分欄）。</p>`;
+  }
+  document.getElementById("reportSummary").innerHTML = "";
+}
+
+function exportRankingXls(){
+  const { rows } = buildRankingData();
+  if(!rows.length){ toast("此條件內尚無已回報的點工資料可排名"); return; }
+  const maxRank = Math.max(...rows.map(r => r.ranked.length));
+  const B = "border:1px solid #808080;padding:4px 10px;";
+  const HDR = `style="${B}background:#CCC0DA;font-weight:bold;text-align:center;"`;   // 淡紫（同附表表頭）
+  const PINK = `style="${B}background:#F2ABC9;font-weight:bold;"`;                    // 粉紅（工種/總工數欄）
+  const CELL = `style="${B}"`;
+  const NUM = `style="${B}mso-number-format:'0.####';text-align:right;"`;
+  let html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="UTF-8"><title>叫工排名</title></head><body><table border="0" style="border-collapse:collapse;font-family:'Microsoft JhengHei';font-size:12px;">`;
+  html += `<tr><th ${HDR}>期別/月份</th><th ${HDR} colspan="2">工種/總工數</th>`;
+  for(let i = 1; i <= maxRank; i++) html += `<th ${HDR} colspan="2">排名${i}/工數</th>`;
+  html += `</tr>`;
+  rows.forEach((r, idx) => {
+    html += `<tr>`;
+    if(idx === 0) html += `<td rowspan="${rows.length}" style="${B}background:#CCC0DA;text-align:center;vertical-align:middle;">${esc(rankingPeriodLabel())}</td>`;
+    html += `<td ${PINK}>${esc(r.type)}</td><td style="${B}background:#F2ABC9;font-weight:bold;mso-number-format:'0.####';text-align:right;">${fmtRank(r.total)}</td>`;
+    for(let i = 0; i < maxRank; i++){
+      const p = r.ranked[i];
+      html += p ? `<td ${CELL}>${esc(p[0])}</td><td ${NUM}>${fmtRank(p[1])}</td>` : `<td ${CELL}></td><td ${CELL}></td>`;
+    }
+    html += `</tr>`;
+  });
+  html += `</table></body></html>`;
+  const blob = new Blob(["﻿", html], { type: "application/vnd.ms-excel;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${MASTER.currentSite}_工程師叫工排名${exportFilterTag()}_${localDate()}.xls`;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast("排名 Excel 已匯出");
 }
 
 /* ==========================================================

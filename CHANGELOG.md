@@ -2,6 +2,13 @@
 
 版本異動摘要。完整背景與設計決策請見 [`docs/milestones/`](docs/milestones/README.md)。
 
+## [節點 25] 2026-07-31 — 工程師叫工排名報表（v19） ※待部署
+- 歷程報表新增「叫工排名」頁籤：統計各簽單責任工程師叫了什麼工種、工數多少，依工種逐列排名（工種列依總工數降冪）
+- **口徑（使用者裁示）**：總工數＝出工數＋加班時數折算（前2h＋第3h起 合計 ÷8，8 小時折 1 工），排名依折算後總數；僅計已回報單
+- 期間/廠商篩選連動；期間落在同一個月時期別以民國「YYY.M」標示；v11 前無逐工種明細的舊單以總數歸入「（未分工種）」列不漏計
+- **匯出帶格式 Excel（.xls）**：仿既有 Excel 慣用版式——期別欄直向合併、表頭「排名N/工數」雙欄群組、工種與總工數粉底/表頭紫底；零外部套件（HTML 表格格式，Excel 直接開啟）
+- 純前端改版：後端/合約/SQL 零修改
+
 ## [節點 24 補強] 2026-07-30 — 稽核側 409 守衛與文件全面清理（v18.1） ※待部署
 - **修復 XHIGH 審查發現的 409 繞過**：管理員開著稽核表單時，到點工/機具頁開任一表單會觸發 v18 背景整批刷新，使 saveAudit/deleteAudit 送出時的 baseV 漂移、繞過 409（v13.1 修過問題的鏡像）——bgRefetchVerify 與四個載入 fallback 改為稽核表單編輯中（auditSelectedId）時跳過刷新；兩道守衛互為對稱，CLAUDE.md 記載此不變式
 - 文件清理 11 處過時內容：README（localStorage/last-write-wins）、app.js 與 api.mjs 檔頭（v8/舊命名空間）、合約（laborTypes 補預設已移除、版本標頭 v14→v18、§3.3 補 v18 快照紀律）、sql/README（7→9 op）、DEPLOYMENT（DATA_DIR 含附件二進位、server.mjs 附件搬運需 attmeta、兩實作已知差異）、import-backup 檔頭附件警語、MIGRATION-PLAN（機具三表為合成資料驗證之限定語）、CLAUDE.md（六池/workers/頁籤數/v18 適用範圍）

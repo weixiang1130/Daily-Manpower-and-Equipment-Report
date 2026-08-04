@@ -1716,7 +1716,7 @@ const REPORT_DEFS = {
     title:"點工紀錄",
     headers:["出工日期","廠商","需求工數","工作內容","工作地點","申請人","狀態","人臉紀錄","白卡紀錄","工具箱紀錄","簽單繳回日","簽單實際出工數","差異","0工確認","簽單責任工程師","加班時數(前2小時)","加班時數(第3小時起)","加班總時數","出工明細(工種)","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註","現場查核回饋"],
     records: ()=>cur().labor.filter(r=>inReportRange(r.date) && matchReportVendor(r) && matchReportCat(r,"labor") && matchReportEngineer(r,"labor")),
-    rows(){ return this.records().map(r=>{
+    rows(recs){ return (recs || this.records()).map(r=>{
       const rep = r.report || {};
       const reported = r.status==="已回報" && r.report;
       return [
@@ -1738,7 +1738,7 @@ const REPORT_DEFS = {
     title:"機具紀錄",
     headers:["出工日期","機具廠商","機具類型","型號","工作內容","工作地點","責任廠商","預計使用時數(需求數量)","申請人","狀態","簽單繳回日","機具實際工作使用時數","差異","0使用確認","機具使用明細","簽單責任工程師","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註"],
     records: ()=>cur().equipment.filter(x=>inReportRange(x.date) && matchReportVendor(x) && matchReportCat(x,"equipment") && matchReportEngineer(x,"equipment")),
-    rows(){ return this.records().map(x=>{
+    rows(recs){ return (recs || this.records()).map(x=>{
       const rep = x.report || {};
       const reported = x.status==="已回報" && x.report;
       const usageDetail = (rep.usage||[]).filter(u=>u.present)
@@ -1768,9 +1768,9 @@ function buildPricingSummary(kind){
     if(kind === "labor"){
       if(rep.zeroWork) g.zero++;
       g.work += rep.actual || 0;
-      // 分段加班；舊單只有 totalOT 時計入前 2 小時段
-      g.ot2 += rep.ot2Total != null ? rep.ot2Total : (rep.totalOT || 0);
-      g.otOver += rep.otOverTotal || 0;
+      const seg = otSegments(rep);   // 分段口徑唯一權威（v21.3）
+      g.ot2 += seg.ot2;
+      g.otOver += seg.otOver;
       (r.categories||[]).forEach(c=>g.cats.add(c));
     }else{
       if(rep.zeroUse) g.zero++;
@@ -1819,8 +1819,13 @@ function initReportTabs(){
       renderReport(currentReport);
     });
   });
-  document.getElementById("exportBtn").addEventListener("click", ()=>currentReport === "ranking" ? exportRankingXls() : exportCSV(currentReport));
-  document.getElementById("exportSummaryBtn").addEventListener("click", ()=>exportSummaryCSV(currentReport));
+  document.getElementById("exportBtn").addEventListener("click", ()=>{
+    if(currentReport === "ranking") return exportRankingXls();
+    if(currentReport === "labor") return exportLaborXlsx();     // v21.1：點工改帶格式 xlsx
+    exportCSV(currentReport);
+  });
+  document.getElementById("exportSummaryBtn").addEventListener("click", ()=>
+    currentReport === "labor" ? exportLaborSummaryXlsx() : exportSummaryCSV(currentReport));
   document.getElementById("reportVendor").addEventListener("change", e=>{
     reportVendor = e.target.value;
     listPage.report = listPage.ranking = 1;
@@ -1887,7 +1892,8 @@ function renderReport(key){
   document.getElementById("reportCat").style.display = isRank ? "none" : "";
   document.getElementById("reportEngineer").style.display = isRank ? "none" : "";
   document.getElementById("exportSummaryBtn").style.display = isRank ? "none" : "";
-  document.getElementById("exportBtn").textContent = isRank ? "匯出排名 Excel" : "匯出明細 CSV";
+  document.getElementById("exportBtn").textContent = isRank ? "匯出排名 Excel" : (key === "labor" ? "匯出明細 Excel" : "匯出明細 CSV");
+  document.getElementById("exportSummaryBtn").textContent = key === "labor" ? "匯出計價彙總 Excel" : "匯出計價彙總 CSV";
   if(isRank){ renderRankingReport(); return; }
   populateReportFilters(key);
   const def = REPORT_DEFS[key];
@@ -1923,6 +1929,23 @@ function renderPricingSummary(key){
     <tbody>${sum.rows.map(r=>`<tr>${r.map(c=>`<td>${esc(c===undefined||c===null?"":c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
 
+/* 下載共用收尾（v21.3 收斂三份複本：CSV／xlsx／備份 JSON）
+   - 檔名消毒：工地名與篩選標籤屬自由文字，含 / \ : 等非法字元時各瀏覽器行為不一
+   - anchor 先掛進 DOM、revoke 延後：iOS Safari 的下載是非同步取用 blob URL，
+     同步 revoke 會間歇拿到空檔（桌機 Chrome 不會重現） */
+function downloadBlob(blob, filename, msg){
+  const safe = String(filename).replace(/[\\/:*?"<>|\x00-\x1F]/g, "-");
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = safe;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 10000);
+  toast(msg);
+}
+
 function downloadCSV(headers, rows, filename){
   const cell = c=>{
     let v = (c===undefined||c===null?"":String(c));
@@ -1931,18 +1954,12 @@ function downloadCSV(headers, rows, filename){
     v = v.replace(/"/g,'""');
     return /[,\n"]/.test(v) ? `"${v}"` : v;
   };
-  const csvLines = [headers.join(",")].concat(
+  // 表頭與資料列走同一套跳脫——動態表頭（如工種欄名）含逗號時才不會使欄位錯位
+  const csvLines = [headers.map(cell).join(",")].concat(
     rows.map(r=>r.map(cell).join(","))
   );
-  const csv = "﻿" + csvLines.join("\n");
-  const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-  toast("CSV 已匯出");
+  downloadBlob(new Blob(["﻿" + csvLines.join("\n")], {type:"text/csv;charset=utf-8;"}),
+    filename, "CSV 已匯出");
 }
 
 function exportFilterTag(){
@@ -1954,6 +1971,80 @@ function exportFilterTag(){
   return parts.length ? "_" + parts.join("_") : "";
 }
 
+/* v21：點工匯出依「工種」展開分欄——不同工種計價費率不同，
+   匯出檔每個工種三欄（出工數／加班前2h／加班2h後），供成本部直接計價。
+   - 欄序依該期間各工種總量降冪（量大的工種排前面）
+   - 無工種列的單（舊制或直填總數）：以其「工作內容類別」為欄名；
+     加班歸段口徑與計價彙總一致——僅有 totalOT 的舊單才整包歸前 2 小時
+   - 該單有此工種→數字照列（含 0）；沒有此工種→留空白，兩者在計價上意義不同
+   - 僅影響匯出檔；畫面上的明細與彙總表維持原樣（匯出永遠全量，計價紅線 3） */
+/* ── 計價口徑的唯一權威（v21.3 收斂）──
+   加班分段：有 ot2Total 用分段值；「僅有 totalOT」的舊制單整包歸前 2 小時
+   （計價紅線 1）。此規則曾以三份副本存在（彙總/排名/分欄），v19.4 即因
+   副本分歧出過錯——今後只准改這裡。 */
+function otSegments(rep){
+  return { ot2: rep.ot2Total != null ? rep.ot2Total : (rep.totalOT || 0),
+           otOver: rep.otOverTotal || 0 };
+}
+/* 單筆已回報單 → 逐工種列 [{type, work, ot2, otOver}]。
+   無工種列的單（v11 前舊制或直填總數）以「工作內容類別」為列名；0 工單回空陣列。 */
+function reportTypeRows(r){
+  const rep = r.report;
+  if(!(r.status === "已回報" && rep)) return [];
+  if(Array.isArray(rep.workTypes) && rep.workTypes.length){
+    return rep.workTypes.map(t=>({ type: t.type || "（未填工種）",
+      work: t.work || 0, ot2: t.ot2 || 0, otOver: t.otOver || 0 }));
+  }
+  if(rep.zeroWork) return [];
+  const seg = otSegments(rep);
+  return [{ type: (r.categories || []).filter(Boolean).join("、") || "（未填工種）",
+            work: rep.actual || 0, ot2: seg.ot2, otOver: seg.otOver }];
+}
+
+function laborTypeSplit(records){
+  const vol = Object.create(null);   // 欄名 -> 總量（決定欄序）；null 原型避免 __proto__ 類名稱失效
+  const per = new Map();             // record.id -> { 欄名: {work, ot2, otOver} }
+  records.forEach(r=>{
+    const rows = reportTypeRows(r);
+    if(!rows.length) return;
+    const m = Object.create(null);
+    rows.forEach(t=>{
+      const e = m[t.type] || (m[t.type] = { work:0, ot2:0, otOver:0 });
+      e.work += t.work; e.ot2 += t.ot2; e.otOver += t.otOver;
+    });
+    per.set(r.id, m);
+    Object.entries(m).forEach(([lb, e])=>{
+      vol[lb] = (vol[lb] || 0) + e.work + (e.ot2 + e.otOver) / OT_PER_UNIT;
+    });
+  });
+  const labels = Object.keys(vol).sort((a, b)=>vol[b] - vol[a]);
+  return { labels, per };
+}
+/* 分欄格式化一律 fmtRank（最多 4 位小數去尾零）：兩個工作表與彙總必須
+   同一小數位，否則同一筆值跨表對帳會出現假差異（v21.3 統一，原 fmt 會 round 2 位） */
+const typeSplitHeaders = labels =>
+  labels.flatMap(lb=>[`${lb}出工數`, `${lb}加班前2HR(時數)`, `${lb}加班2HR後(時數)`]);
+const typeSplitCells = (m, labels) =>
+  labels.flatMap(lb=>{
+    const e = m[lb];
+    return e ? [fmtRank(e.work), fmtRank(e.ot2), fmtRank(e.otOver)] : ["", "", ""];
+  });
+/* 廠商 -> 欄名 -> 合計（計價彙總分欄用；null 原型同 laborTypeSplit） */
+function typeSplitByVendor(recs, per){
+  const byVendor = Object.create(null);
+  recs.forEach(r=>{
+    const key = r.vendor || "（未填廠商）";
+    const t = byVendor[key] || (byVendor[key] = Object.create(null));
+    Object.entries(per.get(r.id) || {}).forEach(([lb, e])=>{
+      const g = t[lb] || (t[lb] = { work:0, ot2:0, otOver:0 });
+      g.work += e.work; g.ot2 += e.ot2; g.otOver += e.otOver;
+    });
+  });
+  return byVendor;
+}
+
+/* CSV 匯出僅機具使用（點工自 v21.1 起走帶格式 xlsx）——勿再加 labor 分支，
+   點工分欄口徑只活在 xlsx 路徑，兩處並存曾在審查中被列為口徑分歧風險 */
 function exportCSV(key){
   const def = REPORT_DEFS[key];
   const rows = def.rows();
@@ -1997,29 +2088,19 @@ const RANK_COLS_VIEW = RANK_COLS.filter(c => !c.xls);
 function buildRankingData(){
   const recs = cur().labor.filter(r =>
     inReportRange(r.date) && matchReportVendor(r) && r.status === "已回報" && r.report);
-  const agg = {};    // 工種 -> { 工程師 -> {work, ot2, otOver} }
+  const agg = Object.create(null);   // 工種 -> { 工程師 -> {work, ot2, otOver} }
   let recCount = 0;
   recs.forEach(r => {
-    const rep = r.report;
-    const eng = rep.engineer || "（未填工程師）";
+    const eng = (r.report && r.report.engineer) || "（未填工程師）";
     let counted = false;
-    const add = (type, work, ot2, otOver) => {
-      if(!(work > 0 || ot2 > 0 || otOver > 0)) return;
+    // 逐工種列與加班歸段一律走 reportTypeRows（口徑唯一權威，v21.3）
+    reportTypeRows(r).forEach(t => {
+      if(!(t.work > 0 || t.ot2 > 0 || t.otOver > 0)) return;
       counted = true;
-      const t = agg[type] || (agg[type] = {});
-      const e = t[eng] || (t[eng] = { work: 0, ot2: 0, otOver: 0 });
-      e.work += work || 0; e.ot2 += ot2 || 0; e.otOver += otOver || 0;
-    };
-    if(Array.isArray(rep.workTypes) && rep.workTypes.length){
-      rep.workTypes.forEach(t => add(t.type || "（未填工種）", t.work, t.ot2, t.otOver));
-    }else if(!rep.zeroWork){
-      // 未填工種列的單（舊制單或未新增工種列即送出）：以內容類別為列名。
-      // 加班分段口徑必須與計價彙總一致（計價紅線 1）：有 ot2Total 就用分段值，
-      // 「只有 totalOT」的舊單才整包歸前 2 小時——不可一律當作前 2 小時。
-      const label = (r.categories || []).filter(Boolean).join("、") || "（未填工種）";
-      const ot2 = rep.ot2Total != null ? rep.ot2Total : (rep.totalOT || 0);
-      add(label, rep.actual, ot2, rep.otOverTotal || 0);
-    }
+      const g = agg[t.type] || (agg[t.type] = Object.create(null));
+      const e = g[eng] || (g[eng] = { work: 0, ot2: 0, otOver: 0 });
+      e.work += t.work; e.ot2 += t.ot2; e.otOver += t.otOver;
+    });
     if(counted) recCount++;
   });
   const rows = Object.keys(agg).map(type => {
@@ -2155,22 +2236,26 @@ function zipStore(entries, mime){
   return new Blob(local.concat(central, [new Uint8Array(eo.buffer)]), { type: mime });
 }
 
-/* 樣式索引：對應 styles.xml 的 cellXfs 順序，儲存格以 s="N" 引用 */
-const XS = { PLAIN: 0, TITLE: 1, HEAD: 2, GROUP: 3, TEXT: 4, NUM: 5, NUMB: 6, SUBT: 7, SUBN: 8 };
+/* 樣式索引：對應 styles.xml 的 cellXfs 順序，儲存格以 s="N" 引用
+   OHEAD/PTEXT/PNUM（v21.1）＝工種計價表版式：橘底表頭、粉底資料列（對照成本部既有計價表） */
+const XS = { PLAIN: 0, TITLE: 1, HEAD: 2, GROUP: 3, TEXT: 4, NUM: 5, NUMB: 6, SUBT: 7, SUBN: 8,
+             OHEAD: 9, PTEXT: 10, PNUM: 11 };
 const XLSX_STYLES = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
   + '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
   + '<numFmts count="1"><numFmt numFmtId="164" formatCode="0.####"/></numFmts>'
   + '<fonts count="2"><font><sz val="11"/><name val="Microsoft JhengHei"/></font>'
   + '<font><b/><sz val="11"/><name val="Microsoft JhengHei"/></font></fonts>'
-  + '<fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>'
+  + '<fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>'
   + '<fill><patternFill patternType="solid"><fgColor rgb="FFCCC0DA"/><bgColor indexed="64"/></patternFill></fill>'
   + '<fill><patternFill patternType="solid"><fgColor rgb="FFF2ABC9"/><bgColor indexed="64"/></patternFill></fill>'
-  + '<fill><patternFill patternType="solid"><fgColor rgb="FFFDE9D9"/><bgColor indexed="64"/></patternFill></fill></fills>'
+  + '<fill><patternFill patternType="solid"><fgColor rgb="FFFDE9D9"/><bgColor indexed="64"/></patternFill></fill>'
+  + '<fill><patternFill patternType="solid"><fgColor rgb="FFF79646"/><bgColor indexed="64"/></patternFill></fill>'
+  + '<fill><patternFill patternType="solid"><fgColor rgb="FFF6CEF5"/><bgColor indexed="64"/></patternFill></fill></fills>'
   + '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>'
   + '<border><left style="thin"><color rgb="FF808080"/></left><right style="thin"><color rgb="FF808080"/></right>'
   + '<top style="thin"><color rgb="FF808080"/></top><bottom style="thin"><color rgb="FF808080"/></bottom><diagonal/></border></borders>'
   + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-  + '<cellXfs count="9">'
+  + '<cellXfs count="12">'
   + '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
   + '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>'
   + '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>'
@@ -2180,47 +2265,58 @@ const XLSX_STYLES = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
   + '<xf numFmtId="164" fontId="1" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="right"/></xf>'
   + '<xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="right"/></xf>'
   + '<xf numFmtId="164" fontId="1" fillId="4" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="right"/></xf>'
+  + '<xf numFmtId="0" fontId="1" fillId="5" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>'
+  + '<xf numFmtId="0" fontId="0" fillId="6" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>'
+  + '<xf numFmtId="164" fontId="0" fillId="6" borderId="1" xfId="0" applyNumberFormat="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>'
   + '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
 
-const colRef = i => String.fromCharCode(65 + i);      // 0→A（本報表 8 欄，不需雙字母）
+/* 0→A、25→Z、26→AA（完整明細工作表可超過 26 欄） */
+const colRef = i => { let s = ""; i++; while(i){ i--; s = String.fromCharCode(65 + i % 26) + s; i = Math.floor(i / 26); } return s; };
+/* XML 1.0 非法控制字元（含 Word 貼上常見的 U+000B）——不濾掉整份檔會打不開 */
+const xmlSafe = v => String(v).replace(/[ --]/g, "");
 /* 合併範圍內的「被蓋住」格仍要輸出空白格，否則該範圍沒有框線 */
 const xlText = (c, r, s, v) => v === "" || v == null
   ? '<c r="' + colRef(c) + r + '" s="' + s + '"/>'
-  : '<c r="' + colRef(c) + r + '" s="' + s + '" t="inlineStr"><is><t xml:space="preserve">' + esc(v) + "</t></is></c>";
+  : '<c r="' + colRef(c) + r + '" s="' + s + '" t="inlineStr"><is><t xml:space="preserve">' + esc(xmlSafe(v)) + "</t></is></c>";
 const xlNum = (c, r, s, v) => v === "" || v == null
   ? '<c r="' + colRef(c) + r + '" s="' + s + '"/>'
   : '<c r="' + colRef(c) + r + '" s="' + s + '"><v>' + v + "</v></c>";
 
-/* 組出 xlsx Blob；rowsXml 每列為 <row> 字串，merges 如 "A3:A6" */
-function buildXlsx(sheetName, colWidths, rowsXml, merges){
-  const sheet = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-    + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-    + "<cols>" + colWidths.map((w, i) => '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>').join("") + "</cols>"
-    + "<sheetData>" + rowsXml.join("") + "</sheetData>"
-    + (merges.length ? '<mergeCells count="' + merges.length + '">' + merges.map(m => '<mergeCell ref="' + m + '"/>').join("") + "</mergeCells>" : "")
-    + "</worksheet>";
+/* 組出 xlsx Blob；sheets = [{name, widths, rows(每列 <row> 字串), merges}]，可多工作表 */
+function buildXlsx(sheets){
   const REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/";
-  return zipStore([
+  const sheetXml = sh => '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    + "<cols>" + sh.widths.map((w, i) => '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>').join("") + "</cols>"
+    + "<sheetData>" + sh.rows.join("") + "</sheetData>"
+    + ((sh.merges || []).length ? '<mergeCells count="' + sh.merges.length + '">' + sh.merges.map(m => '<mergeCell ref="' + m + '"/>').join("") + "</mergeCells>" : "")
+    + "</worksheet>";
+  const entries = [
     { name: "[Content_Types].xml", data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
       + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
       + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
       + '<Default Extension="xml" ContentType="application/xml"/>'
       + '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
-      + '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+      + sheets.map((_, i) => '<Override PartName="/xl/worksheets/sheet' + (i + 1) + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>').join("")
       + '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>' },
     { name: "_rels/.rels", data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
       + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
       + '<Relationship Id="rId1" Type="' + REL + 'officeDocument" Target="xl/workbook.xml"/></Relationships>' },
     { name: "xl/workbook.xml", data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
       + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-      + '<sheets><sheet name="' + esc(sheetName) + '" sheetId="1" r:id="rId1"/></sheets></workbook>' },
+      + "<sheets>" + sheets.map((sh, i) => '<sheet name="' + esc(sh.name) + '" sheetId="' + (i + 1) + '" r:id="rId' + (i + 1) + '"/>').join("") + "</sheets></workbook>" },
     { name: "xl/_rels/workbook.xml.rels", data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
       + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-      + '<Relationship Id="rId1" Type="' + REL + 'worksheet" Target="worksheets/sheet1.xml"/>'
-      + '<Relationship Id="rId2" Type="' + REL + 'styles" Target="styles.xml"/></Relationships>' },
-    { name: "xl/styles.xml", data: XLSX_STYLES },
-    { name: "xl/worksheets/sheet1.xml", data: sheet }
-  ], "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      + sheets.map((_, i) => '<Relationship Id="rId' + (i + 1) + '" Type="' + REL + 'worksheet" Target="worksheets/sheet' + (i + 1) + '.xml"/>').join("")
+      + '<Relationship Id="rId' + (sheets.length + 1) + '" Type="' + REL + 'styles" Target="styles.xml"/></Relationships>' },
+    { name: "xl/styles.xml", data: XLSX_STYLES }
+  ].concat(sheets.map((sh, i) => ({ name: "xl/worksheets/sheet" + (i + 1) + ".xml", data: sheetXml(sh) })));
+  return zipStore(entries, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+}
+
+/* 下載 xlsx 共用收尾（檔名消毒與 revoke 時序見 downloadBlob） */
+function downloadXlsx(sheets, filename, msg){
+  downloadBlob(buildXlsx(sheets), filename, msg || "Excel 已匯出");
 }
 
 function exportRankingXls(){
@@ -2267,14 +2363,108 @@ function exportRankingXls(){
     rn++;
   });
 
-  const blob = buildXlsx("叫工排名", [18, 7, 20, 10, 12, 12, 14, 12], xml, merges);
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = MASTER.currentSite + "_工程師叫工排名" + exportFilterTag() + "_" + localDate() + ".xlsx";
-  a.click();
-  URL.revokeObjectURL(url);
-  toast("排名 Excel 已匯出");
+  downloadXlsx([{ name: "叫工排名", widths: [18, 7, 20, 10, 12, 12, 14, 12], rows: xml, merges }],
+    MASTER.currentSite + "_工程師叫工排名" + exportFilterTag() + "_" + localDate() + ".xlsx", "排名 Excel 已匯出");
+}
+
+/* ==========================================================
+   點工匯出改帶格式 xlsx（v21.1，使用者要求對照成本部既有計價表版式）
+   工作表 1「工種計價表」：施工廠商｜日期（民國）｜逐工種三欄
+     （出工數／加班前2HR／加班2HR後）——橘底表頭、粉底資料列
+   工作表 2「完整明細」：原明細全部欄位＋工種分欄，查核備查用
+   計價彙總同版式（逐廠商合計）。CSV 匯出僅機具沿用。
+   ========================================================== */
+const rocDate = d => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d || "");
+  return m ? (m[1] - 1911) + "/" + (+m[2]) + "/" + (+m[3]) : (d || "");
+};
+/* 工種計價表的表頭沿用成本部範本字樣（加班欄不帶工種前綴——欄位歸屬由
+   左側「XX出工數」界定）；彙總表為避免 N 組同名表頭誤導樞紐/查表，一律
+   走 typeSplitHeaders 的全前綴版 */
+const pricingTypeHeaders = labels =>
+  labels.flatMap(lb=>[lb + "出工數", "加班前2HR(時數)", "加班2HR後(時數)"]);
+
+/* 儲存格自動判型：純數字輸出為真數值，但「0 開頭的多位數」（0800、統編、
+   電話）視為文字保留——轉數值會失去前導零，備查欄位失真 */
+const isNumCell = s => /^-?(0|[1-9]\d*)(\.\d+)?$/.test(s);
+function dataRowsXml(rows, numStyle, textStyle, startRow){
+  return rows.map((row, ri)=>{
+    const rn = ri + startRow;
+    return '<row r="' + rn + '">' + row.map((v, c)=>{
+      const s = String(v == null ? "" : v);
+      return isNumCell(s) ? xlNum(c, rn, numStyle, s) : xlText(c, rn, textStyle, s);
+    }).join("") + "</row>";
+  });
+}
+const autoWidths = headers => headers.map(h=>Math.min(28, Math.max(9, h.length * 2 + 3)));
+
+/* recs 與 split 由 exportLaborXlsx 一次計算傳入：兩個工作表的工種欄集與
+   列對應必須出自同一份快照，不可各自重抓（審查曾指出隱性對齊假設） */
+function laborPricingSheet(recs, split){
+  const { labels, per } = split;
+  // 只列有工種數據的已回報單（0 工單與待回報單無計價內容），依廠商、日期排序
+  const rows = recs
+    .filter(r=>{ const m = per.get(r.id); return m && Object.keys(m).length; })
+    .sort((a, b)=>(a.vendor || "").localeCompare(b.vendor || "", "zh-Hant") || (a.date || "").localeCompare(b.date || ""));
+  const xml = [];
+  const TAIL = 2 + labels.length * 3;   // 工種欄之後的尾欄起點（v21.2：補實際工作內容與工程師）
+  xml.push('<row r="1">' + xlText(0, 1, XS.OHEAD, "施工廠商") + xlText(1, 1, XS.OHEAD, "日期")
+    + pricingTypeHeaders(labels).map((h, i)=>xlText(2 + i, 1, XS.OHEAD, h)).join("")
+    + xlText(TAIL, 1, XS.OHEAD, "實際工作內容(現場查核回饋)")
+    + xlText(TAIL + 1, 1, XS.OHEAD, "簽單責任工程師") + "</row>");
+  let rn = 2;
+  rows.forEach(r=>{
+    const m = per.get(r.id);
+    const rep = r.report || {};
+    let cells = xlText(0, rn, XS.PTEXT, r.vendor || "") + xlText(1, rn, XS.PTEXT, rocDate(r.date));
+    labels.forEach((lb, i)=>{
+      const e = m[lb];
+      // 有此工種列數字（含 0）；沒有留空白——0 與空白計價意義不同
+      cells += xlNum(2 + i * 3, rn, XS.PNUM, e ? fmtRank(e.work) : "")
+             + xlNum(3 + i * 3, rn, XS.PNUM, e ? fmtRank(e.ot2) : "")
+             + xlNum(4 + i * 3, rn, XS.PNUM, e ? fmtRank(e.otOver) : "");
+    });
+    cells += xlText(TAIL, rn, XS.PTEXT, rep.conclusion || "")
+           + xlText(TAIL + 1, rn, XS.PTEXT, rep.engineer || "");
+    xml.push('<row r="' + rn + '">' + cells + "</row>");
+    rn++;
+  });
+  return { name: "工種計價表",
+           widths: [13, 11].concat(labels.flatMap(()=>[13, 15, 15]), [34, 15]),
+           rows: xml };
+}
+
+function laborDetailSheet(recs, split){
+  const def = REPORT_DEFS.labor;
+  const { labels, per } = split;
+  const headers = def.headers.concat(typeSplitHeaders(labels));
+  const dataRows = def.rows(recs).map((row, i)=>row.concat(typeSplitCells(per.get(recs[i].id) || {}, labels)));
+  const xml = ['<row r="1">' + headers.map((h, c)=>xlText(c, 1, XS.HEAD, h)).join("") + "</row>"]
+    .concat(dataRowsXml(dataRows, XS.NUM, XS.TEXT, 2));
+  return { name: "完整明細", widths: autoWidths(headers), rows: xml };
+}
+
+function exportLaborXlsx(){
+  const recs = REPORT_DEFS.labor.records();
+  if(!recs.length){ toast("目前沒有可匯出的資料"); return; }
+  const split = laborTypeSplit(recs);
+  downloadXlsx([laborPricingSheet(recs, split), laborDetailSheet(recs, split)],
+    MASTER.currentSite + "_點工紀錄" + exportFilterTag() + "_" + localDate() + ".xlsx");
+}
+
+function exportLaborSummaryXlsx(){
+  const sum = pricingSummaryTable("labor");
+  if(!sum.rows.length){ toast("此條件內尚無已回報資料可彙總"); return; }
+  const recs = REPORT_DEFS.labor.records();
+  const { labels, per } = laborTypeSplit(recs);
+  const byVendor = typeSplitByVendor(recs, per);
+  // 彙總表用全前綴表頭：N 個工種產生 N 組同名「加班前2HR」會讓樞紐/查表抓錯費率
+  const headers = sum.headers.concat(typeSplitHeaders(labels));
+  const dataRows = sum.rows.map(row=>row.concat(typeSplitCells(byVendor[row[1]] || {}, labels)));   // row[1]＝廠商欄
+  const xml = ['<row r="1">' + headers.map((h, c)=>xlText(c, 1, XS.OHEAD, h)).join("") + "</row>"]
+    .concat(dataRowsXml(dataRows, XS.PNUM, XS.PTEXT, 2));
+  downloadXlsx([{ name: "計價彙總", widths: autoWidths(headers), rows: xml }],
+    MASTER.currentSite + "_點工計價彙總" + exportFilterTag() + "_" + localDate() + ".xlsx");
 }
 
 /* ==========================================================
@@ -3166,13 +3356,7 @@ function initSettings(){
     try{
       const data = await api("GET", null, { scope: "all" });
       const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `點工機具_完整備份_${localDate()}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-      toast("備份已下載，請妥善保存");
+      downloadBlob(blob, `點工機具_完整備份_${localDate()}.json`, "備份已下載，請妥善保存");
     }catch(e){
       toast("⚠ 備份下載失敗，請檢查網路");
     }

@@ -3390,6 +3390,52 @@ function renderAll(){
   renderSettings();
 }
 
+/* ==========================================================
+   登出與閒置逾時（v22，資訊處要求）
+   - 閒置 10 分鐘無操作 → 清除本分頁工作狀態（含管理員模式）並回選站畫面
+   - 「登出」按鈕：同樣的清除，手動觸發
+   - 過渡期範圍限制：Basic Auth 帳密由瀏覽器保存、無法用程式清除——
+     本機制清的是 sessionStorage（dm_site/dm_admin）與畫面狀態；
+     地端 SSO 上線後改為丟棄 token（AUTH-PLAN §4），機制沿用
+   - 分頁在背景時不靠計時器輪詢：記「最後操作時間」，回前景立即補查，
+     掛著過夜的分頁一回來就會被登出
+   ========================================================== */
+const IDLE_LIMIT_MS = 10 * 60 * 1000;
+let lastActivityAt = Date.now();
+
+function resetWorkSession(reason){
+  sessionStorage.removeItem("dm_site");
+  sessionStorage.removeItem("dm_admin");
+  sessionStorage.setItem("dm_logout_reason", reason);   // reload 後由 boot 顯示提示
+  location.reload();
+}
+
+function idleCheck(){
+  if(!READY) return;                                    // 尚未載入完成不計
+  if(Date.now() - lastActivityAt >= IDLE_LIMIT_MS) resetWorkSession("idle");
+}
+
+function initIdleLogout(){
+  ["pointerdown", "keydown", "wheel", "touchmove", "scroll"].forEach(ev=>
+    document.addEventListener(ev, ()=>{ lastActivityAt = Date.now(); }, { passive: true, capture: true }));
+  setInterval(idleCheck, 30 * 1000);
+  document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) idleCheck(); });
+
+  document.getElementById("logoutBtn").addEventListener("click", ()=>{
+    if(!confirm("登出將清除本分頁的工作狀態（含管理員模式與未送出的表單內容），回到選擇工地畫面。確定登出？")) return;
+    resetWorkSession("manual");
+  });
+
+  // 顯示上一輪的登出原因（reload 後執行到這裡）
+  const reason = sessionStorage.getItem("dm_logout_reason");
+  if(reason){
+    sessionStorage.removeItem("dm_logout_reason");
+    setTimeout(()=>toast(reason === "idle"
+      ? "閒置超過 10 分鐘，為保護資料已自動登出，請重新選擇工地"
+      : "已登出，請重新選擇工地"), 600);
+  }
+}
+
 /* ---------------- init ---------------- */
 document.addEventListener("DOMContentLoaded", ()=>{
   initTabs();
@@ -3422,6 +3468,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
   initAdmin();
   initSettings();
   document.getElementById("refreshBtn").addEventListener("click", ()=>refreshData(false));
+  initIdleLogout();
 
   boot();
 });

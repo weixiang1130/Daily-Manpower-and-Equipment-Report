@@ -21,7 +21,7 @@
 | [15](15-portable-server-deployment.md) | 可攜式伺服器與地端部署交付 | server/ 零依賴 Node 伺服器（同 API 合約+靜態+Basic Auth）、備份 JSON 匯入工具、DEPLOYMENT.md 部署手冊 |
 | [16](16-api-contract-seam.md) | API 合約正式化與後端替換餘裕 | docs/API-CONTRACT.md 接縫合約（op/409/欄位字典/資料表建議）、apiBase 可配置、IT 標準後端重寫的對接準備 |
 | [17](17-remove-selfdone-unlimit-conclusion.md) | 移除根基自辦、回饋不限字數（v12） | 兩回報表單移除自辦三欄（舊資料承繼保留、報表欄不動）、查核回饋取消 30 字上限 |
-| [18](18-sql-handoff-package.md) | SQL 交付包（資料表＋遷移工具） | docs/sql/ 8表4VIEW＋備份轉SQL工具＋實作指引；LocalDB 以正式資料實測對帳一致、409 模式驗證 |
+| [18](18-sql-handoff-package.md) | SQL 交付包（資料表＋遷移工具） | backend/sql/ 8表4VIEW＋備份轉SQL工具＋實作指引；LocalDB 以正式資料實測對帳一致、409 模式驗證 |
 | [19](19-field-audit-module.md) | 成控現場稽核模組（v13） | 管理員限定稽核頁籤（工地端隱藏）、連動申請單逐項相符/不相符查核＋實點差異、PDF/CSV 匯出；audits[] 內嵌後端零修改；SQL 包同步至 10表5VIEW |
 | [20](20-attachments.md) | 附件：簽單掃描檔與稽核照片（v14） | 三掛載點附件（點工/機具申請＋稽核）、圖片前端壓縮、稽核 PDF 嵌照片；api.mjs 首次修改（上傳/下載/刪除＋連動清除）；合約 §4.6、SQL 包 11表5VIEW |
 | [21](21-report-filters-collapsible.md) | 現場回饋三項（v15） | 回報限一位簽單責任工程師＋報表按工程師篩選統計、點工/機具清單日期廠商篩選、四表單收合式面板 |

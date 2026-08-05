@@ -24,13 +24,13 @@ kgmanpower.netlify.app（整站密碼保護，外部無法瀏覽）
 
 - **repo 永遠乾淨**：真實名單只存在兩個地方——使用者地端的 `config.local.js`（.gitignore 排除）與 Netlify 的環境變數（僅帳號登入者可見）
 - **自動部署不斷鏈**：因為名單來自環境變數而非檔案，之後每次 merge PR 觸發的自動建置都會重新產生 config.local.js，不需要任何手動步驟
-- **整站帳密保護（Edge Function Basic Auth）**：Netlify 原生 Password Protection 在免費方案回傳 422 不可用，改以 `netlify/edge-functions/auth.ts` 實作——`path: "/*"` 攔截所有請求（含 config.local.js 本身），比對 `SITE_AUTH_USER`／`SITE_AUTH_PASS` 環境變數的 Basic Auth 帳密，未通過回 401。`SITE_AUTH_PASS` 未設定時自動放行（fail-open），避免設定不完整時把整個站台鎖死——因此**正式啟用順序必須是：先設帳密環境變數，再設 LOCAL_CONFIG_JS，最後才部署**
+- **整站帳密保護（Edge Function Basic Auth）**：Netlify 原生 Password Protection 在免費方案回傳 422 不可用，改以 `backend/cloud/edge-functions/auth.ts` 實作——`path: "/*"` 攔截所有請求（含 config.local.js 本身），比對 `SITE_AUTH_USER`／`SITE_AUTH_PASS` 環境變數的 Basic Auth 帳密，未通過回 401。`SITE_AUTH_PASS` 未設定時自動放行（fail-open），避免設定不完整時把整個站台鎖死——因此**正式啟用順序必須是：先設帳密環境變數，再設 LOCAL_CONFIG_JS，最後才部署**
 - 未設定 `LOCAL_CONFIG_JS` 時建置腳本跳過，站台以內建範例值運作（例如其他人 fork 這個 repo 部署，不會壞）
 
 ## 操作紀錄
 
 - PR #3（堆疊含 #1、#2）依使用者指示合併至 main
-- 新增 `netlify.toml`（build command + publish 目錄）、`scripts/build-config.mjs`、`netlify/edge-functions/auth.ts`
+- 新增 `netlify.toml`（build command + publish 目錄）、`scripts/build-config.mjs`、`backend/cloud/edge-functions/auth.ts`
 - 環境變數（皆為 Netlify 站台範圍）：`SITE_AUTH_USER`／`SITE_AUTH_PASS`（整站帳密，使用者授權設定）、`LOCAL_CONFIG_JS`（地端 config.local.js 全文，含 adminPin）
 
 ## 維運須知

@@ -7,7 +7,7 @@
 
 資訊處回覆：現行架構要上公司系統，需由使用者端「重新編寫後端」。使用者裁示：SQL 建表等能先做的先做好，連同其他交付物一起移交資訊處。開發機恰有 SQL Server LocalDB＋sqlcmd（無 .NET SDK、無 Node），因此採取「**資料層全部做完並實測，API 薄層留給資訊處用其標準實作**」的分工。
 
-## 交付內容（docs/sql/）
+## 交付內容（backend/sql/）
 
 1. **DB-SCHEMA.sql**：8 表＋4 VIEW（SQL Server 方言）
    - 表：sites / site_options（7 類名單池共用）/ labor_records / labor_reports（1:1）/ labor_report_worktypes（1:N 工種）/ equip_records / equip_reports / equip_report_usage

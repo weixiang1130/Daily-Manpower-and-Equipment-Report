@@ -10,11 +10,11 @@
 
 ```
 瀏覽器（純前端，無框架/無建置）
-  └─ index.html + style.css + app.js + config.local.js(建置時產生)
+  └─ frontend/ = index.html + style.css + app.js + config.local.js(建置時產生)
        │ fetch /api/data（Basic Auth 由瀏覽器自動附帶）
        ▼
-netlify/edge-functions/auth.ts   整站 Basic Auth（env: SITE_AUTH_USER/PASS；未設密碼=放行）
-netlify/functions/api.mjs        資料 API（函式內二次驗證同一組帳密）
+backend/cloud/edge-functions/auth.ts   整站 Basic Auth（env: SITE_AUTH_USER/PASS；未設密碼=放行）
+backend/cloud/functions/api.mjs        資料 API（函式內二次驗證同一組帳密）
   └─ Netlify Blobs store "audit-data"（strong consistency）
 ```
 
@@ -49,27 +49,43 @@ netlify/functions/api.mjs        資料 API（函式內二次驗證同一組帳�
 2. **改版留痕**：現行實務為**直接 commit 到 main**（每次推送即觸發部署，需先取得專案負責人核准），非 PR 流程。新功能新增 `docs/milestones/NN-描述.md` 並更新索引與 CHANGELOG；同一節點的補強修正**追加到既有 NN 檔案**，不另編號；營運操作（不改碼）記到 `docs/ops-log.md`（同樣去識別化）。
 3. **測試共用資料庫**：用拋棄式工地名寫入，測畢 `op:clearSite` 清除；嚴禁 `clearAll`。
 4. 程式風格：原生 JS、無依賴（僅 @netlify/blobs）、繁體中文 UI 與註解、`esc()` 處理所有插入 DOM 的動態字串。
+5. **新增檔案先定位三大項**：畫面相關→`frontend/`、伺服器/資料庫相關→`backend/`、說明文件→`docs/`。
+   前端不得引用後端原始碼（只透過 `/api/data`），後端不得含頁面，文件不含可執行程式。
 
-## 檔案地圖
+## 檔案地圖（三大項：前端／後端／文件）
 
 ```
-index.html                     頁面結構（6 頁籤含管理員限定稽核頁＋申請/回報子頁＋overlay 們）
-app.js                         全部前端邏輯（約 2900 行，區塊註解分段）
-style.css                      樣式（根基營造品牌設計系統：暖中性＋深板岩藍、尖角、無漸層）
-config.local.js                （gitignored）真實名單；格式見 app.js 開頭註解
-netlify/functions/api.mjs      資料 API（op: master/config/record/addOption/deleteRecord/uploadAttachment/deleteAttachment/clearSite/clearAll ＋ GET ?attachment= 下載）
-netlify/edge-functions/auth.ts 整站 Basic Auth
-scripts/build-config.mjs       建置時由環境變數產生 config.local.js
-server/server.mjs              可攜式伺服器（地端部署用，零依賴 Node 18+；同一 API 合約＋靜態服務＋Basic Auth）
-server/import-backup.mjs       資料遷移工具（備份 JSON → 地端資料目錄；**不含附件本體**，附件另依 DEPLOYMENT §4 搬運）
-DEPLOYMENT.md                  地端部署手冊（給 IT：環境需求/步驟/遷移/維運/改接公司後端）
-docs/MIGRATION-PLAN.md        ★ 地端移轉計畫（現況/目標架構/分工/資料與附件移轉/三階段時程/回退）
-docs/API-CONTRACT.md           ★ 前後端接縫合約（op 規格/409 語意/欄位字典/資料表建議）——重寫後端唯一依據；改欄位先改這份
-docs/sql/                      SQL 交付包（給 IT）：DB-SCHEMA.sql 11表5VIEW＋backup-json-to-sql.py 遷移工具＋README 實作指引（已於 LocalDB 以正式資料實測對帳）
-docs/milestones/               迭代節點文件（背景/決策/驗證）
-docs/ops-log.md                營運紀錄（去識別化）
+frontend/                      ★ 前端，唯一對外發布的目錄（netlify.toml publish）
+  index.html                   頁面結構（6 頁籤含管理員限定稽核頁＋申請/回報子頁＋overlay 們）
+  app.js                       全部前端邏輯（約 3,400 行，區塊註解分段）
+  style.css                    樣式（根基營造品牌設計系統：暖中性＋深板岩藍、尖角、無漸層）
+  config.local.js              （gitignored）真實名單；格式見 app.js 開頭註解
+
+backend/
+  cloud/functions/api.mjs      資料 API（op: master/config/record/addOption/deleteRecord/
+                               uploadAttachment/deleteAttachment/clearSite/clearAll ＋ GET ?attachment=）
+  cloud/edge-functions/auth.ts 整站 Basic Auth
+  onprem/server.mjs            可攜式伺服器（零依賴 Node 18+；同一 API 合約＋靜態服務＋Basic Auth）
+  onprem/import-backup.mjs     資料遷移（備份 JSON → 地端資料目錄；**不含附件本體**）
+  sql/                         SQL 交付包：DB-SCHEMA.sql 11表5VIEW＋backup-json-to-sql.py＋README
+                               （已於 LocalDB 以正式資料實測對帳）
+
+docs/
+  API-CONTRACT.md            ★ 前後端接縫合約（op 規格/409 語意/欄位字典）——改欄位先改這份
+  MIGRATION-PLAN.md          ★ 地端移轉計畫（現況/目標架構/分工/資料與附件移轉/時程/回退）
+  AUTH-PLAN.md               ★ 權限規畫（SSO/ERP 權限來源/角色判定規則/驗收情境）
+  DEPLOYMENT.md                地端部署手冊（給 IT）
+  milestones/                  迭代節點文件（背景/決策/驗證）
+  ops-log.md                   營運紀錄（去識別化）
+
+netlify.toml                   ⚠ publish / functions / edge_functions **三個路徑都明示**
+scripts/build-config.mjs       建置時由環境變數產生 frontend/config.local.js
+README.md                      導覽入口（三大項說明）
 CHANGELOG.md                   版本摘要
 ```
+
+> **改動目錄結構時**：`netlify.toml` 的三個路徑、`scripts/build-config.mjs` 的輸出路徑、
+> 工作資料夾 `.claude/launch.json` 的 `--directory` 必須同步——漏改會部署出空站或 API 404。
 
 ## 已知限制與擱置項目
 

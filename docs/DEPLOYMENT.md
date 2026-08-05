@@ -9,14 +9,14 @@
 
 | | Netlify 版（現行） | 可攜式版（地端用） |
 |---|---|---|
-| 靜態檔案 | Netlify CDN | `server/server.mjs` 內建靜態服務 |
-| 資料 API `/api/data` | `netlify/functions/api.mjs` | `server/server.mjs`（同一 API 合約） |
-| Basic Auth | `netlify/edge-functions/auth.ts` | `server/server.mjs`（同一邏輯） |
+| 靜態檔案 | Netlify CDN | `backend/onprem/server.mjs` 內建靜態服務 |
+| 資料 API `/api/data` | `backend/cloud/functions/api.mjs` | `backend/onprem/server.mjs`（同一 API 合約） |
+| Basic Auth | `backend/cloud/edge-functions/auth.ts` | `backend/onprem/server.mjs`（同一邏輯） |
 | 資料儲存 | Netlify Blobs（一筆一 blob） | 檔案系統 `DATA_DIR`（紀錄＝一筆一 JSON 檔；附件本體在 `attachments/` 子目錄） |
 
 前端 `app.js` 對兩種形態**完全無感**——只呼叫 `/api/data`。
 
-> **重要**：`netlify/` 目錄與 `netlify.toml` 是 Netlify 專用，地端部署**不需要、也無法使用**；地端只需要 `server/` ＋ 根目錄靜態檔案。
+> **重要**：`backend/cloud/` 與 `netlify.toml` 是 Netlify 專用，地端部署**不需要、也無法使用**；地端只需要 `backend/onprem/` ＋ `frontend/` 靜態檔案。
 
 ## 2. 地端環境需求
 
@@ -46,24 +46,24 @@ export DATA_DIR=/var/lib/kg-audit     # 資料目錄（建議獨立於程式目�
 
 # 4) 匯入既有資料（從 Netlify 切換時；全新部署可跳過）
 #    先在舊站：設定頁 → 管理員登入 → 「下載完整備份（JSON）」
-node server/import-backup.mjs 完整備份.json
+node backend/onprem/import-backup.mjs 完整備份.json
 
 # 5) 啟動
-node server/server.mjs
+node backend/onprem/server.mjs
 #    → http://localhost:8080 應出現登入視窗（若已設 SITE_AUTH_PASS）
 ```
 
 ### 常駐服務建議
 
-- **Linux**：systemd unit，`ExecStart=/usr/bin/node /opt/kg-audit/server/server.mjs`，`Restart=always`，環境變數寫在 unit 的 `Environment=` 或 `EnvironmentFile=`
+- **Linux**：systemd unit，`ExecStart=/usr/bin/node /opt/kg-audit/backend/onprem/server.mjs`，`Restart=always`，環境變數寫在 unit 的 `Environment=` 或 `EnvironmentFile=`
 - **Windows**：以 [NSSM](https://nssm.cc/) 或工作排程器包成服務；環境變數設在服務層級
 
 ## 4. 資料遷移（Netlify → 地端）切換流程
 
 1. 公告停機時段（避免切換期間有人寫入舊站）
 2. 舊站：管理員「下載完整備份（JSON）」
-3. **附件搬運（v14 起必做）**：JSON 備份只含附件描述資料、**不含檔案本體**——依備份中各單據/稽核的 `attachments[].id`，以 `GET ?site=<工地>&attachment=<id>`（帶 Basic Auth）逐一下載存入地端附件目錄。**server.mjs 形態注意**：檔名須為 `<b64url(工地)>_<附件id>`（無副檔名），並須同步建立 `attmeta:` 中繼資料（名稱/型別），否則下載會退化為 octet-stream 與亂檔名；SQL 形態則回填 `file_path`（詳見 docs/sql/README.md 附件搬運節）
-4. 地端：`node server/import-backup.mjs <備份檔>` → 啟動服務
+3. **附件搬運（v14 起必做）**：JSON 備份只含附件描述資料、**不含檔案本體**——依備份中各單據/稽核的 `attachments[].id`，以 `GET ?site=<工地>&attachment=<id>`（帶 Basic Auth）逐一下載存入地端附件目錄。**server.mjs 形態注意**：檔名須為 `<b64url(工地)>_<附件id>`（無副檔名），並須同步建立 `attmeta:` 中繼資料（名稱/型別），否則下載會退化為 octet-stream 與亂檔名；SQL 形態則回填 `file_path`（詳見 backend/sql/README.md 附件搬運節）
+4. 地端：`node backend/onprem/import-backup.mjs <備份檔>` → 啟動服務
 5. 驗證清單（缺一不可）：
    - 開站出現 Basic Auth 登入 → 選工地攔截頁 → 各工地資料筆數與舊站一致
    - 建立一筆點工申請 → 回報覆核（逐工種＋分段加班）→ 差異正確
@@ -95,14 +95,14 @@ node server/server.mjs
 > 見 [`docs/MIGRATION-PLAN.md`](docs/MIGRATION-PLAN.md)。本節僅保留資料層起點說明。
 
 
-若 IT 評估後決定不使用 `server/server.mjs`，而以公司標準技術（自選語言＋資料庫）重寫後端：
+若 IT 評估後決定不使用 `backend/onprem/server.mjs`，而以公司標準技術（自選語言＋資料庫）重寫後端：
 
-- **資料層起點包已備妥**：[`docs/sql/`](docs/sql/README.md) 內含經實測的 SQL Server 建表 DDL（11 表＋5 VIEW）、備份 JSON→SQL 遷移工具、逐操作 SQL 對照與並發寫法——**請從 docs/sql/README.md 讀起**，不必從零設計 schema
+- **資料層起點包已備妥**：[`backend/sql/`](backend/sql/README.md) 內含經實測的 SQL Server 建表 DDL（11 表＋5 VIEW）、備份 JSON→SQL 遷移工具、逐操作 SQL 對照與並發寫法——**請從 backend/sql/README.md 讀起**，不必從零設計 schema
 - **只需實作一份合約**：[`docs/API-CONTRACT.md`](docs/API-CONTRACT.md) 完整定義了前後端唯一接縫（單一端點、9 個操作＋附件下載、409 並發語意、全部欄位字典、資料表設計建議與驗收方式）。新後端符合該合約，**前端 `app.js` 零修改**
 - **API 路徑可配置**：後端若掛在其他路徑（如 `/kg-audit/api/data`），在 `config.local.js` 加一行 `apiBase: "<路徑>"` 即可，不改程式
 - **驗收**：以現行前端直接跑本文件 §4 驗證清單＋雙瀏覽器並發 409 測試
-- 兩份參考實作（`netlify/functions/api.mjs`、`server/server.mjs`）API 合約行為一致，可作為重寫時的對照組（已知差異：server.mjs 無舊命名空間 `migrateLegacyKeys` 搬移——僅影響從未經雲端 GET 的極舊資料）
+- 兩份參考實作（`backend/cloud/functions/api.mjs`、`backend/onprem/server.mjs`）API 合約行為一致，可作為重寫時的對照組（已知差異：server.mjs 無舊命名空間 `migrateLegacyKeys` 搬移——僅影響從未經雲端 GET 的極舊資料）
 
 ## 8. 測試狀態聲明
 
-`server/server.mjs` 與 `import-backup.mjs` 撰寫當下開發機無 Node 環境，**僅通過語法驗證與對照 `netlify/functions/api.mjs` 的逐行合約比對，未經實機執行測試**。部署前請務必在測試機完整跑過第 4 節的驗證清單；如有問題請回報系統管理者。
+`backend/onprem/server.mjs` 與 `import-backup.mjs` 撰寫當下開發機無 Node 環境，**僅通過語法驗證與對照 `backend/cloud/functions/api.mjs` 的逐行合約比對，未經實機執行測試**。部署前請務必在測試機完整跑過第 4 節的驗證清單；如有問題請回報系統管理者。

@@ -37,7 +37,7 @@
 - `app.js`：新增稽核區塊（AUDIT_ITEMS/檢視/表單/儲存/刪除/PDF/CSV）；`anyEditing()` 納入稽核中狀態；tabs/renderAll/applyAdminUI/switchSiteContext 掛鉤
 - `style.css`：稽核卡片/切換鈕/項目列樣式
 - `docs/API-CONTRACT.md`：§4.3/4.4 父層加 `audits`、新增 §4.5、版本註記 v13
-- `docs/sql/`：DDL＋遷移工具＋README 同步（見上）
+- `backend/sql/`：DDL＋遷移工具＋README 同步（見上）
 - 後端（api.mjs/server.mjs）：**零修改**
 
 ## 驗證紀錄

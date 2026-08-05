@@ -107,7 +107,7 @@ def site_ref(site):
 
 
 def valid_record(r, kind):
-    """父單基本驗證；不合格者跳過並計數（與 server/import-backup.mjs 同紀律）"""
+    """父單基本驗證；不合格者跳過並計數（與 backend/onprem/import-backup.mjs 同紀律）"""
     if not r or not r.get("id") or not ID_RE.match(str(r["id"])):
         skipped["id"] += 1
         return False

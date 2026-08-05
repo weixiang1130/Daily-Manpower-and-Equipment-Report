@@ -15,7 +15,7 @@
 - **順手修復**：申請表單編輯送出時整筆重組單據未帶 `audits[]`——編輯已被稽核的申請單會洗掉稽核紀錄（兩輪審查皆未發現的既有 bug，點工/機具皆修）
 - **合約同步**：§2.3／§3.6／§3.7／§4.6 新增；§3.8 註記連動刪除；明文警示「JSON 備份不含檔案本體」
 - **SQL 交付包**：第 11 表 `attachments`（描述資料；地端檔案本體存檔案系統、file_path 記錄路徑）；遷移工具 emit 附件描述資料（id/檔名驗證＋跳過計數）；README 對照表與附件搬運節；DEPLOYMENT 切換流程加附件搬運步驟與驗證項
-- **地端伺服器（server/server.mjs）對等實作**：檔案存 `DATA_DIR/attachments/`、metadata 存 kv，同一合約行為（仍註記未實機測試）
+- **地端伺服器（backend/onprem/server.mjs）對等實作**：檔案存 `DATA_DIR/attachments/`、metadata 存 kv，同一合約行為（仍註記未實機測試）
 
 ## 設計決策 / 取捨
 
@@ -26,9 +26,9 @@
 
 ## 影響範圍
 
-- `netlify/functions/api.mjs`（上線以來首次修改）＋`server/server.mjs`
+- `backend/cloud/functions/api.mjs`（上線以來首次修改）＋`backend/onprem/server.mjs`
 - `app.js`（附件模組＋三掛載點整合＋PDF）＋`index.html`＋`style.css`
-- `docs/API-CONTRACT.md`／`docs/sql/`（11 表）／`DEPLOYMENT.md`
+- `docs/API-CONTRACT.md`／`backend/sql/`（11 表）／`DEPLOYMENT.md`
 
 ## 驗證紀錄
 

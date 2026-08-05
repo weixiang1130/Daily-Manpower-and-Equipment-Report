@@ -5,10 +5,10 @@
    「下載完整備份（JSON）」（格式即 GET /api/data?scope=all 的輸出）
 
    用法：
-     node server/import-backup.mjs <備份檔.json> [資料目錄]
+     node backend/onprem/import-backup.mjs <備份檔.json> [資料目錄]
 
    範例：
-     node server/import-backup.mjs 點工機具_完整備份_2026-07-31.json
+     node backend/onprem/import-backup.mjs 點工機具_完整備份_2026-07-31.json
      （資料目錄預設 <repo>/server/data，與 server.mjs 預設一致）
 
    行為：
@@ -25,7 +25,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const [,, backupFile, dataDirArg] = process.argv;
 if(!backupFile){
-  console.error("用法：node server/import-backup.mjs <備份檔.json> [資料目錄]");
+  console.error("用法：node backend/onprem/import-backup.mjs <備份檔.json> [資料目錄]");
   process.exit(1);
 }
 const DATA_DIR = dataDirArg || process.env.DATA_DIR || path.join(__dirname, "data");

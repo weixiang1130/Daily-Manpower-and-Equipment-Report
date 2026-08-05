@@ -2,7 +2,7 @@
    帳密由 Netlify 環境變數提供：SITE_AUTH_USER / SITE_AUTH_PASS。
    SITE_AUTH_PASS 未設定時不啟用驗證（避免誤鎖整個站台），
    因此正式啟用前務必先在 Netlify 設定該環境變數。 */
-import type { Context, Config } from "@netlify/edge-functions";
+import type { Context, Config } from "@backend/cloud/edge-functions";
 
 declare const Netlify: { env: { get(name: string): string | undefined } };
 

@@ -1,5 +1,19 @@
 # Netlify 部署設定
-# 建置時由環境變數 LOCAL_CONFIG_JS 產生 config.local.js（真實名單不進 GitHub）
+#
+# 目錄結構為「前端／後端／文件」三大項（見 README.md），因此三個路徑都必須
+# 明示——Netlify 的預設值（publish=根、functions=netlify/functions、
+# edge-functions=netlify/edge-functions）在本結構下全部不適用。
+# 改動目錄時這三行要一起改，否則會部署出空站或 API 404。
 [build]
+  # 建置：由環境變數 LOCAL_CONFIG_JS 產生 frontend/config.local.js（真實名單不進 GitHub）
   command = "node scripts/build-config.mjs"
-  publish = "."
+  # 發布：只有 frontend/ 是對外靜態資產；後端與文件不發布
+  publish = "frontend"
+
+[functions]
+  # 資料 API（api.mjs 內以 export const config = { path: "/api/data" } 宣告路由）
+  directory = "backend/cloud/functions"
+
+[edge_functions]
+  # 整站 Basic Auth（auth.ts 內以 path: "/*" 宣告攔截範圍）
+  directory = "backend/cloud/edge-functions"

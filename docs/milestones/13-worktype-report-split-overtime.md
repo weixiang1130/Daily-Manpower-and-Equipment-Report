@@ -42,7 +42,7 @@
 
 - `index.html`：點工申請（移除名單欄）、點工回報（工種覆核區、分段加班欄）、設定頁（工種清單 textarea）
 - `app.js`：GENERIC_CONFIG/defaultSiteConfig/sortRecords（laborTypes 池與補值）、申請表單、回報表單全段（typeState/renderTypeRows/addTypeRow/syncTotals/警告）、laborDetail、REPORT_DEFS.labor、計價彙總（期間欄＋分段）、SITE_CFG_MAP
-- `netlify/functions/api.mjs`：addOption POOLS 白名單 +laborTypes
+- `backend/cloud/functions/api.mjs`：addOption POOLS 白名單 +laborTypes
 - 資料結構：`report` 新增 `workTypes/ot2Total/otOverTotal`（向下相容）；`config` 新增 `laborTypes`
 
 ## 驗證紀錄

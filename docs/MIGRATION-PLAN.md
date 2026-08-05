@@ -37,8 +37,8 @@
 | 項目 | 負責 | 狀態 |
 |---|---|---|
 | 前端程式 | 成控（已完成） | ✅ 現行版本即可直接使用 |
-| 資料表 DDL（11 表 5 VIEW） | 成控（已完成） | ✅ `docs/sql/DB-SCHEMA.sql`，本機 Express 實建並以正式資料對帳通過 |
-| 資料移轉工具 | 成控（已完成） | ✅ `docs/sql/backup-json-to-sql.py`，含髒資料防護與對帳 |
+| 資料表 DDL（11 表 5 VIEW） | 成控（已完成） | ✅ `backend/sql/DB-SCHEMA.sql`，本機 Express 實建並以正式資料對帳通過 |
+| 資料移轉工具 | 成控（已完成） | ✅ `backend/sql/backup-json-to-sql.py`，含髒資料防護與對帳 |
 | API 合約規格 | 成控（已完成） | ✅ `docs/API-CONTRACT.md`（9 個操作、409 併發語意、欄位字典） |
 | **.NET 8 API 服務** | **資訊處**（或成控先交付參考實作供審查） | ⬜ **唯一未完成項** |
 | 環境（SQL Server、IIS、DNS、憑證、AD） | 資訊處 | ⬜ 待五項決策 |

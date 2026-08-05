@@ -4,10 +4,12 @@ Thumbs.db
 .vscode/
 
 # 本機真實工地/分包商/人員名單，絕不推上程式碼庫
+# （不加路徑前綴＝任何層級都擋，避免搬動目錄後失效）
 config.local.js
 
 # Netlify 本機工具產生的資料夾
 .netlify/
+node_modules/
 
 # 本機 DEMO（不進版控）
 demo.html

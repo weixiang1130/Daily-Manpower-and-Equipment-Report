@@ -22,7 +22,7 @@
 
 **逐筆紀錄各自一把 key**：不同紀錄同時寫入互不影響；同一筆被兩人同時編輯時為後寫者覆蓋（last-write-wins），以現場人數與填報頻率屬可接受風險。
 
-### API（`netlify/functions/api.mjs`，路徑 `/api/data`）
+### API（`backend/cloud/functions/api.mjs`，路徑 `/api/data`）
 
 - `GET ?scope=all`：master + 全部工地的 config 與紀錄（開站/重新整理用）
 - `GET ?site=X`：單一工地資料

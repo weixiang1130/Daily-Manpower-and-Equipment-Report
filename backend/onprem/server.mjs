@@ -4,15 +4,15 @@
    用途：在不依賴 Netlify 的環境（公司自有伺服器）提供與
    Netlify 版完全相同的服務：
      1. 靜態檔案（index.html / app.js / style.css / config.local.js）
-     2. 資料 API（/api/data，與 netlify/functions/api.mjs 同一合約）
-     3. 整站 Basic Auth（與 netlify/edge-functions/auth.ts 同一邏輯）
+     2. 資料 API（/api/data，與 backend/cloud/functions/api.mjs 同一合約）
+     3. 整站 Basic Auth（與 backend/cloud/edge-functions/auth.ts 同一邏輯）
 
    前端 app.js 完全不需修改。
 
    需求：Node.js 18 以上。零外部依賴（不需 npm install）。
 
    啟動：
-     node server/server.mjs
+     node backend/onprem/server.mjs
 
    環境變數：
      PORT            監聽埠（預設 8080）
@@ -123,7 +123,7 @@ function authorized(req){
   return (req.headers["authorization"] || "") === expected;
 }
 
-/* ---------------- 資料 API（與 netlify/functions/api.mjs 同合約） ---------------- */
+/* ---------------- 資料 API（與 backend/cloud/functions/api.mjs 同合約） ---------------- */
 async function readSite(site){
   const config = await kvGet(cfgKey(site));
   const keys = await kvListKeys("rec2:" + b64e(site) + ":");

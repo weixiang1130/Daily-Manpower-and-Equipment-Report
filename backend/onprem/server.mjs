@@ -16,8 +16,8 @@
 
    環境變數：
      PORT            監聽埠（預設 8080）
-     DATA_DIR        資料儲存目錄（預設 <repo>/server/data）
-     STATIC_DIR      靜態檔案目錄（預設 repo 根目錄）
+     DATA_DIR        資料儲存目錄（預設 <repo>/backend/onprem/data）
+     STATIC_DIR      靜態檔案目錄（預設 <repo>/frontend）
      SITE_AUTH_USER  Basic Auth 帳號（預設 kg）
      SITE_AUTH_PASS  Basic Auth 密碼（未設定＝不啟用驗證，
                      正式環境務必設定）
@@ -40,7 +40,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = Number(process.env.PORT) || 8080;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
-const STATIC_DIR = process.env.STATIC_DIR || path.resolve(__dirname, "..");
+/* 靜態根＝frontend/（三大項結構）。**不可指向 repo 根或 backend/**——
+   那會把後端原始碼與 SQL DDL 一併對外提供下載。 */
+const STATIC_DIR = process.env.STATIC_DIR || path.resolve(__dirname, "../../frontend");
 
 /* ---------------- key ↔ 檔名 ---------------- */
 const b64e = s => Buffer.from(s, "utf8").toString("base64url");

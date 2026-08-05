@@ -2,6 +2,13 @@
 
 版本異動摘要。完整背景與設計決策請見 [`docs/milestones/`](docs/milestones/README.md)。
 
+## [節點 29] 2026-08-05 — 目錄重組為前端／後端／文件（v22.1） ※待部署
+- **三大項結構**：`frontend/`（唯一發布目錄）／`backend/{cloud,onprem,sql}/`／`docs/`；README 重寫為導覽入口
+- 部署設定同步：netlify.toml 三路徑明示（`[build] edge_functions` 與 `[functions] directory` **寫法不同不可類推**）、build-config 輸出路徑、launch.json、.gitignore
+- **code review 修復重組引發的 8 項缺陷**：套件名被誤改導致 Basic Auth 部署失敗、非法的 edge_functions 設定（會讓整站變公開）、地端靜態根指向後端目錄（原始碼可下載）、DATA_DIR 靜默改變、資料目錄未 gitignore（外洩風險）、部署手冊路徑、8 個死連結、去識別化掃描器失效
+- **計價正確性**：明細報表的加班歸段改走 `otSegments()`（第四份漏改的副本，舊制單會造成跨表 4 小時幽靈差額）；0 工單帶加班不再從分欄消失
+- xlsx 硬化：非數值退回文字格（避免整份檔損毀）、`constructor` 等原型鍵名不再讓匯出崩潰、控制字元改跳脫序列（app.js 不再被當 binary）
+
 ## [節點 28] 2026-08-05 — 閒置逾時與登出（v22，資訊處要求） ※待部署
 - **閒置 10 分鐘自動登出**：清除本分頁工作狀態與管理員模式、回選站畫面並提示；分頁回前景立即補查（掛過夜回來即登出）
 - **頁首新增「登出」按鈕**：confirm 後執行相同流程

@@ -11,6 +11,13 @@ config.local.js
 .netlify/
 node_modules/
 
+# 地端伺服器的資料目錄（server.mjs / import-backup.mjs 的 DATA_DIR 預設值）
+# ⚠ 重組後這個目錄落在被追蹤的 backend/ 樹內——沒有這條規則的話，
+#   照 DEPLOYMENT.md 做移轉演練會把正式單據（含真實工地/分包商/人名）
+#   寫進工作目錄，之後 git add -A 就會 staged 進 public repo
+backend/onprem/data/
+data/
+
 # 本機 DEMO（不進版控）
 demo.html
 demo-local.js

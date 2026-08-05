@@ -1,7 +1,7 @@
 # 部署手冊（地端 / 自有伺服器）
 
 本文件供 IT／基礎架構人員將本系統從 Netlify 遷移至自有伺服器。
-系統技術背景請先讀 [`CLAUDE.md`](CLAUDE.md)；演進脈絡見 [`docs/milestones/`](docs/milestones/README.md)。
+系統技術背景請先讀 [`CLAUDE.md`](../CLAUDE.md)；演進脈絡見 [`docs/milestones/`](milestones/README.md)。
 
 ## 1. 系統組成（兩種部署形態）
 
@@ -34,7 +34,7 @@ cd <repo>
 
 # 2) 放置真實名單設定檔（向系統管理者索取，勿入版控）
 #    內容格式見 app.js 開頭註解；檔名固定：
-#    <repo>/config.local.js
+#    <repo>/frontend/config.local.js   ← 必須放在 frontend/（index.html 以相對路徑載入）
 
 # 3) 設定環境變數
 #    Linux（systemd 服務檔或 shell）：
@@ -92,13 +92,13 @@ node backend/onprem/server.mjs
 ## 7. 未來改接公司標準後端（重寫資料層）
 
 > **移轉主文件**：公司內網（.NET 8 + SQL Server）的完整移轉計畫、分工、三階段時程與切換日程序，
-> 見 [`docs/MIGRATION-PLAN.md`](docs/MIGRATION-PLAN.md)。本節僅保留資料層起點說明。
+> 見 [`docs/MIGRATION-PLAN.md`](MIGRATION-PLAN.md)。本節僅保留資料層起點說明。
 
 
 若 IT 評估後決定不使用 `backend/onprem/server.mjs`，而以公司標準技術（自選語言＋資料庫）重寫後端：
 
-- **資料層起點包已備妥**：[`backend/sql/`](backend/sql/README.md) 內含經實測的 SQL Server 建表 DDL（11 表＋5 VIEW）、備份 JSON→SQL 遷移工具、逐操作 SQL 對照與並發寫法——**請從 backend/sql/README.md 讀起**，不必從零設計 schema
-- **只需實作一份合約**：[`docs/API-CONTRACT.md`](docs/API-CONTRACT.md) 完整定義了前後端唯一接縫（單一端點、9 個操作＋附件下載、409 並發語意、全部欄位字典、資料表設計建議與驗收方式）。新後端符合該合約，**前端 `app.js` 零修改**
+- **資料層起點包已備妥**：[`backend/sql/`](../backend/sql/README.md) 內含經實測的 SQL Server 建表 DDL（11 表＋5 VIEW）、備份 JSON→SQL 遷移工具、逐操作 SQL 對照與並發寫法——**請從 backend/sql/README.md 讀起**，不必從零設計 schema
+- **只需實作一份合約**：[`docs/API-CONTRACT.md`](API-CONTRACT.md) 完整定義了前後端唯一接縫（單一端點、9 個操作＋附件下載、409 並發語意、全部欄位字典、資料表設計建議與驗收方式）。新後端符合該合約，**前端 `app.js` 零修改**
 - **API 路徑可配置**：後端若掛在其他路徑（如 `/kg-audit/api/data`），在 `config.local.js` 加一行 `apiBase: "<路徑>"` 即可，不改程式
 - **驗收**：以現行前端直接跑本文件 §4 驗證清單＋雙瀏覽器並發 409 測試
 - 兩份參考實作（`backend/cloud/functions/api.mjs`、`backend/onprem/server.mjs`）API 合約行為一致，可作為重寫時的對照組（已知差異：server.mjs 無舊命名空間 `migrateLegacyKeys` 搬移——僅影響從未經雲端 GET 的極舊資料）

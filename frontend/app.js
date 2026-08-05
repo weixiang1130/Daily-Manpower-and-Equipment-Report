@@ -183,10 +183,14 @@ async function boot(){
 
     showLoading(false);
 
-    const remembered = sessionStorage.getItem("dm_site");
+    const remembered = ssGet("dm_site");
+    // 剛登出（含閒置逾時）這一輪一律停在選站畫面：否則單一工地時
+    // v20 的自動進入會立刻把人放回站內，登出等同無效——權限上線後
+    // 「可見工地只有一個」正是常態（AUTH-PLAN），這條不可省。
+    // 旗標已由 initIdleLogout() 消費（它先於 boot 執行），故讀模組變數
     if(remembered && MASTER.sites.includes(remembered)){
       enterSite(remembered);
-    }else if(MASTER.sites.length === 1){
+    }else if(MASTER.sites.length === 1 && !lastLogoutReason){
       enterSite(MASTER.sites[0]);   // v20：可見工地僅一個時免選直進（為未來 AD 權限過濾鋪路）
     }else{
       showSiteGate();
@@ -1727,8 +1731,10 @@ const REPORT_DEFS = {
         rep.signReturnDate||"", reported?fmt(rep.actual):"", reported?fmt(rep.diff):"",
         rep.zeroWork?"V":"",
         rep.engineer||"",
-        reported ? (rep.ot2Total != null ? fmt(rep.ot2Total) : "") : "",
-        reported ? (rep.otOverTotal != null ? fmt(rep.otOverTotal) : "") : "",
+        // 歸段口徑走 otSegments()（唯一權威，計價紅線 1）——舊制單只有 totalOT
+        // 時必須顯示為「前2h」，直接讀 ot2Total 會留空，與彙總/分欄對不起來
+        reported ? fmt(otSegments(rep).ot2) : "",
+        reported ? fmt(otSegments(rep).otOver) : "",
         reported ? fmt(rep.totalOT) : "",
         laborDetail(rep)
       ].concat(doneCols(rep), [rep.conclusion||""]);
@@ -1987,7 +1993,13 @@ function otSegments(rep){
            otOver: rep.otOverTotal || 0 };
 }
 /* 單筆已回報單 → 逐工種列 [{type, work, ot2, otOver}]。
-   無工種列的單（v11 前舊制或直填總數）以「工作內容類別」為列名；0 工單回空陣列。 */
+   無工種列的單（v11 前舊制或直填總數）以「工作內容類別」為列名。
+
+   0 工單：一般回空陣列（無計價內容）。**但若仍帶加班時數則不可略過**——
+   送出驗證只要求 actual=0，加班兩欄是獨立輸入不會被歸零，因此
+   {zeroWork:true, ot2Total:3} 是可經 UI 產生的合法資料。略過會讓
+   計價彙總算得到 3 小時、而分欄與工種計價表全空，成本部拿到「有時數
+   卻無組成」的檔案（計價紅線 4：報表要讓人看見組成）。 */
 function reportTypeRows(r){
   const rep = r.report;
   if(!(r.status === "已回報" && rep)) return [];
@@ -1995,10 +2007,10 @@ function reportTypeRows(r){
     return rep.workTypes.map(t=>({ type: t.type || "（未填工種）",
       work: t.work || 0, ot2: t.ot2 || 0, otOver: t.otOver || 0 }));
   }
-  if(rep.zeroWork) return [];
   const seg = otSegments(rep);
+  if(rep.zeroWork && !(seg.ot2 || seg.otOver)) return [];
   return [{ type: (r.categories || []).filter(Boolean).join("、") || "（未填工種）",
-            work: rep.actual || 0, ot2: seg.ot2, otOver: seg.otOver }];
+            work: rep.zeroWork ? 0 : (rep.actual || 0), ot2: seg.ot2, otOver: seg.otOver }];
 }
 
 function laborTypeSplit(records){
@@ -2026,7 +2038,7 @@ const typeSplitHeaders = labels =>
   labels.flatMap(lb=>[`${lb}出工數`, `${lb}加班前2HR(時數)`, `${lb}加班2HR後(時數)`]);
 const typeSplitCells = (m, labels) =>
   labels.flatMap(lb=>{
-    const e = m[lb];
+    const e = Object.prototype.hasOwnProperty.call(m, lb) ? m[lb] : null;
     return e ? [fmtRank(e.work), fmtRank(e.ot2), fmtRank(e.otOver)] : ["", "", ""];
   });
 /* 廠商 -> 欄名 -> 合計（計價彙總分欄用；null 原型同 laborTypeSplit） */
@@ -2273,14 +2285,21 @@ const XLSX_STYLES = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
 /* 0→A、25→Z、26→AA（完整明細工作表可超過 26 欄） */
 const colRef = i => { let s = ""; i++; while(i){ i--; s = String.fromCharCode(65 + i % 26) + s; i = Math.floor(i / 26); } return s; };
 /* XML 1.0 非法控制字元（含 Word 貼上常見的 U+000B）——不濾掉整份檔會打不開 */
-const xmlSafe = v => String(v).replace(/[ --]/g, "");
+const xmlSafe = v => String(v).replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
+/* 純數字判定：排除前導零（0800、統編等視為文字，轉數值會失去前導零） */
+const isNumCell = s => /^-?(0|[1-9]\d*)(\.\d+)?$/.test(s);
 /* 合併範圍內的「被蓋住」格仍要輸出空白格，否則該範圍沒有框線 */
 const xlText = (c, r, s, v) => v === "" || v == null
   ? '<c r="' + colRef(c) + r + '" s="' + s + '"/>'
   : '<c r="' + colRef(c) + r + '" s="' + s + '" t="inlineStr"><is><t xml:space="preserve">' + esc(xmlSafe(v)) + "</t></is></c>";
-const xlNum = (c, r, s, v) => v === "" || v == null
-  ? '<c r="' + colRef(c) + r + '" s="' + s + '"/>'
-  : '<c r="' + colRef(c) + r + '" s="' + s + '"><v>' + v + "</v></c>";
+/* 數值格；非數值（字串、NaN、Infinity）一律退回文字格——寫進 <v> 會讓
+   Excel 判整份檔案損毀，且錯誤訊息不指出是哪一格 */
+const xlNum = (c, r, s, v) => {
+  if(v === "" || v == null) return '<c r="' + colRef(c) + r + '" s="' + s + '"/>';
+  return isNumCell(String(v))
+    ? '<c r="' + colRef(c) + r + '" s="' + s + '"><v>' + v + "</v></c>"
+    : xlText(c, r, s, v);
+};
 
 /* 組出 xlsx Blob；sheets = [{name, widths, rows(每列 <row> 字串), merges}]，可多工作表 */
 function buildXlsx(sheets){
@@ -2386,7 +2405,6 @@ const pricingTypeHeaders = labels =>
 
 /* 儲存格自動判型：純數字輸出為真數值，但「0 開頭的多位數」（0800、統編、
    電話）視為文字保留——轉數值會失去前導零，備查欄位失真 */
-const isNumCell = s => /^-?(0|[1-9]\d*)(\.\d+)?$/.test(s);
 function dataRowsXml(rows, numStyle, textStyle, startRow){
   return rows.map((row, ri)=>{
     const rn = ri + startRow;
@@ -2396,6 +2414,9 @@ function dataRowsXml(rows, numStyle, textStyle, startRow){
     }).join("") + "</row>";
   });
 }
+/* 查無時的空袋子：必須是 null 原型——用 {} 會讓名為 constructor/toString 的
+   工種或廠商命中 Object.prototype 上的函式，typeSplitCells 誤判為有資料 */
+const EMPTY_BAG = Object.create(null);
 const autoWidths = headers => headers.map(h=>Math.min(28, Math.max(9, h.length * 2 + 3)));
 
 /* recs 與 split 由 exportLaborXlsx 一次計算傳入：兩個工作表的工種欄集與
@@ -2438,7 +2459,7 @@ function laborDetailSheet(recs, split){
   const def = REPORT_DEFS.labor;
   const { labels, per } = split;
   const headers = def.headers.concat(typeSplitHeaders(labels));
-  const dataRows = def.rows(recs).map((row, i)=>row.concat(typeSplitCells(per.get(recs[i].id) || {}, labels)));
+  const dataRows = def.rows(recs).map((row, i)=>row.concat(typeSplitCells(per.get(recs[i].id) || EMPTY_BAG, labels)));
   const xml = ['<row r="1">' + headers.map((h, c)=>xlText(c, 1, XS.HEAD, h)).join("") + "</row>"]
     .concat(dataRowsXml(dataRows, XS.NUM, XS.TEXT, 2));
   return { name: "完整明細", widths: autoWidths(headers), rows: xml };
@@ -2460,7 +2481,7 @@ function exportLaborSummaryXlsx(){
   const byVendor = typeSplitByVendor(recs, per);
   // 彙總表用全前綴表頭：N 個工種產生 N 組同名「加班前2HR」會讓樞紐/查表抓錯費率
   const headers = sum.headers.concat(typeSplitHeaders(labels));
-  const dataRows = sum.rows.map(row=>row.concat(typeSplitCells(byVendor[row[1]] || {}, labels)));   // row[1]＝廠商欄
+  const dataRows = sum.rows.map(row=>row.concat(typeSplitCells(byVendor[row[1]] || EMPTY_BAG, labels)));   // row[1]＝廠商欄
   const xml = ['<row r="1">' + headers.map((h, c)=>xlText(c, 1, XS.OHEAD, h)).join("") + "</row>"]
     .concat(dataRowsXml(dataRows, XS.PNUM, XS.PTEXT, 2));
   downloadXlsx([{ name: "計價彙總", widths: autoWidths(headers), rows: xml }],
@@ -3402,17 +3423,31 @@ function renderAll(){
    ========================================================== */
 const IDLE_LIMIT_MS = 10 * 60 * 1000;
 let lastActivityAt = Date.now();
+/* 本輪是否由登出／逾時進來（initIdleLogout 消費旗標後寫入，供 boot 判斷
+   是否跳過「單一工地自動進入」）——宣告在此供兩處共用 */
+let lastLogoutReason = null;
+
+/* sessionStorage 在 Safari 無痕／封鎖 Cookie 時會丟 SecurityError——
+   登出流程不可因此中斷（更不可讓 init 整段掛掉） */
+function ssSet(k, v){ try{ sessionStorage.setItem(k, v); }catch(e){} }
+function ssGet(k){ try{ return sessionStorage.getItem(k); }catch(e){ return null; } }
+function ssDel(k){ try{ sessionStorage.removeItem(k); }catch(e){} }
 
 function resetWorkSession(reason){
-  sessionStorage.removeItem("dm_site");
-  sessionStorage.removeItem("dm_admin");
-  sessionStorage.setItem("dm_logout_reason", reason);   // reload 後由 boot 顯示提示
+  // dm_auditor＝上一位稽核人員的真實姓名，會回填稽核表單預設值；
+  // 共用平板上不清會讓下一位以前一位的名義送出稽核
+  ["dm_site", "dm_admin", "dm_auditor"].forEach(ssDel);
+  ssSet("dm_logout_reason", reason);                    // reload 後由本檔尾段顯示提示
   location.reload();
 }
 
 function idleCheck(){
   if(!READY) return;                                    // 尚未載入完成不計
-  if(Date.now() - lastActivityAt >= IDLE_LIMIT_MS) resetWorkSession("idle");
+  if(Date.now() - lastActivityAt < IDLE_LIMIT_MS) return;
+  // 表單編輯中不自動登出：逾時重載會靜默清掉已填的逐工種列與查核回饋。
+  // 與整批刷新同一組守衛（CLAUDE.md 架構不變式 1），改為延後一輪再查。
+  if(anyEditing()){ lastActivityAt = Date.now(); return; }
+  resetWorkSession("idle");
 }
 
 function initIdleLogout(){
@@ -3421,16 +3456,19 @@ function initIdleLogout(){
   setInterval(idleCheck, 30 * 1000);
   document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) idleCheck(); });
 
-  document.getElementById("logoutBtn").addEventListener("click", ()=>{
+  // 舊版 index.html 配新版 app.js 時按鈕可能不存在——不可讓整個 init 中斷
+  const btn = document.getElementById("logoutBtn");
+  if(btn) btn.addEventListener("click", ()=>{
     if(!confirm("登出將清除本分頁的工作狀態（含管理員模式與未送出的表單內容），回到選擇工地畫面。確定登出？")) return;
     resetWorkSession("manual");
   });
 
-  // 顯示上一輪的登出原因（reload 後執行到這裡）
-  const reason = sessionStorage.getItem("dm_logout_reason");
-  if(reason){
-    sessionStorage.removeItem("dm_logout_reason");
-    setTimeout(()=>toast(reason === "idle"
+  // 顯示上一輪的登出原因（reload 後執行到這裡）。本函式先於 boot() 執行，
+  // 故把消費掉的旗標留在 lastLogoutReason 供 boot 判斷是否跳過自動進站
+  lastLogoutReason = ssGet("dm_logout_reason");
+  if(lastLogoutReason){
+    ssDel("dm_logout_reason");
+    setTimeout(()=>toast(lastLogoutReason === "idle"
       ? "閒置超過 10 分鐘，為保護資料已自動登出，請重新選擇工地"
       : "已登出，請重新選擇工地"), 600);
   }

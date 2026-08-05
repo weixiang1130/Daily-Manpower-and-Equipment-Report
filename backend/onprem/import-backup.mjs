@@ -9,7 +9,7 @@
 
    範例：
      node backend/onprem/import-backup.mjs 點工機具_完整備份_2026-07-31.json
-     （資料目錄預設 <repo>/server/data，與 server.mjs 預設一致）
+     （資料目錄預設 <repo>/backend/onprem/data，與 server.mjs 預設一致）
 
    行為：
    - master（工地清單）、各工地 config、各筆紀錄逐一寫入

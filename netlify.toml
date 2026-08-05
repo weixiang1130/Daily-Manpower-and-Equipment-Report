@@ -1,19 +1,22 @@
 # Netlify 部署設定
 #
-# 目錄結構為「前端／後端／文件」三大項（見 README.md），因此三個路徑都必須
-# 明示——Netlify 的預設值（publish=根、functions=netlify/functions、
-# edge-functions=netlify/edge-functions）在本結構下全部不適用。
-# 改動目錄時這三行要一起改，否則會部署出空站或 API 404。
+# 目錄結構為「前端／後端／文件」三大項（見 README.md），Netlify 的三個預設路徑
+# （publish=根、functions=netlify/functions、edge_functions=netlify/edge-functions）
+# 在本結構下全部不適用，因此都必須明示。改動目錄時三處要一起改。
+#
+# ⚠ 三個 key 的寫法不同，不可類推：
+#   publish / edge_functions 都在 [build] 底下（edge_functions 是「字串」＝目錄名，
+#     **不是** [edge_functions] 區段——那個名稱在 Netlify 是 [[edge_functions]]
+#     宣告式路由用的陣列，寫成區段會讓 Basic Auth 不被部署，整站變成公開）
+#   functions 目錄則在獨立的 [functions] 區段
 [build]
   # 建置：由環境變數 LOCAL_CONFIG_JS 產生 frontend/config.local.js（真實名單不進 GitHub）
   command = "node scripts/build-config.mjs"
   # 發布：只有 frontend/ 是對外靜態資產；後端與文件不發布
   publish = "frontend"
+  # 整站 Basic Auth（auth.ts 內以 path: "/*" 宣告攔截範圍）
+  edge_functions = "backend/cloud/edge-functions"
 
 [functions]
   # 資料 API（api.mjs 內以 export const config = { path: "/api/data" } 宣告路由）
   directory = "backend/cloud/functions"
-
-[edge_functions]
-  # 整站 Basic Auth（auth.ts 內以 path: "/*" 宣告攔截範圍）
-  directory = "backend/cloud/edge-functions"

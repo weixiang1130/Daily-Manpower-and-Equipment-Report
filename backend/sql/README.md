@@ -22,7 +22,7 @@
 ```
 
 - **API 合約**是唯一規格來源；完成後用現行前端直接驗收（合約 §5.6）
-- 部署總覽與切換流程屬 [`DEPLOYMENT.md`](../../DEPLOYMENT.md)；本文件只管資料層
+- 部署總覽與切換流程屬 [`DEPLOYMENT.md`](../../docs/DEPLOYMENT.md)；本文件只管資料層
 
 ## 2. 操作 ↔ SQL 對照（9 個 op ＋ 3 個 GET 讀取）
 

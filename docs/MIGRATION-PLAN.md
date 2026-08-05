@@ -1,7 +1,7 @@
 # 地端移轉計畫（雲端 Netlify → 公司內網 .NET 8 + SQL Server）
 
 > 對象：資訊處與成本管理部。本文件說明**現況**、**目標架構**、**分工**、**資料移轉方式**與**切換日程序**。
-> 相關文件：[`API-CONTRACT.md`](API-CONTRACT.md)（後端規格）、[`sql/README.md`](sql/README.md)（資料層實作）、[`../DEPLOYMENT.md`](../DEPLOYMENT.md)（Node 可攜式伺服器版部署，過渡/備援用）
+> 相關文件：[`API-CONTRACT.md`](API-CONTRACT.md)（後端規格）、[`backend/sql/README.md`](../backend/sql/README.md)（資料層實作）、[`DEPLOYMENT.md`](DEPLOYMENT.md)（Node 可攜式伺服器版部署，過渡/備援用）
 
 ## 1. 現況：三個環境，各司其職
 

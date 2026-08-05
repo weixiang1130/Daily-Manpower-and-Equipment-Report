@@ -24,12 +24,15 @@ GO
 
 /* ---------- 1. 工地主檔 ---------- */
 CREATE TABLE dbo.sites (
-    site_id     INT IDENTITY(1,1) CONSTRAINT PK_sites PRIMARY KEY,
-    name        NVARCHAR(100) NOT NULL CONSTRAINT UQ_sites_name UNIQUE,
-    lock_date   DATE NULL,              -- 計價鎖定日（含）以前非管理員不可增修刪
-    is_active   BIT NOT NULL CONSTRAINT DF_sites_active DEFAULT 1,  -- 專案退場=0
-    sort_order  INT NOT NULL CONSTRAINT DF_sites_sort DEFAULT 0
+    site_id      INT IDENTITY(1,1) CONSTRAINT PK_sites PRIMARY KEY,
+    name         NVARCHAR(100) NOT NULL CONSTRAINT UQ_sites_name UNIQUE,
+    project_code VARCHAR(10) NULL,      -- ERP 專案代碼；權限過濾用（見 docs/AUTH-PLAN.md §2.2）
+                                        -- NULL＝尚未對映，該站不套用 ERP 權限（僅管理員可見）
+    lock_date    DATE NULL,             -- 計價鎖定日（含）以前非管理員不可增修刪
+    is_active    BIT NOT NULL CONSTRAINT DF_sites_active DEFAULT 1,  -- 專案退場=0
+    sort_order   INT NOT NULL CONSTRAINT DF_sites_sort DEFAULT 0
 );
+CREATE INDEX IX_sites_project_code ON dbo.sites(project_code) WHERE project_code IS NOT NULL;
 
 /* ---------- 2. 名單池（廠商/地點/類別/機具類型/工程師/工種…共用一張） ---------- */
 CREATE TABLE dbo.site_options (

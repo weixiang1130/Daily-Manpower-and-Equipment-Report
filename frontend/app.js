@@ -40,6 +40,12 @@ function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(
 function esc(s){
   return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
+/* sessionStorage 存取一律走這三個 wrapper：Safari 無痕／封鎖 Cookie 時
+   原生 API 會丟 SecurityError，未攔截會讓開站流程整段中斷（畫面卡在
+   載入中或空白）。**新增存取點請勿直接呼叫 sessionStorage。** */
+function ssSet(k, v){ try{ sessionStorage.setItem(k, v); }catch(e){} }
+function ssGet(k){ try{ return sessionStorage.getItem(k); }catch(e){ return null; } }
+function ssDel(k){ try{ sessionStorage.removeItem(k); }catch(e){} }
 /* 以「本地時區」取日期字串——toISOString 是 UTC，台灣早上 8 點前
    會被記成前一天，直接影響按月計價的歸屬 */
 function localDate(d = new Date()){
@@ -215,7 +221,7 @@ function showSiteGate(){
 
 function enterSite(site){
   MASTER.currentSite = site;
-  sessionStorage.setItem("dm_site", site);
+  ssSet("dm_site", site);
   READY = true;
   renderAll();
   switchMainTab("labor");   // v20：選定工地即進入點工頁開工，免再點一次（總覽仍在頁籤可隨時回）
@@ -243,7 +249,7 @@ async function refreshData(silent){
     }
     if(!MASTER.sites.includes(MASTER.currentSite)){
       MASTER.currentSite = MASTER.sites[0];
-      sessionStorage.setItem("dm_site", MASTER.currentSite);
+      ssSet("dm_site", MASTER.currentSite);
     }
     renderAll();
     if(!silent) toast("已載入最新資料");
@@ -265,7 +271,7 @@ function renderSitePicker(){
 }
 function switchSiteContext(site, silent){
   MASTER.currentSite = site;
-  sessionStorage.setItem("dm_site", site);
+  ssSet("dm_site", site);
   resetLaborApplyForm();
   resetLaborReportForm();
   resetEquipApplyForm();
@@ -1723,6 +1729,7 @@ const REPORT_DEFS = {
     rows(recs){ return (recs || this.records()).map(r=>{
       const rep = r.report || {};
       const reported = r.status==="已回報" && r.report;
+      const seg = otSegments(rep);   // 分段口徑唯一權威（同 buildPricingSummary/reportTypeRows 寫法）
       return [
         r.date, r.vendor, fmt(r.required),
         (r.categories||[]).join("、")+(r.categoryNote?"・"+r.categoryNote:""),
@@ -1733,8 +1740,8 @@ const REPORT_DEFS = {
         rep.engineer||"",
         // 歸段口徑走 otSegments()（唯一權威，計價紅線 1）——舊制單只有 totalOT
         // 時必須顯示為「前2h」，直接讀 ot2Total 會留空，與彙總/分欄對不起來
-        reported ? fmt(otSegments(rep).ot2) : "",
-        reported ? fmt(otSegments(rep).otOver) : "",
+        reported ? fmt(seg.ot2) : "",
+        reported ? fmt(seg.otOver) : "",
         reported ? fmt(rep.totalOT) : "",
         laborDetail(rep)
       ].concat(doneCols(rep), [rep.conclusion||""]);
@@ -2047,7 +2054,7 @@ function typeSplitByVendor(recs, per){
   recs.forEach(r=>{
     const key = r.vendor || "（未填廠商）";
     const t = byVendor[key] || (byVendor[key] = Object.create(null));
-    Object.entries(per.get(r.id) || {}).forEach(([lb, e])=>{
+    Object.entries(per.get(r.id) || EMPTY_BAG).forEach(([lb, e])=>{
       const g = t[lb] || (t[lb] = { work:0, ot2:0, otOver:0 });
       g.work += e.work; g.ot2 += e.ot2; g.otOver += e.otOver;
     });
@@ -2831,7 +2838,7 @@ function renderAuditForm(rec, editA){
       </div>
       <div class="field field-num">
         <label>稽核人</label>
-        <input type="text" id="auditAuditor" placeholder="例：成控－某某某" value="${esc(editA?(editA.auditor||""):(sessionStorage.getItem("dm_auditor")||""))}">
+        <input type="text" id="auditAuditor" placeholder="例：成控－某某某" value="${esc(editA?(editA.auditor||""):(ssGet("dm_auditor")||""))}">
       </div>
       <div class="field field-wide">
         <label>快速查核（每項必選「相符／不相符」；不相符需填寫原因）</label>
@@ -2939,7 +2946,7 @@ async function saveAudit(id){
   const list = kind==="labor" ? store.labor : store.equipment;
   const idx = list.findIndex(r=>r.id===id);
   if(idx >= 0) list[idx] = updated;
-  sessionStorage.setItem("dm_auditor", auditor);
+  ssSet("dm_auditor", auditor);
   attFinalize(auditAtt);   // 儲存成功後才真正刪除被移除的附件
   toast(orig ? "稽核紀錄已更新" : "稽核紀錄已儲存至共用資料庫");
   if(seqAtSave === auditFetchSeq){
@@ -3230,18 +3237,18 @@ function initAudit(){
    ========================================================== */
 const ADMIN_PIN = (LOCAL.adminPin != null) ? String(LOCAL.adminPin) : "0000";
 
-function isAdmin(){ return sessionStorage.getItem("dm_admin") === "1"; }
+function isAdmin(){ return ssGet("dm_admin") === "1"; }
 
 function initAdmin(){
   document.getElementById("adminToggleBtn").addEventListener("click", ()=>{
     if(isAdmin()){
-      sessionStorage.removeItem("dm_admin");
+      ssDel("dm_admin");
       toast("已登出管理員模式");
     }else{
       const pin = prompt("請輸入管理員密碼：");
       if(pin === null) return;
       if(String(pin) === ADMIN_PIN){
-        sessionStorage.setItem("dm_admin", "1");
+        ssSet("dm_admin", "1");
         toast("已進入管理員模式");
       }else{
         toast("密碼錯誤");
@@ -3336,7 +3343,7 @@ function initSettings(){
     }
     if(!MASTER.sites.includes(MASTER.currentSite)){
       MASTER.currentSite = MASTER.sites[0];
-      sessionStorage.setItem("dm_site", MASTER.currentSite);
+      ssSet("dm_site", MASTER.currentSite);
     }
     renderAll();
     toast("設定已儲存至共用資料庫");
@@ -3392,7 +3399,7 @@ function initSettings(){
       toast("⚠ 雲端清除失敗，請檢查網路後再試");
       return;
     }
-    sessionStorage.removeItem("dm_site");
+    ssDel("dm_site");
     location.reload();
   });
 }
@@ -3422,16 +3429,14 @@ function renderAll(){
      掛著過夜的分頁一回來就會被登出
    ========================================================== */
 const IDLE_LIMIT_MS = 10 * 60 * 1000;
+/* 絕對上限：即使表單有未送出內容也照樣登出。
+   放著超過半小時的表單已非「正在填」，而共用平板上留著管理員 session
+   的風險大於那份內容——寬限不可無限延長。 */
+const IDLE_HARD_LIMIT_MS = 30 * 60 * 1000;
 let lastActivityAt = Date.now();
 /* 本輪是否由登出／逾時進來（initIdleLogout 消費旗標後寫入，供 boot 判斷
    是否跳過「單一工地自動進入」）——宣告在此供兩處共用 */
 let lastLogoutReason = null;
-
-/* sessionStorage 在 Safari 無痕／封鎖 Cookie 時會丟 SecurityError——
-   登出流程不可因此中斷（更不可讓 init 整段掛掉） */
-function ssSet(k, v){ try{ sessionStorage.setItem(k, v); }catch(e){} }
-function ssGet(k){ try{ return sessionStorage.getItem(k); }catch(e){ return null; } }
-function ssDel(k){ try{ sessionStorage.removeItem(k); }catch(e){} }
 
 function resetWorkSession(reason){
   // dm_auditor＝上一位稽核人員的真實姓名，會回填稽核表單預設值；
@@ -3441,12 +3446,37 @@ function resetWorkSession(reason){
   location.reload();
 }
 
+/* 有沒有「還沒送出的輸入」——決定逾時要不要寬限。
+
+   不可改用 anyEditing()：那組 editing*Id 只在**編輯既有單**時才設定
+   （loadXxxRecord），使用者新開一張申請單填到一半時全是 null，
+   正好是最常見的情境卻不受保護。這裡直接看畫面上有沒有值。 */
+function hasUnsavedInput(){
+  const scopes = ["laborApplyForm", "laborReportForm", "equipApplyForm", "equipReportForm",
+                  "auditFormWrap", "tab-settings"];
+  for(const id of scopes){
+    const root = document.getElementById(id);
+    if(!root || root.offsetParent === null) continue;    // 未顯示的面板不算
+    for(const el of root.querySelectorAll("input, textarea, select")){
+      if(el.disabled || el.readOnly || el.type === "hidden") continue;
+      if(el.type === "checkbox" || el.type === "radio"){ if(el.checked) return true; continue; }
+      if(el.value && el.value.trim() !== "" && el.value !== el.defaultValue) return true;
+    }
+    // 逐工種列／逐台列／標籤是 DOM 產生的，不在 input 掃描範圍內
+    if(root.querySelector(".att-row, .tag-chip, .att-cell")) return true;
+  }
+  return typeState.length > 0 || usageState.length > 0;
+}
+
 function idleCheck(){
   if(!READY) return;                                    // 尚未載入完成不計
-  if(Date.now() - lastActivityAt < IDLE_LIMIT_MS) return;
-  // 表單編輯中不自動登出：逾時重載會靜默清掉已填的逐工種列與查核回饋。
-  // 與整批刷新同一組守衛（CLAUDE.md 架構不變式 1），改為延後一輪再查。
-  if(anyEditing()){ lastActivityAt = Date.now(); return; }
+  const idle = Date.now() - lastActivityAt;
+  if(idle < IDLE_LIMIT_MS) return;
+  /* 有未送出的輸入 → 寬限到絕對上限為止。
+     **不可重置 lastActivityAt**：那等於每輪都給一個全新的 10 分鐘，
+     只要表單開著就永遠不會登出，資訊處要求的共用平板防護會完全失效。
+     不重置的話，表單一送出/取消，下一個 30 秒 tick 就會立刻登出。 */
+  if(idle < IDLE_HARD_LIMIT_MS && hasUnsavedInput()) return;
   resetWorkSession("idle");
 }
 

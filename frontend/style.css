@@ -648,3 +648,28 @@ td.num{font-family:'DM Mono',Consolas,monospace;}    /* 等寬字讓整數位對
 @media(max-width:900px){
   .rank-table{table-layout:auto;}                    /* 窄畫面交還 auto，配合外層水平捲動 */
 }
+
+/* ---------- 歷程報表／計價彙總：固定欄寬（v22.3） ---------- */
+/* 明細 26 欄，全域 th,td{white-space:nowrap} 讓一筆長「現場查核回饋」就把整頁往右撐
+   （桌機 .table-wrap 是 overflow:visible），且欄寬隨每頁最長那筆變動＝翻頁版面會跳。
+   改 table-layout:fixed 逐欄指定寬度（欄寬表在 app.js 的 REPORT_COL_W）：
+   寬度只由設定決定，與資料無關，翻頁與換工地都是同一個版面。 */
+.report-table{table-layout:fixed;width:auto;min-width:100%;}   /* 欄寬總和不足時撐滿版面 */
+/* ⚠ fixed 版面下欄寬不會自動長大，任何一欄留 nowrap 都會讓超寬內容壓到隔壁欄，
+   所以整張表一律放行換行；overflow-wrap:anywhere 讓沒有斷點的長字串（英數編號）也能折。 */
+.report-table th,.report-table td{white-space:normal;overflow-wrap:anywhere;}
+.report-table td{vertical-align:top;}      /* 各欄行數不一，靠上對齊同列才好橫向對讀 */
+.report-table th{line-height:1.35;vertical-align:bottom;}   /* 表頭折兩三行，底部對齊資料列 */
+/* 面板底色與頁首色帶要跟著表格一起變寬：兩者都是區塊元素，寬度只由容器決定，
+   表格溢出的那半截原本落在頁面底色上（右半邊沒有白底、頁首深色帶也只到視窗邊）——
+   這是「版面不一致」的另一半。min-content 讓它們長到容納最寬的子元素為止。
+   只在寬螢幕做：窄螢幕是 .table-wrap 自己橫捲（見上方 @media），
+   body 若跟著變寬會害整頁橫捲，等於把手機版也一起拖下水。 */
+@media(min-width:901px){
+  #tab-history .panel{min-width:min-content;}
+  /* #app 的 max-width:1600px（v15.3）會把撐寬停在 1600——min-width 依規範優先於
+     max-width，所以這裡才是讓整條頁首色帶跟到表格右緣的關鍵。只有內容真的超過
+     1600 時才生效，其他頁籤維持原本置中版面。 */
+  #app{min-width:min-content;}
+  body{min-width:min-content;}
+}

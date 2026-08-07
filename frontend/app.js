@@ -1898,6 +1898,50 @@ function populateReportFilters(key){
   if(engineers.includes(reportEngineer)) engSel.value = reportEngineer; else { reportEngineer = ""; engSel.value = ""; }
 }
 
+/* v22.3：報表欄寬固定化 —— 長字串改自動換行，版面不再被單筆資料撐開
+   問題：全域 th,td 是 white-space:nowrap，點工明細 26 欄裡只要有一筆「現場查核回饋」
+   寫得長，整張表就把版面往右撐到 4,000px 以上；桌機 .table-wrap 是 overflow:visible
+   （v16.1 為了讓表頭黏在頁籤下方而改的），被撐開的是「整頁」，且欄寬會隨每頁最長
+   那筆變動——翻頁時整個版面跟著跳，就是使用者說的「版面不一致」。
+   做法：table-layout:fixed ＋ 逐欄指定寬度（與排名表 v19.4 同一招）。
+   ⚠ 不能只在 td 設 max-width：auto 版面下那只是建議值，nowrap 的 min-content 照樣撐開。
+   ⚠ 改成 fixed 後欄寬不再自動長大，所以 .report-table 的 th/td 必須全部允許換行
+     （見 style.css）——留任何一欄 nowrap，內容超寬就會直接壓到隔壁欄上。
+   欄寬對照走表頭字串，欄序調整時不必同步索引；未列出的欄位用 DEFAULT_COL_W。 */
+const DEFAULT_COL_W = 90;
+const REPORT_COL_W = new Map([
+  /* 日期：實測「2026-08-02」要 118px 才不會斷成兩行（欄寬含左右各 10px 內距） */
+  ["出工日期",120], ["簽單繳回日",120],
+  /* 自由文字：字多，給足寬度讓它折成幾行就好 */
+  ["現場查核回饋",220], ["出工明細(工種)",150], ["機具使用明細",150],
+  ["工作內容",120], ["工作地點",120], ["機具類型",110],
+  ["根基自辦備註",100], ["廠商代辦備註",100],
+  ["廠商",100], ["機具廠商",100], ["責任廠商",100], ["型號",100],
+  ["期間",110],
+  /* 人名不折行：三字姓名 ＋ 少數四字，給 90 */
+  ["申請人",90], ["簽單責任工程師",90], ["狀態",70],
+  /* 數值/記號：內容只有個位數或一個 V，寬度由表頭決定——表頭折行後 2～3 字一行即可 */
+  ["需求工數",62], ["人臉紀錄",62], ["白卡紀錄",62], ["工具箱紀錄",62],
+  ["0工確認",62], ["0使用確認",62], ["差異",58],
+  ["簽單實際出工數",68], ["機具實際工作使用時數",78], ["預計使用時數(需求數量)",78],
+  ["加班時數(前2小時)",68], ["加班時數(第3小時起)",68], ["加班總時數",62],
+  ["根基自辦工數",62], ["根基自辦時數",62], ["廠商代辦工數",62], ["廠商代辦時數",62],
+  ["已回報單數",62], ["0工單數",62], ["0使用單數",62],
+  ["總出工數",62], ["總實際使用時數",68]
+]);
+/* 明細與計價彙總共用
+   ⚠ 表格本身要帶總寬：table-layout:fixed 若 width 為 auto，Chrome 會把 <col> 的
+   px 值當成「比例」去縮放可用寬度（實測 26 欄被壓到每欄 34px、列高 2,500px），
+   只有寫死總寬才會照設定值。窄畫面由 .table-wrap 的橫向捲軸吸收。 */
+function reportTableHTML(headers, rows){
+  const ws = headers.map(h=>REPORT_COL_W.get(h) || DEFAULT_COL_W);
+  const cols = ws.map(w=>`<col style="width:${w}px">`).join("");
+  const cell = v=>`<td>${esc(v===undefined||v===null?"":v)}</td>`;
+  return `<table class="report-table" style="width:${ws.reduce((a,b)=>a+b,0)}px"><colgroup>${cols}</colgroup>
+    <thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead>
+    <tbody>${rows.map(r=>`<tr>${r.map(cell).join("")}</tr>`).join("")}</tbody></table>`;
+}
+
 function renderReport(key){
   if(!READY) return;
   // v19：叫工排名走專用渲染；內容/工程師篩選對排名無意義，一併隱藏
@@ -1922,8 +1966,7 @@ function renderReport(key){
   else{
     // v16.3：明細分頁（每頁 10 筆）——CSV 匯出仍取 def.rows() 全量，不受分頁影響
     const { shown, pagerHTML } = paginate("report", rows);
-    el.innerHTML = `<table><thead><tr>${def.headers.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead>
-      <tbody>${shown.map(r=>`<tr>${r.map(c=>`<td>${esc(c===undefined||c===null?"":c)}</td>`).join("")}</tr>`).join("")}</tbody></table>${pagerHTML}`;
+    el.innerHTML = reportTableHTML(def.headers, shown) + pagerHTML;
     bindPager(el, "report", ()=>renderReport(key));
   }
   renderPricingSummary(key);
@@ -1938,8 +1981,7 @@ function renderPricingSummary(key){
     return;
   }
   el.innerHTML = `<div class="summary-title">計價彙總（依廠商，僅統計已回報單）</div>
-    <div class="table-wrap"><table><thead><tr>${sum.headers.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead>
-    <tbody>${sum.rows.map(r=>`<tr>${r.map(c=>`<td>${esc(c===undefined||c===null?"":c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+    <div class="table-wrap">${reportTableHTML(sum.headers, sum.rows)}</div>`;
 }
 
 /* 下載共用收尾（v21.3 收斂三份複本：CSV／xlsx／備份 JSON）

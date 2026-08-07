@@ -185,6 +185,10 @@ input[type=datetime-local],select,textarea{
   width:100%;
 }
 textarea{resize:vertical;}
+/* v22.5 自動列點欄位：initAutoNumber 會依內容行數設 inline height，
+   這裡只封上限——列到十幾點時改成欄位內捲動，不要把整張表單頂開。
+   box-sizing 不可少：內距算進高度，否則每次量測都會多長一點而無限增高。 */
+textarea[data-autonum]{max-height:320px;box-sizing:border-box;overflow-y:auto;}
 input:focus,select:focus,textarea:focus{
   outline:none;border-color:var(--teal-500);box-shadow:0 0 0 3px var(--teal-100);
 }
@@ -539,7 +543,8 @@ tr.clickable:hover td{background:var(--teal-100);}
 }
 .ai-btn.ok.active{background:#E4EDE8;border-color:var(--color-success);color:var(--color-success);font-weight:700;}
 .ai-btn.bad.active{background:#F2E2E2;border-color:var(--red-500);color:var(--red-500);font-weight:700;}
-.ai-reason{width:100%;margin-top:8px;font:inherit;font-size:13px;padding:7px 10px;border:1px solid #D9BDBD;border-radius:4px;}
+/* v22.5：由 input 改為 textarea（支援自動列點），樣式沿用 */
+.ai-reason{width:100%;margin-top:8px;font:inherit;font-size:13px;padding:7px 10px;border:1px solid #D9BDBD;border-radius:4px;resize:vertical;}
 .audit-ctx.editing{border-color:#C9B481;background:#F5EFE2;}
 .edited-mark{font-size:11.5px;color:var(--color-warning);margin-left:2px;}
 
@@ -657,8 +662,14 @@ td.num{font-family:'DM Mono',Consolas,monospace;}    /* 等寬字讓整數位對
 .fixed-table{table-layout:fixed;width:auto;min-width:100%;}   /* 欄寬總和不足時撐滿版面 */
 /* ⚠ fixed 版面下欄寬不會自動長大，任何一欄留 nowrap 都會讓超寬內容壓到隔壁欄，
    所以整張表一律放行換行；overflow-wrap:anywhere 讓沒有斷點的長字串（英數編號）也能折。 */
-.fixed-table th,.fixed-table td{white-space:normal;overflow-wrap:anywhere;}
+/* pre-line（不是 normal）：說明欄位的自動列點存成純文字，1. 2. 各佔一行，
+   要靠這裡把換行還原成條列；其餘行為與 normal 相同（照樣自動折行）。 */
+.fixed-table th,.fixed-table td{white-space:pre-line;overflow-wrap:anywhere;}
 .fixed-table td{vertical-align:top;}      /* 各欄行數不一，靠上對齊同列才好橫向對讀 */
+/* 列點的每一點自成區塊 ＋ 懸掛縮排：折行才會對齊文字而不是跑到編號正下方。
+   （懸掛縮排必須逐點一個區塊——text-indent 只作用在區塊的第一行，
+   整格套一個負縮排的話只有第 1 點會對，2. 3. 反而歪掉） */
+.fixed-table td .li{padding-left:1.6em;text-indent:-1.6em;}
 .fixed-table th{line-height:1.35;vertical-align:bottom;}   /* 表頭折兩三行，底部對齊資料列 */
 /* 上一條的例外：狀態徽章與操作按鈕是「一個物件」，字被拆行就散了。
    欄寬已在 COL_W 預留（狀態 78／操作 240），不需要靠折行擠。 */

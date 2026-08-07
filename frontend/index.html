@@ -228,12 +228,14 @@
           </div>
           <div class="field field-wide">
             <label>廠商代辦備註</label>
-            <input type="text" id="l_vendorNote" placeholder="選填：例：○○公司扣2工，扣款4200">
+            <!-- v22.5：改 textarea 以支援自動列點（可寫多筆代辦事項） -->
+            <textarea id="l_vendorNote" rows="2" placeholder="選填：例：○○公司扣2工，扣款4200（可用 1. 起頭列點）"></textarea>
           </div>
 
           <div class="field field-wide">
             <label>現場查核回饋</label>
-            <textarea id="l_conclusion" rows="3" placeholder="例：現場人員到齊，工作內容相符"></textarea>
+            <textarea id="l_conclusion" rows="3" placeholder="例：現場人員到齊，工作內容相符
+多件事情可以用 1. 起頭列點，按 Enter 會自動接 2.、3."></textarea>
           </div>
 
           <div class="field field-wide actions">
@@ -388,7 +390,8 @@
           </div>
           <div class="field field-wide">
             <label>廠商代辦備註</label>
-            <input type="text" id="e_vendorNote" placeholder="選填：例：扣款、代辦事項說明">
+            <!-- v22.5：改 textarea 以支援自動列點（可寫多筆代辦事項） -->
+            <textarea id="e_vendorNote" rows="2" placeholder="選填：例：扣款、代辦事項說明（可用 1. 起頭列點）"></textarea>
           </div>
 
           <div class="field field-wide actions">

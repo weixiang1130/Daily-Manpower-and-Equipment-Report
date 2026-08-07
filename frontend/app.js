@@ -185,6 +185,16 @@ const COL_W = new Map([
      按鈕數或字數不同的表（如稽核紀錄）以 fixedTableOpen 的 opts.actionW 覆蓋。 */
   ["操作",260]
 ]);
+/* 儲存格文字 → HTML。說明欄位若是自動列點的結果（1. 2. …），逐點包成區塊並做
+   懸掛縮排，折行才不會跑到編號正下方；非列點文字原樣輸出，換行交給 pre-line。
+   ⚠ 一律經 esc()——這是唯一把資料寫進 DOM 的路徑。 */
+const LIST_TEXT = /(^|\n)\s*\d+[.、)]\s/;
+function cellHTML(v){
+  const s = v === undefined || v === null ? "" : String(v);
+  if(!LIST_TEXT.test(s)) return esc(s);
+  return s.split("\n").map(l=>`<div class="li">${esc(l)}</div>`).join("");
+}
+
 /* 產生 <table>＋<colgroup>＋<thead>，呼叫端只需接自己的 <tbody>。
    表頭與欄寬同一份來源，不會各改各的而對不起來。
    opts.actionCols：該表「操作」欄實際需要的寬度（按鈕數量不同時覆蓋預設 240）。 */
@@ -195,6 +205,95 @@ function fixedTableOpen(headers, opts={}){
   return `<table class="fixed-table" style="width:${ws.reduce((a,b)=>a+b,0)}px">`
     + `<colgroup>${cols}</colgroup>`
     + `<thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead>`;
+}
+
+/* ==========================================================
+   說明文字的自動列點（v22.5）
+   ==========================================================
+   現場查核回饋等說明欄位常一次寫好幾件事，擠成一段很難讀。做法是讓填寫者
+   自己起「1.」，按 Enter 就自動接下一號，存下來的仍是純文字（每點一行），
+   顯示端靠 CSS white-space:pre-line 還原成條列。
+
+   刻意做成可預期的純文字，不做 rich text：
+   - 只有「本行是編號行且有內容」按 Enter 才接號；一般文字照常換行
+   - 空的編號行按 Enter ＝結束列點，把該行編號清掉（否則會一直長號碼）
+   - 每次都重新編號：連續編號行算同一組，遇到非編號行（含空行）重新從 1 起算，
+     所以中間插一行也會自動順下去
+   - 接受 `1.` `1、` `1)` 三種起手式，一律正規化成 `1. `
+   - **中文輸入法組字中（isComposing）不介入**——否則選字用的 Enter 會被吃掉
+
+   ⚠ 不套用於設定頁名單池（cfg_*）：那是「一行一個名稱」，加編號會直接毀掉名單。
+   ⚠ 不套用於工作內容補充（l_categoryNote）：那是接在工作內容後面用「・」串接的
+     短後綴，換行會讓報表該欄變成兩段。 */
+const NUM_LINE = /^(\d+)[.、)]\s?(.*)$/;
+
+/* 重新編號並換算游標位置。位數變動（9.→10.）時直接沿用舊游標會跳格，
+   所以逐行累計長度差；只有游標已越過本行編號時才算進位移。 */
+function renumberLines(text, caret){
+  const lines = text.split("\n");
+  const out = [];
+  let n = 0, pos = 0, delta = 0;
+  for(const line of lines){
+    const m = NUM_LINE.exec(line);
+    let rebuilt;
+    if(m){ n++; rebuilt = n + ". " + m[2]; }
+    else { n = 0; rebuilt = line; }
+    out.push(rebuilt);
+    const d = rebuilt.length - line.length;
+    const lineEnd = pos + line.length;
+    if(caret > lineEnd) delta += d;                                  // 游標在本行之後
+    else if(m && caret >= pos && caret >= lineEnd - m[2].length) delta += d;   // 在本行、且已越過編號
+    pos = lineEnd + 1;
+  }
+  return { text: out.join("\n"), caret: Math.max(0, caret + delta) };
+}
+
+/* 行數變多時把 textarea 撐高（上限交給 CSS max-height），
+   不然列到第四點就要在三行高的框裡捲動。
+   ⚠ 面板收合／頁籤未切換時元素沒有版面，scrollHeight 是 0，照設會把欄位壓成
+   高度 0 且不會自己恢復——所以量不到就直接不動它，等顯示後再由呼叫端補叫。 */
+function autoGrow(ta){
+  if(ta.offsetParent === null) return;
+  ta.style.height = "auto";
+  ta.style.height = ta.scrollHeight + "px";
+}
+
+/* 以程式改寫 .value（載入既有單、清空表單）不會觸發 input 事件，
+   高度會卡在改寫前的行數——這些地方要補叫一次 */
+function refreshAutoGrow(root){
+  (root || document).querySelectorAll("textarea[data-autonum]").forEach(autoGrow);
+}
+
+function initAutoNumber(ta){
+  if(!ta || ta.dataset.autonum) return;    // 稽核表單會重複渲染，避免重複掛監聽
+  ta.dataset.autonum = "1";
+  const apply = (text, caret)=>{
+    ta.value = text;
+    ta.setSelectionRange(caret, caret);
+    // 補派 input 事件：稽核不符原因靠 input 監聽回寫 auditItemState，
+    // 直接改 .value 不會觸發，漏掉這行會存到舊值
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  ta.addEventListener("keydown", e=>{
+    if(e.key !== "Enter" || e.shiftKey || e.ctrlKey || e.metaKey || e.isComposing) return;
+    if(ta.selectionStart !== ta.selectionEnd) return;    // 有選取範圍時不介入
+    const v = ta.value, pos = ta.selectionStart;
+    const ls = v.lastIndexOf("\n", pos - 1) + 1;
+    const m = NUM_LINE.exec(v.slice(ls, pos));
+    if(!m) return;
+    e.preventDefault();
+    if(!m[2].trim()){ apply(v.slice(0, ls) + v.slice(pos), ls); return; }   // 空編號行 → 收掉
+    const ins = "\n" + (Number(m[1]) + 1) + ". ";
+    const r = renumberLines(v.slice(0, pos) + ins + v.slice(pos), pos + ins.length);
+    apply(r.text, r.caret);
+  });
+  /* 離開欄位時整理一次：貼上、手動刪行之後號碼會斷，統一在這裡補正 */
+  ta.addEventListener("blur", ()=>{
+    const r = renumberLines(ta.value, ta.selectionStart);
+    if(r.text !== ta.value) apply(r.text, r.caret);
+  });
+  ta.addEventListener("input", ()=>autoGrow(ta));
+  autoGrow(ta);
 }
 
 /* 稽核以外的表單是否編輯中（點工/機具的申請與回報）。
@@ -1053,6 +1152,7 @@ function resetLaborReportForm(){
   document.getElementById("l_typeRows").innerHTML = "";
   document.getElementById("l_diff").value = "";
   document.getElementById("laborReportContext").innerHTML = '<div class="empty-row">請從下方清單點選「填寫回報」開始</div>';
+  refreshAutoGrow(document.getElementById("laborReportForm"));   // form.reset() 不觸發 input，高度要收回
   document.getElementById("laborReportSubmitBtn").disabled = true;
   if(READY) renderLaborList();
 }
@@ -1101,6 +1201,8 @@ async function loadLaborReportRecord(id){
 
   expandPanel("laborReportPanel");
   switchSubTab("tab-labor", "labor-report");
+  // 必須在面板展開、子頁切換之後——收合狀態下量不到高度（見 autoGrow 註解）
+  refreshAutoGrow(document.getElementById("laborReportForm"));
   document.getElementById("tab-labor").scrollIntoView({behavior:"smooth", block:"start"});
 
   // v18：表單已即時開啟，於背景抓最新版校正（不擋畫面）
@@ -1160,7 +1262,7 @@ function renderLaborList(){
         <td>${reported ? fmt(rep.totalOT) : "—"}</td>
         <td>${reported ? esc(rep.signReturnDate||"—") : "—"}</td>
         <td>${reported ? esc(rep.engineer||"—") : "—"}</td>
-        <td>${reported ? esc(rep.conclusion||"—") : "—"}</td>
+        <td>${reported ? cellHTML(rep.conclusion||"—") : "—"}</td>
         <td class="row-actions">
           <button type="button" class="btn-mini btn-edit" data-id="${esc(r.id)}">編輯申請</button>
           <button type="button" class="btn-mini btn-report" data-id="${esc(r.id)}">${reportBtnLabel}</button>
@@ -1499,6 +1601,7 @@ function resetEquipReportForm(){
   document.getElementById("e_usage").innerHTML = "";
   document.getElementById("e_diff").value = "";
   document.getElementById("equipReportContext").innerHTML = '<div class="empty-row">請從下方清單點選「填寫回報」開始</div>';
+  refreshAutoGrow(document.getElementById("equipReportForm"));   // form.reset() 不觸發 input，高度要收回
   document.getElementById("equipReportSubmitBtn").disabled = true;
   if(READY) renderEquipList();
 }
@@ -1540,6 +1643,8 @@ async function loadEquipReportRecord(id){
 
   expandPanel("equipReportPanel");
   switchSubTab("tab-equipment", "equip-report");
+  // 必須在面板展開、子頁切換之後——收合狀態下量不到高度（見 autoGrow 註解）
+  refreshAutoGrow(document.getElementById("equipReportForm"));
   document.getElementById("tab-equipment").scrollIntoView({behavior:"smooth", block:"start"});
 
   // v18：表單已即時開啟，於背景抓最新版校正（不擋畫面）
@@ -1959,7 +2064,7 @@ function populateReportFilters(key){
 
 /* 明細與計價彙總共用；欄寬走上方 COL_W（共用表格工具） */
 function reportTableHTML(headers, rows){
-  const cell = v=>`<td>${esc(v===undefined||v===null?"":v)}</td>`;
+  const cell = v=>`<td>${cellHTML(v)}</td>`;
   return fixedTableOpen(headers)
     + `<tbody>${rows.map(r=>`<tr>${r.map(cell).join("")}</tr>`).join("")}</tbody></table>`;
 }
@@ -2321,8 +2426,10 @@ function zipStore(entries, mime){
 
 /* 樣式索引：對應 styles.xml 的 cellXfs 順序，儲存格以 s="N" 引用
    OHEAD/PTEXT/PNUM（v21.1）＝工種計價表版式：橘底表頭、粉底資料列（對照成本部既有計價表） */
+/* TEXTW／PTEXTW：TEXT／PTEXT 的換行版。v22.5 起說明欄位可含多行（自動列點），
+   Excel 若無 wrapText 會把整段擠成一行、換行只顯示成一個小方塊。 */
 const XS = { PLAIN: 0, TITLE: 1, HEAD: 2, GROUP: 3, TEXT: 4, NUM: 5, NUMB: 6, SUBT: 7, SUBN: 8,
-             OHEAD: 9, PTEXT: 10, PNUM: 11 };
+             OHEAD: 9, PTEXT: 10, PNUM: 11, TEXTW: 12, PTEXTW: 13 };
 const XLSX_STYLES = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
   + '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
   + '<numFmts count="1"><numFmt numFmtId="164" formatCode="0.####"/></numFmts>'
@@ -2338,7 +2445,7 @@ const XLSX_STYLES = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
   + '<border><left style="thin"><color rgb="FF808080"/></left><right style="thin"><color rgb="FF808080"/></right>'
   + '<top style="thin"><color rgb="FF808080"/></top><bottom style="thin"><color rgb="FF808080"/></bottom><diagonal/></border></borders>'
   + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-  + '<cellXfs count="12">'
+  + '<cellXfs count="14">'
   + '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
   + '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>'
   + '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>'
@@ -2351,6 +2458,9 @@ const XLSX_STYLES = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
   + '<xf numFmtId="0" fontId="1" fillId="5" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>'
   + '<xf numFmtId="0" fontId="0" fillId="6" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>'
   + '<xf numFmtId="164" fontId="0" fillId="6" borderId="1" xfId="0" applyNumberFormat="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>'
+  /* 12 TEXTW／13 PTEXTW：含換行的說明欄位專用（＝ 4 TEXT／10 PTEXT 加 wrapText） */
+  + '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>'
+  + '<xf numFmtId="0" fontId="0" fillId="6" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf>'
   + '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
 
 /* 0→A、25→Z、26→AA（完整明細工作表可超過 26 欄） */
@@ -2476,12 +2586,14 @@ const pricingTypeHeaders = labels =>
 
 /* 儲存格自動判型：純數字輸出為真數值，但「0 開頭的多位數」（0800、統編、
    電話）視為文字保留——轉數值會失去前導零，備查欄位失真 */
-function dataRowsXml(rows, numStyle, textStyle, startRow){
+function dataRowsXml(rows, numStyle, textStyle, startRow, wrapStyle){
   return rows.map((row, ri)=>{
     const rn = ri + startRow;
     return '<row r="' + rn + '">' + row.map((v, c)=>{
       const s = String(v == null ? "" : v);
-      return isNumCell(s) ? xlNum(c, rn, numStyle, s) : xlText(c, rn, textStyle, s);
+      if(isNumCell(s)) return xlNum(c, rn, numStyle, s);
+      // v22.5：含換行者改用 wrapText 樣式，否則 Excel 會把列點擠成一行
+      return xlText(c, rn, (wrapStyle && s.includes("\n")) ? wrapStyle : textStyle, s);
     }).join("") + "</row>";
   });
 }
@@ -2516,7 +2628,8 @@ function laborPricingSheet(recs, split){
              + xlNum(3 + i * 3, rn, XS.PNUM, e ? fmtRank(e.ot2) : "")
              + xlNum(4 + i * 3, rn, XS.PNUM, e ? fmtRank(e.otOver) : "");
     });
-    cells += xlText(TAIL, rn, XS.PTEXT, rep.conclusion || "")
+    // 查核回饋是列點的主要落點——含換行時要用 wrapText 樣式（v22.5）
+    cells += xlText(TAIL, rn, (rep.conclusion || "").includes("\n") ? XS.PTEXTW : XS.PTEXT, rep.conclusion || "")
            + xlText(TAIL + 1, rn, XS.PTEXT, rep.engineer || "");
     xml.push('<row r="' + rn + '">' + cells + "</row>");
     rn++;
@@ -2532,7 +2645,7 @@ function laborDetailSheet(recs, split){
   const headers = def.headers.concat(typeSplitHeaders(labels));
   const dataRows = def.rows(recs).map((row, i)=>row.concat(typeSplitCells(per.get(recs[i].id) || EMPTY_BAG, labels)));
   const xml = ['<row r="1">' + headers.map((h, c)=>xlText(c, 1, XS.HEAD, h)).join("") + "</row>"]
-    .concat(dataRowsXml(dataRows, XS.NUM, XS.TEXT, 2));
+    .concat(dataRowsXml(dataRows, XS.NUM, XS.TEXT, 2, XS.TEXTW));
   return { name: "完整明細", widths: autoWidths(headers), rows: xml };
 }
 
@@ -2554,7 +2667,7 @@ function exportLaborSummaryXlsx(){
   const headers = sum.headers.concat(typeSplitHeaders(labels));
   const dataRows = sum.rows.map(row=>row.concat(typeSplitCells(byVendor[row[1]] || EMPTY_BAG, labels)));   // row[1]＝廠商欄
   const xml = ['<row r="1">' + headers.map((h, c)=>xlText(c, 1, XS.OHEAD, h)).join("") + "</row>"]
-    .concat(dataRowsXml(dataRows, XS.PNUM, XS.PTEXT, 2));
+    .concat(dataRowsXml(dataRows, XS.PNUM, XS.PTEXT, 2, XS.PTEXTW));
   downloadXlsx([{ name: "計價彙總", widths: autoWidths(headers), rows: xml }],
     MASTER.currentSite + "_點工計價彙總" + exportFilterTag() + "_" + localDate() + ".xlsx");
 }
@@ -2930,6 +3043,7 @@ function renderAuditForm(rec, editA){
   });
   document.getElementById("auditSaveBtn").addEventListener("click", ()=>saveAudit(rec.id));
   document.getElementById("auditCancelBtn").addEventListener("click", ()=>{ resetAuditView(); renderAuditRecList(); });
+  initAutoNumber(document.getElementById("auditNote"));   // v22.5：稽核表單為動態產生，於此掛上自動列點
 }
 
 function renderAuditItems(){
@@ -2944,8 +3058,10 @@ function renderAuditItems(){
           <button type="button" class="ai-btn bad ${it.ok===false?"active":""}" data-i="${i}" data-val="0">不相符</button>
         </span>
       </div>
-      ${it.ok===false?`<input type="text" class="ai-reason" data-i="${i}" placeholder="請填寫不符原因（必填），例：2 工無白卡進出紀錄" value="${esc(it.reason)}">`:""}
+      ${it.ok===false?`<textarea class="ai-reason" rows="2" data-i="${i}" placeholder="請填寫不符原因（必填），例：2 工無白卡進出紀錄（可用 1. 起頭列點）">${esc(it.reason)}</textarea>`:""}
     </div>`).join("");
+  // v22.5：不符原因逐次重繪，掛監聽要放在渲染之後（initAutoNumber 自帶重複掛載保護）
+  box.querySelectorAll(".ai-reason").forEach(initAutoNumber);
 }
 
 async function saveAudit(id){
@@ -3151,6 +3267,8 @@ function auditReportHTML(entries, subtitle){
     thead th{background:#F5F1EC;}
     .info th{background:#F5F1EC;width:110px;white-space:nowrap;}
     .w1{width:64px;white-space:nowrap;}
+    /* v22.5：不符原因可用 1. 2. 列點，PDF 也要照原樣斷行（.note 早已 pre-wrap） */
+    .items td{white-space:pre-line;}
     .r-ok{color:#3A6B52;font-weight:bold;} .r-bad{color:#8B3A3A;font-weight:bold;}
     .note{margin:4px 0;white-space:pre-wrap;} .meta{color:#76736C;margin:2px 0 0;}
     .photos{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0;}
@@ -3603,6 +3721,11 @@ document.addEventListener("DOMContentLoaded", ()=>{
   initAdmin();
   initSettings();
   document.getElementById("refreshBtn").addEventListener("click", ()=>refreshData(false));
+  /* v22.5：說明文字欄位的自動列點。稽核的「現場狀況說明」與「不符原因」是動態
+     產生，各自在 renderAuditForm／renderAuditItems 內掛；設定頁名單池與
+     工作內容補充刻意不納入（見 initAutoNumber 上方說明）。 */
+  ["l_conclusion", "l_vendorNote", "e_vendorNote"]
+    .forEach(id=>initAutoNumber(document.getElementById(id)));
   initIdleLogout();
 
   boot();

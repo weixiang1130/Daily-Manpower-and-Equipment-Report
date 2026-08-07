@@ -138,6 +138,65 @@ function defaultSiteConfig(){
 }
 function cur(){ return SITE_CACHE[MASTER.currentSite]; }
 
+/* ==========================================================
+   共用表格工具：固定欄寬（v22.3 報表起用，v22.4 起清單頁共用）
+   ==========================================================
+   問題：全域 `th,td{white-space:nowrap}`（style.css）讓任何一筆長字串——最典型是
+   「現場查核回饋」——把該格撐成一整列文字。桌機的 .table-wrap 是 overflow:visible
+   （v16.1 為了讓表頭黏在頁籤下方而改），所以被撐開的是**整頁**而非表格內捲軸；
+   而 table-layout:auto 下欄寬由「當頁最長那筆」決定，**翻頁時整個版面會跳**。
+   實測點工明細曾達 4,525px、單欄查核回饋 1,748px。
+
+   做法：table-layout:fixed ＋ <colgroup> 逐欄指定寬度（與排名表 v19.4 同一招）。
+   欄寬只由 COL_W 決定，與資料無關，翻頁／換工地都是同一個版面。
+
+   ⚠ 三個必要配套，缺一都會被使用者看見：
+   1. 不能只在 td 設 max-width——auto 版面下那只是建議值，nowrap 的 min-content 照樣撐開。
+   2. fixed 下欄寬不再自動長大，所以 .fixed-table 的 th/td 必須**全部**允許換行
+      （見 style.css）；留任何一欄 nowrap，超寬內容會直接壓到隔壁欄上。
+   3. 表格必須自帶總寬——width 為 auto 時 Chrome 會把 <col> 的 px 當成「比例」
+      去縮放可用寬度（實測 26 欄被壓成每欄 34px、單列高 2,569px）。
+      窄畫面（<901px）由 .table-wrap 的橫向捲軸吸收。
+
+   欄寬對照走**表頭字串**，欄序調整時不必同步索引；未列出的欄位用 DEFAULT_COL_W。
+   新增欄位若是自由文字，記得在這裡給寬度，否則會吃到 90px 的預設值而折得很碎。 */
+const DEFAULT_COL_W = 90;
+const COL_W = new Map([
+  /* 日期：實測「2026-08-02」要 118px 才不會斷成兩行（欄寬含左右各 10px 內距） */
+  ["出工日期",120], ["簽單繳回日",120], ["日期",120], ["稽核日期",150],
+  /* 自由文字：字多，給足寬度讓它折成幾行就好 */
+  ["現場查核回饋",220], ["出工明細(工種)",150], ["機具使用明細",150],
+  ["工作內容",120], ["工作地點",120], ["機具類型",110], ["類型",110],
+  ["根基自辦備註",100], ["廠商代辦備註",100],
+  ["廠商",110], ["分包商",110], ["機具廠商",110], ["責任廠商",110], ["型號",120],
+  ["期間",110], ["工地",180], ["查核結果",100],
+  /* 人名不折行：三字姓名 ＋ 少數四字，給 90 */
+  ["申請人",90], ["簽單責任工程師",90], ["稽核人",90], ["稽核人員",90], ["狀態",78],
+  /* 數值/記號：內容只有個位數或一個 V／tag，寬度由表頭決定——表頭折行後 2～3 字一行即可 */
+  ["需求工數",62], ["需求數量",62], ["人臉紀錄",62], ["白卡紀錄",62], ["工具箱紀錄",62],
+  ["0工確認",62], ["0使用確認",62], ["差異",68], ["申請",62], ["實點",62],
+  ["簽單實際出工數",68], ["機具實際工作使用時數",78], ["預計使用時數(需求數量)",78],
+  ["加班時數",62], ["加班時數(前2小時)",68], ["加班時數(第3小時起)",68], ["加班總時數",62],
+  ["根基自辦工數",62], ["根基自辦時數",62], ["廠商代辦工數",62], ["廠商代辦時數",62],
+  ["已回報單數",62], ["0工單數",62], ["0使用單數",62],
+  ["總出工數",62], ["總實際使用時數",68],
+  /* 操作欄：內含按鈕，寬度要能整排放下，不足會擠成兩行。
+     實測「編輯申請／編輯回報／刪除」整排需 255px，取 260 留餘裕；
+     按鈕數或字數不同的表（如稽核紀錄）以 fixedTableOpen 的 opts.actionW 覆蓋。 */
+  ["操作",260]
+]);
+/* 產生 <table>＋<colgroup>＋<thead>，呼叫端只需接自己的 <tbody>。
+   表頭與欄寬同一份來源，不會各改各的而對不起來。
+   opts.actionCols：該表「操作」欄實際需要的寬度（按鈕數量不同時覆蓋預設 240）。 */
+function fixedTableOpen(headers, opts={}){
+  const ws = headers.map(h=>
+    (h === "操作" && opts.actionW) || COL_W.get(h) || DEFAULT_COL_W);
+  const cols = ws.map(w=>`<col style="width:${w}px">`).join("");
+  return `<table class="fixed-table" style="width:${ws.reduce((a,b)=>a+b,0)}px">`
+    + `<colgroup>${cols}</colgroup>`
+    + `<thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead>`;
+}
+
 /* 稽核以外的表單是否編輯中（點工/機具的申請與回報）。
    稽核選單/編輯前的 refetchSite 必須以此把關：整批刷新快取會讓這些表單
    送出時抓到漂移後的 v 當 baseV，繞過 409 併發保護（合約 §3.3 語意）。 */
@@ -1081,10 +1140,10 @@ function renderLaborList(){
   const list = applyListFilter("labor", all, "laborListVendor", "laborListCount");
   if(!list.length){ el.innerHTML = '<div class="empty-row">此篩選條件內沒有點工紀錄，請調整日期／廠商</div>'; return; }
   const { shown, pagerHTML } = paginate("labor", list);
-  el.innerHTML = `<table><thead><tr>
-    <th>狀態</th><th>出工日期</th><th>分包商</th><th>申請人</th><th>需求工數</th><th>簽單實際出工數</th><th>差異</th>
-    <th>加班時數</th><th>簽單繳回日</th><th>簽單責任工程師</th><th>現場查核回饋</th><th>操作</th>
-  </tr></thead><tbody>
+  el.innerHTML = fixedTableOpen([
+    "狀態","出工日期","分包商","申請人","需求工數","簽單實際出工數","差異",
+    "加班時數","簽單繳回日","簽單責任工程師","現場查核回饋","操作"
+  ]) + `<tbody>
     ${shown.map(r=>{
       const rep = r.report;
       const reported = r.status==="已回報" && rep;
@@ -1520,10 +1579,10 @@ function renderEquipList(){
   const list = applyListFilter("equipment", all, "equipListVendor", "equipListCount");
   if(!list.length){ el.innerHTML = '<div class="empty-row">此篩選條件內沒有機具紀錄，請調整日期／廠商</div>'; return; }
   const { shown, pagerHTML } = paginate("equipment", list);
-  el.innerHTML = `<table><thead><tr>
-    <th>狀態</th><th>日期</th><th>廠商</th><th>申請人</th><th>類型</th><th>型號</th><th>需求數量</th><th>機具實際工作使用時數</th><th>差異</th>
-    <th>簽單繳回日</th><th>簽單責任工程師</th><th>操作</th>
-  </tr></thead><tbody>
+  el.innerHTML = fixedTableOpen([
+    "狀態","日期","廠商","申請人","類型","型號","需求數量","機具實際工作使用時數","差異",
+    "簽單繳回日","簽單責任工程師","操作"
+  ]) + `<tbody>
     ${shown.map(x=>{
       const rep = x.report;
       const reported = x.status==="已回報" && rep;
@@ -1898,48 +1957,11 @@ function populateReportFilters(key){
   if(engineers.includes(reportEngineer)) engSel.value = reportEngineer; else { reportEngineer = ""; engSel.value = ""; }
 }
 
-/* v22.3：報表欄寬固定化 —— 長字串改自動換行，版面不再被單筆資料撐開
-   問題：全域 th,td 是 white-space:nowrap，點工明細 26 欄裡只要有一筆「現場查核回饋」
-   寫得長，整張表就把版面往右撐到 4,000px 以上；桌機 .table-wrap 是 overflow:visible
-   （v16.1 為了讓表頭黏在頁籤下方而改的），被撐開的是「整頁」，且欄寬會隨每頁最長
-   那筆變動——翻頁時整個版面跟著跳，就是使用者說的「版面不一致」。
-   做法：table-layout:fixed ＋ 逐欄指定寬度（與排名表 v19.4 同一招）。
-   ⚠ 不能只在 td 設 max-width：auto 版面下那只是建議值，nowrap 的 min-content 照樣撐開。
-   ⚠ 改成 fixed 後欄寬不再自動長大，所以 .report-table 的 th/td 必須全部允許換行
-     （見 style.css）——留任何一欄 nowrap，內容超寬就會直接壓到隔壁欄上。
-   欄寬對照走表頭字串，欄序調整時不必同步索引；未列出的欄位用 DEFAULT_COL_W。 */
-const DEFAULT_COL_W = 90;
-const REPORT_COL_W = new Map([
-  /* 日期：實測「2026-08-02」要 118px 才不會斷成兩行（欄寬含左右各 10px 內距） */
-  ["出工日期",120], ["簽單繳回日",120],
-  /* 自由文字：字多，給足寬度讓它折成幾行就好 */
-  ["現場查核回饋",220], ["出工明細(工種)",150], ["機具使用明細",150],
-  ["工作內容",120], ["工作地點",120], ["機具類型",110],
-  ["根基自辦備註",100], ["廠商代辦備註",100],
-  ["廠商",100], ["機具廠商",100], ["責任廠商",100], ["型號",100],
-  ["期間",110],
-  /* 人名不折行：三字姓名 ＋ 少數四字，給 90 */
-  ["申請人",90], ["簽單責任工程師",90], ["狀態",70],
-  /* 數值/記號：內容只有個位數或一個 V，寬度由表頭決定——表頭折行後 2～3 字一行即可 */
-  ["需求工數",62], ["人臉紀錄",62], ["白卡紀錄",62], ["工具箱紀錄",62],
-  ["0工確認",62], ["0使用確認",62], ["差異",58],
-  ["簽單實際出工數",68], ["機具實際工作使用時數",78], ["預計使用時數(需求數量)",78],
-  ["加班時數(前2小時)",68], ["加班時數(第3小時起)",68], ["加班總時數",62],
-  ["根基自辦工數",62], ["根基自辦時數",62], ["廠商代辦工數",62], ["廠商代辦時數",62],
-  ["已回報單數",62], ["0工單數",62], ["0使用單數",62],
-  ["總出工數",62], ["總實際使用時數",68]
-]);
-/* 明細與計價彙總共用
-   ⚠ 表格本身要帶總寬：table-layout:fixed 若 width 為 auto，Chrome 會把 <col> 的
-   px 值當成「比例」去縮放可用寬度（實測 26 欄被壓到每欄 34px、列高 2,500px），
-   只有寫死總寬才會照設定值。窄畫面由 .table-wrap 的橫向捲軸吸收。 */
+/* 明細與計價彙總共用；欄寬走上方 COL_W（共用表格工具） */
 function reportTableHTML(headers, rows){
-  const ws = headers.map(h=>REPORT_COL_W.get(h) || DEFAULT_COL_W);
-  const cols = ws.map(w=>`<col style="width:${w}px">`).join("");
   const cell = v=>`<td>${esc(v===undefined||v===null?"":v)}</td>`;
-  return `<table class="report-table" style="width:${ws.reduce((a,b)=>a+b,0)}px"><colgroup>${cols}</colgroup>
-    <thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead>
-    <tbody>${rows.map(r=>`<tr>${r.map(cell).join("")}</tr>`).join("")}</tbody></table>`;
+  return fixedTableOpen(headers)
+    + `<tbody>${rows.map(r=>`<tr>${r.map(cell).join("")}</tr>`).join("")}</tbody></table>`;
 }
 
 function renderReport(key){
@@ -3022,7 +3044,10 @@ function renderAuditLog(){
   const entries = auditLogEntries();
   if(!entries.length){ el.innerHTML = '<div class="empty-row">此條件內尚無稽核紀錄</div>'; return; }
   const { shown, pagerHTML } = paginate("auditlog", entries);
-  el.innerHTML = `<table><thead><tr><th>稽核日期</th><th>類型</th><th>出工日期</th><th>廠商</th><th>申請</th><th>實點</th><th>差異</th><th>查核結果</th><th>稽核人</th><th>操作</th></tr></thead><tbody>` +
+  /* 操作欄只有三顆小按鈕（編輯／PDF／刪除），比清單頁窄——實測需 202px，取 210 */
+  el.innerHTML = fixedTableOpen(
+    ["稽核日期","類型","出工日期","廠商","申請","實點","差異","查核結果","稽核人","操作"],
+    { actionW: 210 }) + `<tbody>` +
     shown.map(e=>{
       const bad = e.a.items.filter(i=>!i.ok).length;
       const resTag = bad ? `<span class="tag warn">${bad} 項不符</span>` : `<span class="tag ok">全數相符</span>`;

@@ -167,7 +167,7 @@
 | totalOT | number | 加班合計（=ot2Total+otOverTotal；舊單只有此欄） |
 | diff | number | actual − required |
 | zeroWork | boolean | 0 工確認（true 時 workTypes 為空、actual=0） |
-| signReturnDate | string\|"" | 簽單繳回日 |
+| signReturnDate | string\|"" | 簽單繳回日。**v22.7 起強制 `date ≤ signReturnDate ≤ date + 20 天`**（見 §4.7 日期防呆） |
 | selfDoneWork / selfDoneHours / selfDoneNote | number\|null, number\|null, string | 根基自辦 工數/時數/備註（v10 新增；**v12 起表單移除**——未填代辦即為自辦。前端寫入時將舊值原樣承繼，僅舊資料非空；報表欄位保留顯示） |
 | vendorDoneWork / vendorDoneHours / vendorDoneNote | 同上 | 廠商代辦 |
 | selfDone / vendorDone | string | v10 前的單一文字欄（僅舊單存在；顯示時 fallback 至備註） |
@@ -202,7 +202,7 @@
 | otHours | number | **加班時數**（v22.6 新增）。**單一欄不分段**——點工的「前 2 小時／第 3 小時起」分段規則**不適用於機具**（2026-08-10 裁示） |
 | workContent | string | **實際工作內容**（v22.6 新增）。支援自動列點 |
 | zeroUse | boolean | 0 使用確認 |
-| signReturnDate | string\|"" | 簽單繳回日 |
+| signReturnDate | string\|"" | 簽單繳回日。**v22.7 起強制 `date ≤ signReturnDate ≤ date + 20 天`**（見 §4.7 日期防呆） |
 | 自辦/代辦六欄 | 同 4.3 | |
 
 > **有效廠商（計價與報表分組依據）＝ `report.vendor || vendor`**。
@@ -236,6 +236,21 @@
 | uploadedAt | "YYYY-MM-DD" | 上傳日（本地時區） |
 
 > **檔案本體與描述資料分離**是本設計的鐵則：單據 JSON 永遠只含描述資料，`scope=all` 全量載入與管理員 JSON 備份都不含檔案本體。**因此 JSON 備份不等於完整備份**——地端切換日必須另以 §2.3 逐一下載附件檔案（見 DEPLOYMENT.md 切換流程與 backend/sql/README.md 附件搬運節）。地端後端建議：描述資料入 `attachments` 資料表、檔案本體存檔案系統（路徑欄位記錄），不建議存 DB BLOB。
+
+### 4.7 日期防呆（v22.7；點工/機具回報通用）
+
+兩條規則都是**硬性擋下**，因為這兩個欄位最容易被拿來製造「有按時出工／按時繳回」的假象：
+
+| 規則 | 條件 | 理由 |
+|---|---|---|
+| 回報時機 | 送出回報時 `record.date ≤ 今天` | 回報是「這天實際做了什麼」的紀錄；出工日還沒到就先回報，紀錄本身沒有意義 |
+| 簽單繳回日 | `date ≤ signReturnDate ≤ date + 20 天` | 早於出工日不可能；晚於 20 天視為逾期不予採計，避免無限拖延。繳回日**可以是未來日期**（簽單尚未收回先預定），只要在 20 天內 |
+
+- 期限天數為前端常數 `SIGN_RETURN_MAX_DAYS = 20`；日期選擇器同步設定 `min`／`max`，
+  送出時的檢查是最後一道而非唯一一道。
+- **目前僅前端強制**。地端 API 應在伺服器端重做同樣檢查——前端驗證擋得住誤填，
+  擋不住直接打 API。
+- 既有資料不受影響（不會回頭改寫）；但若編輯一張違反規則的舊單，儲存時會被擋下並要求修正。
 
 ## 5. 給後端重寫者的相容須知
 

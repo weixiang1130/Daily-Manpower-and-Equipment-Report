@@ -307,6 +307,64 @@ function initAutoNumber(ta){
   autoGrow(ta);
 }
 
+/* ==========================================================
+   日期防呆（v22.7）—— 點工與機具兩張回報表單共用，改規則只改這裡
+   ==========================================================
+   兩條都是硬性擋下，因為這兩個欄位最容易被拿來製造「有按時出工／按時繳回」的假象：
+
+   1. **回報日不得早於出工日**：回報是「這天實際做了什麼」的紀錄，
+      出工日還沒到就先回報，紀錄本身沒有意義。`reportedAt` 由系統以當天日期寫入，
+      所以擋的方式是「出工日晚於今天就不讓回報」。
+   2. **簽單繳回日必須落在 出工日 ～ 出工日＋20 天**：
+      早於出工日不可能；晚於 20 天則視為逾期，不予採計（避免無限拖延）。
+      繳回日可以是未來日期（簽單還沒收回來就先預定），只要在 20 天內。 */
+const SIGN_RETURN_MAX_DAYS = 20;
+
+/* 日期字串加減天數。用 "T00:00:00" 解析成**本地**時間——
+   直接 new Date("2026-08-05") 會被當成 UTC，在 UTC+8 會退成前一天（計價紅線 2）。 */
+function addDays(dateStr, n){
+  const d = new Date(dateStr + "T00:00:00");
+  d.setDate(d.getDate() + n);
+  return localDate(d);
+}
+
+/* 回報時機檢查：出工日還沒到就不能回報。回傳錯誤訊息或 null */
+function reportTimingError(workDate){
+  if(!workDate) return null;
+  const today = localDate();
+  if(workDate > today){
+    return `出工日期（${workDate}）還沒到，無法回報——回報必須在出工當天或之後`;
+  }
+  return null;
+}
+
+/* 簽單繳回日檢查：必須落在 出工日 ～ 出工日＋20 天。回傳錯誤訊息或 null */
+function signReturnError(signDate, workDate){
+  if(!signDate || !workDate) return null;
+  if(signDate < workDate){
+    return `簽單繳回日（${signDate}）早於出工日期（${workDate}）——簽單不可能在出工前繳回，請確認日期`;
+  }
+  const deadline = addDays(workDate, SIGN_RETURN_MAX_DAYS);
+  if(signDate > deadline){
+    return `簽單繳回日（${signDate}）已超過出工日後 ${SIGN_RETURN_MAX_DAYS} 天的期限（最晚 ${deadline}），逾期不予採計`;
+  }
+  return null;
+}
+
+/* 開表單時把 min／max 掛上去，讓日期選擇器本身就選不到範圍外的日期——
+   送出時的檢查是最後一道，不是唯一一道 */
+function lockSignReturnRange(inputId, workDate){
+  const el = document.getElementById(inputId);
+  if(!el) return;
+  if(workDate){
+    el.min = workDate;
+    el.max = addDays(workDate, SIGN_RETURN_MAX_DAYS);
+  }else{
+    el.removeAttribute("min");
+    el.removeAttribute("max");
+  }
+}
+
 /* 稽核以外的表單是否編輯中（點工/機具的申請與回報）。
    稽核選單/編輯前的 refetchSite 必須以此把關：整批刷新快取會讓這些表單
    送出時抓到漂移後的 v 當 baseV，繞過 409 併發保護（合約 §3.3 語意）。 */
@@ -1012,6 +1070,12 @@ function initLaborReportForm(){
       return;
     }
 
+    // v22.7：出工日還沒到不能回報；簽單繳回日須在 出工日～出工日+20 天
+    const timingErr = reportTimingError(rec.date);
+    if(timingErr){ toast(timingErr); return; }
+    const signErr = signReturnError(document.getElementById("l_signReturnDate").value, rec.date);
+    if(signErr){ toast(signErr); return; }
+
     const warnings = collectLaborWarnings(typeState, actual, ot2Total, otOverTotal, zeroWork);
     if(warnings.length){
       const ok = confirm("⚠ 系統偵測到以下數據配置異常，請確認是否輸入錯誤：\n\n- " + warnings.join("\n- ") + "\n\n確認無誤仍要送出嗎？");
@@ -1163,6 +1227,7 @@ function resetLaborReportForm(){
   document.getElementById("l_typeRows").innerHTML = "";
   document.getElementById("l_diff").value = "";
   document.getElementById("laborReportContext").innerHTML = '<div class="empty-row">請從下方清單點選「填寫回報」開始</div>';
+  lockSignReturnRange("l_signReturnDate", null);                 // 清掉上一張單留下的範圍
   refreshAutoGrow(document.getElementById("laborReportForm"));   // form.reset() 不觸發 input，高度要收回
   document.getElementById("laborReportSubmitBtn").disabled = true;
   if(READY) renderLaborList();
@@ -1203,6 +1268,7 @@ async function loadLaborReportRecord(id){
   if(typeState.length) syncTotalsFromTypes();
   updateLaborDiff();
   document.getElementById("l_signReturnDate").value = rep.signReturnDate || "";
+  lockSignReturnRange("l_signReturnDate", rec.date);   // v22.7：選擇器直接限制在可採計範圍內
   setCombo("cb_l_engineer", rep.engineer || "");
   setNumField("l_vendorWork", rep.vendorDoneWork);
   setNumField("l_vendorHours", rep.vendorDoneHours);
@@ -1520,6 +1586,12 @@ function initEquipReportForm(){
       return;
     }
 
+    // v22.7：出工日還沒到不能回報；簽單繳回日須在 出工日～出工日+20 天
+    const timingErr = reportTimingError(rec.date);
+    if(timingErr){ toast(timingErr); return; }
+    const signErr = signReturnError(document.getElementById("e_signReturnDate").value, rec.date);
+    if(signErr){ toast(signErr); return; }
+
     const warnings = collectEquipWarnings(usageState, actualHours, zeroUse, days, otHours);
     if(warnings.length){
       const ok = confirm("⚠ 系統偵測到以下數據配置異常，請確認是否輸入錯誤：\n\n- " + warnings.join("\n- ") + "\n\n確認無誤仍要送出嗎？");
@@ -1653,6 +1725,7 @@ function resetEquipReportForm(){
   document.getElementById("e_usage").innerHTML = "";
   document.getElementById("e_diff").value = "";
   document.getElementById("equipReportContext").innerHTML = '<div class="empty-row">請從下方清單點選「填寫回報」開始</div>';
+  lockSignReturnRange("e_signReturnDate", null);                 // 清掉上一張單留下的範圍
   refreshAutoGrow(document.getElementById("equipReportForm"));   // form.reset() 不觸發 input，高度要收回
   document.getElementById("equipReportSubmitBtn").disabled = true;
   if(READY) renderEquipList();
@@ -1688,6 +1761,7 @@ async function loadEquipReportRecord(id){
   document.getElementById("e_actualHours").value = rep.actualHours != null ? rep.actualHours : 0;
   updateEquipDiff();
   document.getElementById("e_signReturnDate").value = rep.signReturnDate || "";
+  lockSignReturnRange("e_signReturnDate", rec.date);   // v22.7：選擇器直接限制在可採計範圍內
   setCombo("cb_e_checker", rep.checker || "");
   // v22.6：回報廠商——舊單的廠商在申請層，用 equipVendor() 帶出來讓人接著編輯
   setCombo("cb_e_vendor", recVendor(rec));

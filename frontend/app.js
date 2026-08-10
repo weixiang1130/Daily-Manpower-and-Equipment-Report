@@ -1608,7 +1608,7 @@ function initEquipReportForm(){
         // v22.6：差異＝實際時數 − **預定時數**。改版前是減 requiredQty（台數），
         // 等於拿時數減台數，算出來的差異沒有意義。舊單沒有預定時數 → null（不比較）
         diff: rec.plannedHours != null ? actualHours - rec.plannedHours : null,
-        vendor,      // 實際配到的車行；計價分組走 equipVendor()
+        vendor,      // 實際配到的車行；計價分組走 recVendor()
         days,        // 出工天數（0.5／1／2…）
         otHours,     // 加班時數（單一欄，機具不分段）
         workContent: document.getElementById("e_workContent").value.trim(),
@@ -1763,7 +1763,7 @@ async function loadEquipReportRecord(id){
   document.getElementById("e_signReturnDate").value = rep.signReturnDate || "";
   lockSignReturnRange("e_signReturnDate", rec.date);   // v22.7：選擇器直接限制在可採計範圍內
   setCombo("cb_e_checker", rep.checker || "");
-  // v22.6：回報廠商——舊單的廠商在申請層，用 equipVendor() 帶出來讓人接著編輯
+  // v22.6：回報廠商——舊單的廠商在申請層，用 recVendor() 帶出來讓人接著編輯
   setCombo("cb_e_vendor", recVendor(rec));
   document.getElementById("e_days").value = rep.days != null ? rep.days : "";
   document.getElementById("e_otHours").value = rep.otHours != null ? rep.otHours : "";

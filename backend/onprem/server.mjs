@@ -53,6 +53,14 @@ const cfgKey = s => "cfg2:" + b64e(s);
 const recKey = (s, kind, id) => `rec2:${b64e(s)}:${kind}:${id}`;
 const KINDS = ["labor", "equipment"];
 
+/* 行情通報費率書（v22.8，合約 §4.8）：單一 key，不進 scope=all。
+   以 effectiveFrom 為季別唯一鍵，保留上限 12 季（三年）。
+   ⚠ 與 cloud/functions/api.mjs 為同一份合約的兩個實作，改規則要兩邊一起改。 */
+const RATES_KEY = "rates";
+const RATE_BOOK_MAX = 12;
+const EMPTY_RATES = () => ({ labor: [], equipment: [] });
+const isDate = v => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+
 /* ---------------- 檔案儲存層（對應 Netlify Blobs） ---------------- */
 async function ensureDataDir(){
   await fs.mkdir(DATA_DIR, { recursive: true });
@@ -162,6 +170,12 @@ async function handleApi(req, res, body, query){
       }
     }
 
+    /* 行情通報費率書（v22.8，合約 §2.4）：獨立端點，不進 scope=all */
+    if(query.get("rates")){
+      const r = await kvGet(RATES_KEY);
+      return sendJson(res, (r && r.labor && r.equipment) ? r : EMPTY_RATES());
+    }
+
     const site = query.get("site");
     if(site) return sendJson(res, await readSite(site));
 
@@ -265,6 +279,42 @@ async function handleApi(req, res, body, query){
         await kvDelete(rKey);
         if(rec) await deleteAttachmentFiles(data.site, attIdsOf(rec));
         return sendJson(res, { ok: true });
+      }
+
+      /* 行情通報：整季覆蓋（合約 §3.9）。與雲端版邏輯一致 */
+      case "rateBook": {
+        if(!KINDS.includes(data.kind)) return sendJson(res, { error: "invalid kind" }, 400);
+        if(!isDate(data.effectiveFrom)) return sendJson(res, { error: "effectiveFrom must be YYYY-MM-DD" }, 400);
+        if(!Array.isArray(data.rows) || !data.rows.length) return sendJson(res, { error: "rows required" }, 400);
+        const cur = (await kvGet(RATES_KEY)) || EMPTY_RATES();
+        if(!Array.isArray(cur[data.kind])) cur[data.kind] = [];
+        const book = {
+          label: String(data.label || data.effectiveFrom).slice(0, 40),
+          effectiveFrom: data.effectiveFrom,
+          importedAt: new Date().toISOString().slice(0, 10),
+          rows: data.rows
+        };
+        cur[data.kind] = cur[data.kind].filter(b => b.effectiveFrom !== book.effectiveFrom);
+        cur[data.kind].push(book);
+        cur[data.kind].sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom));
+        const dropped = Math.max(0, cur[data.kind].length - RATE_BOOK_MAX);
+        if(dropped) cur[data.kind] = cur[data.kind].slice(0, RATE_BOOK_MAX);
+        await kvSet(RATES_KEY, cur);
+        return sendJson(res, { ok: true, kind: data.kind, dropped,
+          books: cur[data.kind].map(b => ({ label: b.label, effectiveFrom: b.effectiveFrom,
+            importedAt: b.importedAt, rowCount: b.rows.length })) });
+      }
+
+      case "deleteRateBook": {
+        if(!KINDS.includes(data.kind)) return sendJson(res, { error: "invalid kind" }, 400);
+        if(!isDate(data.effectiveFrom)) return sendJson(res, { error: "effectiveFrom must be YYYY-MM-DD" }, 400);
+        const cur = (await kvGet(RATES_KEY)) || EMPTY_RATES();
+        if(!Array.isArray(cur[data.kind])) cur[data.kind] = [];
+        cur[data.kind] = cur[data.kind].filter(b => b.effectiveFrom !== data.effectiveFrom);
+        await kvSet(RATES_KEY, cur);
+        return sendJson(res, { ok: true,
+          books: cur[data.kind].map(b => ({ label: b.label, effectiveFrom: b.effectiveFrom,
+            importedAt: b.importedAt, rowCount: b.rows.length })) });
       }
 
       case "clearSite": {

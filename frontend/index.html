@@ -418,6 +418,18 @@
             <textarea id="e_vendorNote" rows="2" placeholder="選填：例：扣款、代辦事項說明（可用 1. 起頭列點）"></textarea>
           </div>
 
+          <!-- v22.8：行情通報計價。選完廠商後列出該廠商的品項；
+               加班費在行情通報裡是獨立的一列，所以主品項與加班費率各挑一項 -->
+          <div class="field field-wide">
+            <label title="依行情通報計價；選了才算得出金額">計價品項（行情通報）</label>
+            <select id="e_rateItem" class="report-select"></select>
+            <p class="hint" id="e_rateHint" style="margin:4px 0 0;"></p>
+          </div>
+          <div class="field field-wide">
+            <label title="有填加班時數才需要選">加班費率品項（行情通報）</label>
+            <select id="e_rateOtItem" class="report-select"></select>
+          </div>
+
           <!-- v22.6：申請時填的是「預計」內容，這裡記現場實際做了什麼 -->
           <div class="field field-wide">
             <label>實際工作內容</label>
@@ -587,6 +599,36 @@
         <div class="field field-wide actions">
           <button id="saveSettings" class="btn-primary">儲存設定</button>
           <button id="resetSettings" class="btn-ghost">還原目前工地為預設值</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 行情通報（v22.8；管理員限定） ============ -->
+    <div class="panel" id="ratesPanel">
+      <div class="panel-head">
+        <h2>行情通報單價<span class="admin-only-badge">管理員</span></h2>
+        <p class="hint">匯入公司按季發布的「租工／機具行情通報（匯入檔）」xlsx，計價時自動帶入單價。
+          同一生效日重複匯入即取代（可用來更新修正檔），不同季別並存——報表依<strong>出工日期</strong>回查當季費率，換季不會動到舊資料。</p>
+      </div>
+      <div class="form-grid">
+        <div class="field field-wide">
+          <label>匯入行情通報</label>
+          <div class="actions">
+            <button type="button" id="importLaborRates" class="btn-secondary btn-sm">匯入租工行情通報</button>
+            <button type="button" id="importEquipRates" class="btn-secondary btn-sm">匯入機具行情通報</button>
+            <input type="file" id="rateFileInput" accept=".xlsx" hidden>
+          </div>
+          <p class="hint" id="rateImportMsg" style="margin:6px 0 0;"></p>
+        </div>
+        <div class="field field-wide">
+          <label>已匯入的季別</label>
+          <div id="rateBooksBox"><div class="empty-row">尚未匯入</div></div>
+        </div>
+        <div class="field field-wide">
+          <label>費率綁定（目前工地）</label>
+          <p class="hint">系統的廠商名稱是簡稱、行情通報是公司全名，系統會自動以前綴比對建議，請確認或改綁。
+            租工需逐「廠商×工種」綁定（同一廠商同工種在行情通報裡會依適用工地分成多筆）；機具只綁到廠商，實際品項由工程師回報時挑。</p>
+          <div id="rateBindBox"><div class="empty-row">請先匯入行情通報</div></div>
         </div>
       </div>
     </div>

@@ -37,6 +37,14 @@ const KINDS = ["labor", "equipment"];
 const ATT_TYPES = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
 const ATT_MAX_BYTES = 4 * 1024 * 1024;
 
+/* 行情通報費率書（v22.8，合約 §4.8）：單一 blob，**不進 scope=all**——
+   一季 1,500 列、多季累積數 MB，塞進開站全量讀取會拖慢每個人。
+   以 effectiveFrom 為季別唯一鍵；保留上限 12 季（三年），超過丟最舊的。 */
+const RATES_KEY = "rates";
+const RATE_BOOK_MAX = 12;
+const EMPTY_RATES = () => ({ labor: [], equipment: [] });
+const isDate = v => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+
 /* 刪單據時連同其附件（含各稽核紀錄的附件）一併清除，避免孤兒檔案 */
 function attIdsOf(rec){
   const ids = [];
@@ -122,6 +130,12 @@ export default async (req) => {
         "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(meta.name || attId)}`,
         "cache-control": "private, max-age=86400"
       }});
+    }
+
+    /* 費率書（v22.8）：獨立端點，前端只在設定頁／報表需要時才抓 */
+    if(url.searchParams.get("rates")){
+      const r = await s.get(RATES_KEY, { type: "json" });
+      return json(r && r.labor && r.equipment ? r : EMPTY_RATES());
     }
 
     await migrateLegacyKeys(s);
@@ -237,6 +251,43 @@ export default async (req) => {
         await s.delete(rKey);
         if(rec) await Promise.all(attIdsOf(rec).map(id => s.delete(attKey(body.site, id)).catch(() => {})));
         return json({ ok: true });
+      }
+
+      /* 行情通報：整季覆蓋（合約 §3.9）。同一 effectiveFrom 重匯即取代，
+         可重複匯入修正檔；不同生效日並存，計價才回查得到歷史季別 */
+      case "rateBook": {
+        if(!KINDS.includes(body.kind)) return json({ error: "invalid kind" }, 400);
+        if(!isDate(body.effectiveFrom)) return json({ error: "effectiveFrom must be YYYY-MM-DD" }, 400);
+        if(!Array.isArray(body.rows) || !body.rows.length) return json({ error: "rows required" }, 400);
+        const cur = (await s.get(RATES_KEY, { type: "json" })) || EMPTY_RATES();
+        if(!Array.isArray(cur[body.kind])) cur[body.kind] = [];
+        const book = {
+          label: String(body.label || body.effectiveFrom).slice(0, 40),
+          effectiveFrom: body.effectiveFrom,
+          importedAt: new Date().toISOString().slice(0, 10),
+          rows: body.rows
+        };
+        cur[body.kind] = cur[body.kind].filter(b => b.effectiveFrom !== book.effectiveFrom);
+        cur[body.kind].push(book);
+        cur[body.kind].sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom));   // 新→舊
+        const dropped = Math.max(0, cur[body.kind].length - RATE_BOOK_MAX);
+        if(dropped) cur[body.kind] = cur[body.kind].slice(0, RATE_BOOK_MAX);
+        await s.setJSON(RATES_KEY, cur);
+        return json({ ok: true, kind: body.kind, dropped,
+          books: cur[body.kind].map(b => ({ label: b.label, effectiveFrom: b.effectiveFrom,
+            importedAt: b.importedAt, rowCount: b.rows.length })) });
+      }
+
+      case "deleteRateBook": {
+        if(!KINDS.includes(body.kind)) return json({ error: "invalid kind" }, 400);
+        if(!isDate(body.effectiveFrom)) return json({ error: "effectiveFrom must be YYYY-MM-DD" }, 400);
+        const cur = (await s.get(RATES_KEY, { type: "json" })) || EMPTY_RATES();
+        if(!Array.isArray(cur[body.kind])) cur[body.kind] = [];
+        cur[body.kind] = cur[body.kind].filter(b => b.effectiveFrom !== body.effectiveFrom);
+        await s.setJSON(RATES_KEY, cur);
+        return json({ ok: true,
+          books: cur[body.kind].map(b => ({ label: b.label, effectiveFrom: b.effectiveFrom,
+            importedAt: b.importedAt, rowCount: b.rows.length })) });
       }
 
       case "clearSite": {

@@ -280,10 +280,7 @@
             <label>需求日期</label>
             <input type="date" id="e_date" required>
           </div>
-          <div class="field">
-            <label>機具廠商</label>
-            <div class="combobox" id="cb_e_vendor"></div>
-          </div>
+          <!-- v22.6：機具廠商移到回報表單——工地統一叫車後才配車，申請當下還不知道是哪家 -->
           <div class="field">
             <label title="申請人（工程師）">申請人</label>
             <div class="combobox" id="cb_e_applicant"></div>
@@ -300,12 +297,18 @@
           </div>
 
           <div class="field field-num">
-            <label>需求數量</label>
+            <label title="需求台數">需求數量（台）</label>
             <div class="stepper">
               <button type="button" class="step-btn" data-target="e_requiredQty" data-delta="-1">－</button>
               <input type="number" id="e_requiredQty" min="0" value="1" required>
               <button type="button" class="step-btn" data-target="e_requiredQty" data-delta="1">＋</button>
             </div>
+          </div>
+          <!-- v22.6：預定使用時數。回報的實際時數要跟這個相減才有意義——
+               改版前是拿「實際時數」減「需求台數」，算出來的差異沒有意義 -->
+          <div class="field field-num">
+            <label title="預定使用時數（小時）；回報時以實際使用時數與此欄比對差異">預定使用時數</label>
+            <input type="number" id="e_plannedHours" min="0" step="0.5" placeholder="例：8">
           </div>
           <div class="field">
             <label>是否為合約廠商</label>
@@ -323,6 +326,11 @@
           <div class="field field-wide">
             <label>工作內容</label>
             <input type="text" id="e_content" class="note-input" placeholder="例：吊掛物料、開挖等，簡短即可">
+          </div>
+          <!-- v22.6：申請備註。包月機具等計價前提寫在這裡 -->
+          <div class="field field-wide">
+            <label>申請備註</label>
+            <textarea id="e_applyNote" rows="2" placeholder="選填：例：本台為包月機具，不逐日計費（可用 1. 起頭列點）"></textarea>
           </div>
 
           <div class="field field-wide">
@@ -362,13 +370,29 @@
             <label class="chip radio full-chip zero-chip"><input type="checkbox" id="e_zeroUse"><span>0 使用確認：機具實際未到場／未使用，本回報單以 0 時數寫入</span></label>
           </div>
 
+          <!-- v22.6：實際配到的車行於此填寫（申請時工地只是叫車，還不知道配到哪家） -->
+          <div class="field field-wide">
+            <label title="實際配到的機具廠商">機具廠商</label>
+            <div class="combobox" id="cb_e_vendor"></div>
+          </div>
+
           <div class="field field-num">
             <label title="機具實際工作使用時數（總計，可含小數）">實際使用時數</label>
             <input type="number" id="e_actualHours" min="0" step="0.5" value="0">
           </div>
           <div class="field field-num">
-            <label title="實際數與申請數的差異，自動計算">差異</label>
+            <label title="實際使用時數 − 預定使用時數，自動計算；申請單未填預定時數則不顯示">差異</label>
             <input type="text" id="e_diff" readonly class="readonly-field">
+          </div>
+
+          <!-- v22.6：機具計價＝出工天數＋加班時數（加班單一欄，不套用點工的前2h／第3h起分段） -->
+          <div class="field field-num">
+            <label title="本張單的出工天數，可填 0.5／1／2">出工天數</label>
+            <input type="number" id="e_days" min="0" step="0.5" placeholder="例：1">
+          </div>
+          <div class="field field-num">
+            <label title="加班時數（小時）；機具不分段計費">加班時數</label>
+            <input type="number" id="e_otHours" min="0" step="0.5" placeholder="選填">
           </div>
 
           <div class="field field-num">
@@ -392,6 +416,13 @@
             <label>廠商代辦備註</label>
             <!-- v22.5：改 textarea 以支援自動列點（可寫多筆代辦事項） -->
             <textarea id="e_vendorNote" rows="2" placeholder="選填：例：扣款、代辦事項說明（可用 1. 起頭列點）"></textarea>
+          </div>
+
+          <!-- v22.6：申請時填的是「預計」內容，這裡記現場實際做了什麼 -->
+          <div class="field field-wide">
+            <label>實際工作內容</label>
+            <textarea id="e_workContent" rows="2" placeholder="例：吊掛鋼構、開挖土方
+多件事情可以用 1. 起頭列點，按 Enter 會自動接 2.、3."></textarea>
           </div>
 
           <div class="field field-wide actions">

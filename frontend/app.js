@@ -138,6 +138,15 @@ function defaultSiteConfig(){
 }
 function cur(){ return SITE_CACHE[MASTER.currentSite]; }
 
+/* 單據的「有效廠商」（v22.6）——**清單/報表/彙總/稽核的唯一權威，勿各自實作**。
+   機具是工地統一叫車再配車，申請當下不知道是哪家，所以廠商改由回報填；
+   舊機具單的廠商在申請層，故回報沒填時回頭取申請層的值。
+   合約 §4.4：有效廠商 ＝ report.vendor || vendor。
+   點工的 report 不存在 vendor 欄位，一律落到 r.vendor，因此兩種單據可共用本函式。 */
+function recVendor(r){
+  return (r && r.report && r.report.vendor) || (r && r.vendor) || "";
+}
+
 /* ==========================================================
    共用表格工具：固定欄寬（v22.3 報表起用，v22.4 起清單頁共用）
    ==========================================================
@@ -166,7 +175,8 @@ const COL_W = new Map([
   ["出工日期",120], ["簽單繳回日",120], ["日期",120], ["稽核日期",150],
   /* 自由文字：字多，給足寬度讓它折成幾行就好 */
   ["現場查核回饋",220], ["出工明細(工種)",150], ["機具使用明細",150],
-  ["工作內容",120], ["工作地點",120], ["機具類型",110], ["類型",110],
+  ["工作內容",120], ["實際工作內容",180], ["申請備註",150],
+  ["工作地點",120], ["機具類型",110], ["類型",110],
   ["根基自辦備註",100], ["廠商代辦備註",100],
   ["廠商",110], ["分包商",110], ["機具廠商",110], ["責任廠商",110], ["型號",120],
   ["期間",110], ["工地",180], ["查核結果",100],
@@ -175,11 +185,12 @@ const COL_W = new Map([
   /* 數值/記號：內容只有個位數或一個 V／tag，寬度由表頭決定——表頭折行後 2～3 字一行即可 */
   ["需求工數",62], ["需求數量",62], ["人臉紀錄",62], ["白卡紀錄",62], ["工具箱紀錄",62],
   ["0工確認",62], ["0使用確認",62], ["差異",68], ["申請",62], ["實點",62],
-  ["簽單實際出工數",68], ["機具實際工作使用時數",78], ["預計使用時數(需求數量)",78],
+  ["簽單實際出工數",68], ["機具實際工作使用時數",78],
+  ["需求數量(台)",62], ["預定使用時數",68], ["出工天數",62],
   ["加班時數",62], ["加班時數(前2小時)",68], ["加班時數(第3小時起)",68], ["加班總時數",62],
   ["根基自辦工數",62], ["根基自辦時數",62], ["廠商代辦工數",62], ["廠商代辦時數",62],
   ["已回報單數",62], ["0工單數",62], ["0使用單數",62],
-  ["總出工數",62], ["總實際使用時數",68],
+  ["總出工數",62], ["總實際使用時數",68], ["總出工天數",62], ["總加班時數",62],
   /* 操作欄：內含按鈕，寬度要能整排放下，不足會擠成兩行。
      實測「編輯申請／編輯回報／刪除」整排需 255px，取 260 留餘裕；
      按鈕數或字數不同的表（如稽核紀錄）以 fixedTableOpen 的 opts.actionW 覆蓋。 */
@@ -516,13 +527,13 @@ function initListFilter(kind, dateId, vendorId, clearId, renderFn){
 /* 廠商下拉選項由該類紀錄實際值彙集；回傳套用篩選後的清單與計數文字 */
 function applyListFilter(kind, all, vendorSelId, countId){
   const f = listFilter[kind];
-  const vendors = [...new Set(all.map(r=>r.vendor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
+  const vendors = [...new Set(all.map(recVendor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
   const sel = document.getElementById(vendorSelId);
   if(sel){
     sel.innerHTML = `<option value="">全部廠商</option>` + vendors.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join("");
     if(vendors.includes(f.vendor)) sel.value = f.vendor; else { f.vendor = ""; sel.value = ""; }
   }
-  const list = all.filter(r=>(!f.date || r.date===f.date) && (!f.vendor || r.vendor===f.vendor));
+  const list = all.filter(r=>(!f.date || r.date===f.date) && (!f.vendor || recVendor(r)===f.vendor));
   const cnt = document.getElementById(countId);
   if(cnt) cnt.textContent = (f.date || f.vendor) ? `符合 ${list.length}／共 ${all.length} 筆` : `共 ${all.length} 筆`;
   return list;
@@ -1291,13 +1302,15 @@ function initEquipApplyForm(){
 
   document.getElementById("equipApplyForm").addEventListener("submit", async e=>{
     e.preventDefault();
-    const vendor = requireCombo("cb_e_vendor", "機具廠商");
-    if(vendor === null) return;
     const applicant = requireCombo("cb_e_applicant", "申請人");
     if(applicant === null) return;
     const types = tagState.e_type.slice();
     if(!types.length){ toast("請選擇機具類型"); return; }
     const requiredQty = parseFloat(document.getElementById("e_requiredQty").value) || 0;
+    // v22.6：空白存 null 而非 0——0 代表「預定就是 0 小時」，null 代表「沒填」，
+    // 差異計算要分得出來（舊單一律 null，差異顯示空白）
+    const phRaw = document.getElementById("e_plannedHours").value.trim();
+    const plannedHours = phRaw === "" ? null : (parseFloat(phRaw) || 0);
     const date = document.getElementById("e_date").value;
 
     if(isLockedDate(date)){
@@ -1306,7 +1319,7 @@ function initEquipApplyForm(){
     }
 
     // 防呆：送出前確認工地
-    const okSite = confirm(`⚠ 工地確認\n\n本筆機具申請將寫入共用資料庫的工地：\n「${MASTER.currentSite}」\n\n${date}・${vendor}・${types.join("、")}・需求 ${fmt(requiredQty)}\n\n工地正確嗎？`);
+    const okSite = confirm(`⚠ 工地確認\n\n本筆機具申請將寫入共用資料庫的工地：\n「${MASTER.currentSite}」\n\n${date}・${types.join("、")}・需求 ${fmt(requiredQty)} 台${plannedHours != null ? `・預定 ${fmt(plannedHours)} 小時` : ""}\n\n工地正確嗎？`);
     if(!okSite) return;
 
     const store = cur();
@@ -1323,12 +1336,17 @@ function initEquipApplyForm(){
 
     const rec = {
       id: editingEquipApplyId || uid(),
-      date, vendor, applicant, types,
+      date, applicant, types,
+      // v22.6：申請表單不再填廠商（改於回報填）。編輯舊單時原值必須原樣承繼，
+      // 否則按一次「編輯申請」就會把既有廠商洗成空字串
+      vendor: existing ? (existing.vendor || "") : "",
       model: document.getElementById("e_model").value.trim(),
       requiredQty,
+      plannedHours,
       contracted: document.querySelector('input[name="e_contract"]:checked').value,
       locations: tagState.e_locations.slice(),
       content: document.getElementById("e_content").value.trim(),
+      applyNote: document.getElementById("e_applyNote").value.trim(),
       attachments,
       status: existing ? existing.status : "待回報",
       report: existing ? existing.report : null,
@@ -1372,11 +1390,11 @@ function resetEquipApplyForm(){
   document.getElementById("equipApplyForm").reset();
   document.getElementById("e_date").valueAsDate = new Date(Date.now()+86400000);
   document.getElementById("e_requiredQty").value = 1;
-  setCombo("cb_e_vendor", "");
   setCombo("cb_e_applicant", "");
   setTags("e_type", []);
   setTags("e_locations", []);
   resetAttState(equipAtt, "e_attachBox");
+  refreshAutoGrow(document.getElementById("equipApplyForm"));   // form.reset() 不觸發 input
   document.getElementById("equipApplyTitle").textContent = "新增機具申請";
   document.getElementById("equipApplySubmitBtn").textContent = "送出機具申請";
   document.getElementById("equipApplyNewBtn").style.display = "none";
@@ -1397,24 +1415,28 @@ async function loadEquipApplyRecord(id){
   editingEquipApplyBaseV = rec.v || 0;   // v18：版本快照，送出以此為 baseV
 
   document.getElementById("e_date").value = rec.date;
-  setCombo("cb_e_vendor", rec.vendor);
   setCombo("cb_e_applicant", rec.applicant);
   setTags("e_type", rec.types);
   document.getElementById("e_model").value = rec.model || "";
   document.getElementById("e_requiredQty").value = rec.requiredQty;
+  document.getElementById("e_plannedHours").value = rec.plannedHours != null ? rec.plannedHours : "";
   document.querySelector(`input[name="e_contract"][value="${rec.contracted||"是"}"]`).checked = true;
   setTags("e_locations", rec.locations);
   document.getElementById("e_content").value = rec.content || "";
+  document.getElementById("e_applyNote").value = rec.applyNote || "";
   resetAttState(equipAtt);
   equipAtt.existing = (rec.attachments || []).slice();
   renderAttBox(equipAtt, "e_attachBox");
 
-  document.getElementById("equipApplyTitle").textContent = `編輯機具申請：${rec.date}・${rec.vendor}`;
+  // v22.6：申請單不再必有廠商，標題改用機具類型辨識
+  document.getElementById("equipApplyTitle").textContent =
+    `編輯機具申請：${rec.date}・${(rec.types||[]).join("、") || recVendor(rec) || "（未填類型）"}`;
   document.getElementById("equipApplySubmitBtn").textContent = "儲存變更";
   document.getElementById("equipApplyNewBtn").style.display = "";
 
   expandPanel("equipApplyPanel");
   switchSubTab("tab-equipment", "equip-apply");
+  refreshAutoGrow(document.getElementById("equipApplyForm"));   // 面板展開後才量得到高度
   document.getElementById("tab-equipment").scrollIntoView({behavior:"smooth", block:"start"});
 
   // v18：表單已即時開啟，於背景抓最新版校正（不擋畫面）
@@ -1472,8 +1494,22 @@ function initEquipReportForm(){
       toast("⚠ 簽單責任工程師與申請人相同，建議由不同人員回報以維持查核獨立性");
     }
 
+    // v22.6：實際配到的車行於回報時填（申請時工地只是叫車）。
+    // 未填不擋送出——現場可能先回報時數、廠商稍後補；但計價要用得到，故提醒一次
+    const vendor = getCombo("cb_e_vendor").trim();
+    if(vendor && !comboValid("cb_e_vendor")){
+      toast(`「${vendor}」不在機具廠商清單中，請從搜尋結果選取或點「＋ 新增選項」加入`);
+      return;
+    }
+    if(!vendor && !document.getElementById("e_zeroUse").checked){
+      const ok = confirm("⚠ 尚未填寫機具廠商\n\n廠商是計價彙總的分組依據，未填的單會被歸到「（未填廠商）」。\n\n仍要送出嗎？");
+      if(!ok) return;
+    }
+
     const actualHours = parseFloat(document.getElementById("e_actualHours").value) || 0;
     const zeroUse = document.getElementById("e_zeroUse").checked;
+    const days = parseFloat(document.getElementById("e_days").value) || 0;
+    const otHours = parseFloat(document.getElementById("e_otHours").value) || 0;
 
     if(actualHours === 0 && !zeroUse){
       toast("實際使用時數為 0：若機具確實未到場／未使用，請先勾選「0 使用確認」再送出");
@@ -1484,7 +1520,7 @@ function initEquipReportForm(){
       return;
     }
 
-    const warnings = collectEquipWarnings(usageState, actualHours, zeroUse);
+    const warnings = collectEquipWarnings(usageState, actualHours, zeroUse, days, otHours);
     if(warnings.length){
       const ok = confirm("⚠ 系統偵測到以下數據配置異常，請確認是否輸入錯誤：\n\n- " + warnings.join("\n- ") + "\n\n確認無誤仍要送出嗎？");
       if(!ok) return;
@@ -1497,7 +1533,13 @@ function initEquipReportForm(){
         checker,
         usage: usageState.map(u=>({type:u.type, present:u.present, hours:u.present?u.hours:0})),
         actualHours,
-        diff: actualHours - rec.requiredQty,
+        // v22.6：差異＝實際時數 − **預定時數**。改版前是減 requiredQty（台數），
+        // 等於拿時數減台數，算出來的差異沒有意義。舊單沒有預定時數 → null（不比較）
+        diff: rec.plannedHours != null ? actualHours - rec.plannedHours : null,
+        vendor,      // 實際配到的車行；計價分組走 equipVendor()
+        days,        // 出工天數（0.5／1／2…）
+        otHours,     // 加班時數（單一欄，機具不分段）
+        workContent: document.getElementById("e_workContent").value.trim(),
         zeroUse,
         signReturnDate: document.getElementById("e_signReturnDate").value,
         // v12：表單移除「根基自辦」；舊單既有自辦資料原樣承繼保留
@@ -1535,13 +1577,17 @@ function initEquipReportForm(){
   resetEquipReportForm();
 }
 
-function collectEquipWarnings(usage, actualHours, zeroUse){
+function collectEquipWarnings(usage, actualHours, zeroUse, days, otHours){
   const w = [];
   if(zeroUse) return w;
   usage.filter(u=>u.present).forEach(u=>{
     if(!(u.hours > 0)) w.push(`${u.type}：已勾選到場，但實際使用時數為 0`);
     if(u.hours > 12) w.push(`${u.type}：單日使用 ${fmt(u.hours)} 小時，高於常態`);
   });
+  // v22.6：出工天數與加班時數直接進計價，異常值要在送出前攔一次
+  if(days === 0 && actualHours > 0) w.push("有實際使用時數，但出工天數為 0（計價會抓不到本張單的日數）");
+  if(days > 3) w.push(`出工天數 ${fmt(days)} 天，高於常態（單張申請通常為單日）`);
+  if(otHours > 12) w.push(`加班時數 ${fmt(otHours)} 小時，高於常態`);
   return w;
 }
 
@@ -1583,13 +1629,18 @@ function onZeroUseToggle(){
   updateEquipDiff();
 }
 
+/* v22.6：差異＝實際使用時數 − 預定使用時數（同單位才比得出來）。
+   改版前是減 requiredQty（需求台數），拿時數減台數本就無意義。
+   舊單沒有 plannedHours，顯示提示而非算出一個假的數字。 */
 function updateEquipDiff(){
   if(!editingEquipReportId){ document.getElementById("e_diff").value = ""; return; }
   const rec = cur().equipment.find(r=>r.id===editingEquipReportId);
   if(!rec) return;
+  const el = document.getElementById("e_diff");
+  if(rec.plannedHours == null){ el.value = "（申請單未填預定時數）"; return; }
   const actualHours = parseFloat(document.getElementById("e_actualHours").value) || 0;
-  const diff = actualHours - rec.requiredQty;
-  document.getElementById("e_diff").value = diff===0 ? "0（相符）" : fmt(diff);
+  const diff = actualHours - rec.plannedHours;
+  el.value = diff===0 ? "0（相符）" : fmt(diff);
 }
 
 function resetEquipReportForm(){
@@ -1598,6 +1649,7 @@ function resetEquipReportForm(){
   usageState = [];
   document.getElementById("equipReportForm").reset();
   setCombo("cb_e_checker", "");
+  setCombo("cb_e_vendor", "");
   document.getElementById("e_usage").innerHTML = "";
   document.getElementById("e_diff").value = "";
   document.getElementById("equipReportContext").innerHTML = '<div class="empty-row">請從下方清單點選「填寫回報」開始</div>';
@@ -1625,8 +1677,9 @@ async function loadEquipReportRecord(id){
     return p ? {type, present:!!p.present, hours:p.hours||0} : {type, present:false, hours:8};
   });
 
+  // v22.6：申請單不再必有廠商；改秀「預定使用時數」——回報要跟它比對差異
   document.getElementById("equipReportContext").innerHTML = `<div class="context-box">
-    <strong>${esc(MASTER.currentSite)}</strong>　${esc(rec.date)}・${esc(rec.vendor)}　類型：${esc((rec.types||[]).join("、"))}　需求數量：${fmt(rec.requiredQty)}　申請人：${esc(rec.applicant)}
+    <strong>${esc(MASTER.currentSite)}</strong>　${esc(rec.date)}　類型：${esc((rec.types||[]).join("、"))}　需求數量：${fmt(rec.requiredQty)} 台　預定使用時數：${rec.plannedHours != null ? fmt(rec.plannedHours) + " 小時" : "（未填）"}　申請人：${esc(rec.applicant)}
   </div>${attReadOnlyHTML(rec.attachments)}`;
 
   const rep = rec.report || {};
@@ -1636,6 +1689,11 @@ async function loadEquipReportRecord(id){
   updateEquipDiff();
   document.getElementById("e_signReturnDate").value = rep.signReturnDate || "";
   setCombo("cb_e_checker", rep.checker || "");
+  // v22.6：回報廠商——舊單的廠商在申請層，用 equipVendor() 帶出來讓人接著編輯
+  setCombo("cb_e_vendor", recVendor(rec));
+  document.getElementById("e_days").value = rep.days != null ? rep.days : "";
+  document.getElementById("e_otHours").value = rep.otHours != null ? rep.otHours : "";
+  document.getElementById("e_workContent").value = rep.workContent || "";
   setNumField("e_vendorWork", rep.vendorDoneWork);
   setNumField("e_vendorHours", rep.vendorDoneHours);
   document.getElementById("e_vendorNote").value = rep.vendorDoneNote || rep.vendorDone || "";
@@ -1685,7 +1743,8 @@ function renderEquipList(){
   if(!list.length){ el.innerHTML = '<div class="empty-row">此篩選條件內沒有機具紀錄，請調整日期／廠商</div>'; return; }
   const { shown, pagerHTML } = paginate("equipment", list);
   el.innerHTML = fixedTableOpen([
-    "狀態","日期","廠商","申請人","類型","型號","需求數量","機具實際工作使用時數","差異",
+    "狀態","日期","廠商","申請人","類型","型號","需求數量(台)","預定使用時數",
+    "機具實際工作使用時數","差異","出工天數","加班時數",
     "簽單繳回日","簽單責任工程師","操作"
   ]) + `<tbody>
     ${shown.map(x=>{
@@ -1694,14 +1753,21 @@ function renderEquipList(){
       const statusTag = reported
         ? (rep.zeroUse ? '<span class="tag bad">0時數</span>' : '<span class="tag ok">已回報</span>')
         : '<span class="tag warn">待回報</span>';
-      const diffTag = !reported ? "—" : (rep.diff===0 ? '<span class="tag ok">相符</span>' : '<span class="tag bad">'+fmt(rep.diff)+'</span>');
+      // v22.6：差異可能是 null（申請單未填預定時數）——不可當成 0 顯示「相符」
+      const diffTag = !reported ? "—"
+        : rep.diff == null ? '<span class="tag">未填預定</span>'
+        : rep.diff === 0 ? '<span class="tag ok">相符</span>'
+        : '<span class="tag bad">'+fmt(rep.diff)+'</span>';
       const reportBtnLabel = reported ? "編輯回報" : "填寫回報";
       return `<tr>
         <td>${statusTag}</td>
-        <td>${esc(x.date)}</td><td>${esc(x.vendor)}</td><td>${esc(x.applicant||"—")}</td>
+        <td>${esc(x.date)}</td><td>${esc(recVendor(x)||"—")}</td><td>${esc(x.applicant||"—")}</td>
         <td>${esc((x.types||[]).join("、"))}</td>
         <td>${esc(x.model||"—")}</td><td>${fmt(x.requiredQty)}</td>
+        <td>${x.plannedHours != null ? fmt(x.plannedHours) : "—"}</td>
         <td>${reported ? fmt(rep.actualHours) : "—"}</td><td>${diffTag}</td>
+        <td>${reported ? fmt(rep.days||0) : "—"}</td>
+        <td>${reported ? fmt(rep.otHours||0) : "—"}</td>
         <td>${reported ? esc(rep.signReturnDate||"—") : "—"}</td>
         <td>${reported ? esc(rep.checker||"—") : "—"}</td>
         <td class="row-actions">
@@ -1828,7 +1894,7 @@ let currentReport = "labor";
 let reportFrom = "", reportTo = "";
 let reportVendor = "", reportCat = "", reportEngineer = "";
 
-function matchReportVendor(r){ return !reportVendor || r.vendor === reportVendor; }
+function matchReportVendor(r){ return !reportVendor || recVendor(r) === reportVendor; }
 /* v15：依簽單責任工程師篩選（labor=rep.engineer；equip=rep.checker）——
    回報限一人代表後，選定工程師即可統計他經手叫了多少工 */
 function matchReportEngineer(r, kind){
@@ -1913,7 +1979,11 @@ const REPORT_DEFS = {
   },
   equipment: {
     title:"機具紀錄",
-    headers:["出工日期","機具廠商","機具類型","型號","工作內容","工作地點","責任廠商","預計使用時數(需求數量)","申請人","狀態","簽單繳回日","機具實際工作使用時數","差異","0使用確認","機具使用明細","簽單責任工程師","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註"],
+    /* v22.6 欄位調整：
+       - 「機具廠商」＝有效廠商（回報優先，見 recVendor）；移除重複的「責任廠商」欄
+       - 「預計使用時數(需求數量)」正名為「需求數量(台)」——它一直是台數，欄名寫錯
+       - 新增：預定使用時數／申請備註／出工天數／加班時數／實際工作內容 */
+    headers:["出工日期","機具廠商","機具類型","型號","工作內容","工作地點","需求數量(台)","預定使用時數","申請備註","申請人","狀態","簽單繳回日","機具實際工作使用時數","差異","出工天數","加班時數","實際工作內容","0使用確認","機具使用明細","簽單責任工程師","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註"],
     records: ()=>cur().equipment.filter(x=>inReportRange(x.date) && matchReportVendor(x) && matchReportCat(x,"equipment") && matchReportEngineer(x,"equipment")),
     rows(recs){ return (recs || this.records()).map(x=>{
       const rep = x.report || {};
@@ -1921,9 +1991,15 @@ const REPORT_DEFS = {
       const usageDetail = (rep.usage||[]).filter(u=>u.present)
         .map(u=>`${u.type}(${fmt(u.hours)}h)`).join("、");
       return [
-        x.date, x.vendor, (x.types||[]).join("、"), x.model, x.content,
-        (x.locations||[]).join("、"), x.vendor, fmt(x.requiredQty), x.applicant, x.status,
-        rep.signReturnDate||"", reported?fmt(rep.actualHours):"", reported?fmt(rep.diff):"",
+        x.date, recVendor(x), (x.types||[]).join("、"), x.model, x.content,
+        (x.locations||[]).join("、"), fmt(x.requiredQty),
+        x.plannedHours != null ? fmt(x.plannedHours) : "",
+        x.applyNote || "",
+        x.applicant, x.status,
+        rep.signReturnDate||"", reported?fmt(rep.actualHours):"",
+        // 差異可能是 null（申請單沒填預定時數）——不可 fmt(null) 印出 0，那會被當成「相符」
+        reported && rep.diff != null ? fmt(rep.diff) : "",
+        reported?fmt(rep.days||0):"", reported?fmt(rep.otHours||0):"", rep.workContent||"",
         rep.zeroUse?"V":"", usageDetail,
         rep.checker||""
       ].concat(doneCols(rep));
@@ -1938,8 +2014,8 @@ function buildPricingSummary(kind){
   const recs = REPORT_DEFS[kind].records().filter(r=>r.status==="已回報" && r.report);
   const groups = {};
   recs.forEach(r=>{
-    const key = r.vendor || "（未填廠商）";
-    const g = groups[key] || (groups[key] = {vendor:key, count:0, zero:0, work:0, ot2:0, otOver:0, hours:0, selfW:0, selfH:0, vendW:0, vendH:0, cats:new Set()});
+    const key = recVendor(r) || "（未填廠商）";
+    const g = groups[key] || (groups[key] = {vendor:key, count:0, zero:0, work:0, ot2:0, otOver:0, hours:0, days:0, ot:0, selfW:0, selfH:0, vendW:0, vendH:0, cats:new Set()});
     const rep = r.report;
     g.count++;
     if(kind === "labor"){
@@ -1952,6 +2028,9 @@ function buildPricingSummary(kind){
     }else{
       if(rep.zeroUse) g.zero++;
       g.hours += rep.actualHours || 0;
+      // v22.6：機具計價＝出工天數＋加班時數（加班單一欄，不套用點工的分段規則）
+      g.days += rep.days || 0;
+      g.ot += rep.otHours || 0;
       (r.types||[]).forEach(t=>g.cats.add(t));
     }
     g.selfW += rep.selfDoneWork || 0;
@@ -1976,9 +2055,11 @@ function pricingSummaryTable(kind){
       rows: gs.map(g=>[period, g.vendor, g.count, g.zero, fmt(g.work), fmt(g.ot2), fmt(g.otOver), fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、")])
     };
   }
+  /* v22.6：機具計價的組成是「出工天數＋加班時數」，兩者都要看得見
+     （計價紅線 4：報表不能只給一個算完的數字）。實際使用時數保留供對帳。 */
   return {
-    headers:["期間","機具廠商","已回報單數","0使用單數","總實際使用時數","根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","機具類型"],
-    rows: gs.map(g=>[period, g.vendor, g.count, g.zero, fmt(g.hours), fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、")])
+    headers:["期間","機具廠商","已回報單數","0使用單數","總出工天數","總加班時數","總實際使用時數","根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","機具類型"],
+    rows: gs.map(g=>[period, g.vendor, g.count, g.zero, fmt(g.days), fmt(g.ot), fmt(g.hours), fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、")])
   };
 }
 
@@ -2046,7 +2127,7 @@ function populateReportFilters(key){
   const catSel = document.getElementById("reportCat");
   const engSel = document.getElementById("reportEngineer");
   const recs = key==="labor" ? cur().labor : cur().equipment;
-  const vendors = [...new Set(recs.map(r=>r.vendor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
+  const vendors = [...new Set(recs.map(recVendor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
   const cats = [...new Set(recs.flatMap(r=>(key==="labor" ? r.categories : r.types) || []))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
   const engineers = [...new Set(recs.map(r=>{
     const rep = r.report || {};
@@ -2915,7 +2996,7 @@ function renderAuditView(){
 
   const store = cur();
   const list = auditKind==="labor" ? store.labor : store.equipment;
-  const vendors = [...new Set(list.filter(r=>!auditDate || r.date===auditDate).map(r=>r.vendor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
+  const vendors = [...new Set(list.filter(r=>!auditDate || r.date===auditDate).map(recVendor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
   const vSel = document.getElementById("auditVendor");
   vSel.innerHTML = `<option value="">全部廠商</option>` + vendors.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join("");
   if(vendors.includes(auditVendor)) vSel.value = auditVendor; else { auditVendor=""; vSel.value=""; }
@@ -2928,7 +3009,7 @@ function renderAuditRecList(){
   const el = document.getElementById("auditRecList");
   const store = cur();
   const list = auditKind==="labor" ? store.labor : store.equipment;
-  const recs = list.filter(r=>(!auditDate || r.date===auditDate) && (!auditVendor || r.vendor===auditVendor));
+  const recs = list.filter(r=>(!auditDate || r.date===auditDate) && (!auditVendor || recVendor(r)===auditVendor));
   if(!recs.length){
     el.innerHTML = '<div class="empty-row">此條件內沒有' + (auditKind==="labor"?"點工":"機具") + '申請單，請調整日期／廠商</div>';
     resetAuditView();
@@ -2937,7 +3018,7 @@ function renderAuditRecList(){
   el.innerHTML = recs.map(r=>{
     const audited = (r.audits||[]).length;
     return `<button type="button" class="audit-pick ${r.id===auditSelectedId?"active":""}" data-id="${esc(r.id)}">
-      <span class="ap-line1">${esc(r.date)}｜${esc(r.vendor||"（未填廠商）")}｜${auditAppliedLabel()} ${fmt(auditApplied(auditKind, r))}</span>
+      <span class="ap-line1">${esc(r.date)}｜${esc(recVendor(r)||"（未填廠商）")}｜${auditAppliedLabel()} ${fmt(auditApplied(auditKind, r))}</span>
       <span class="ap-line2">${esc(auditRecCats(auditKind, r)||"—")}｜${esc((r.locations||[]).join("、")||"—")}｜${esc(r.status)}${audited?`｜已稽核 ${audited} 次`:""}</span>
     </button>`;
   }).join("");
@@ -2997,7 +3078,7 @@ function renderAuditForm(rec, editA){
   const applied = editA ? (editA.applied||0) : auditApplied(auditKind, rec);
   wrap.innerHTML = `
     <div class="audit-ctx${editA?" editing":""}">
-      <div class="ac-line1">${editA?`✎ 編輯稽核紀錄（原稽核日期：${esc(editA.auditedAt)}）｜`:""}${esc(rec.date)}｜${esc(rec.vendor||"（未填廠商）")}｜${esc(rec.status)}</div>
+      <div class="ac-line1">${editA?`✎ 編輯稽核紀錄（原稽核日期：${esc(editA.auditedAt)}）｜`:""}${esc(rec.date)}｜${esc(recVendor(rec)||"（未填廠商）")}｜${esc(rec.status)}</div>
       <div class="ac-line2">${esc(auditRecCats(auditKind, rec)||"—")}｜${esc((rec.locations||[]).join("、")||"—")}｜申請人：${esc(rec.applicant||"—")}</div>
     </div>
     <div class="form-grid">
@@ -3172,7 +3253,7 @@ function renderAuditLog(){
         <td>${esc(e.a.auditedAt)}${e.a.editedAt?`<span class="edited-mark" title="編輯於 ${esc(e.a.editedAt)}">（已編輯）</span>`:""}</td>
         <td>${e.kind==="labor"?"點工":"機具"}</td>
         <td>${esc(e.rec.date)}</td>
-        <td>${esc(e.rec.vendor||"")}</td>
+        <td>${esc(recVendor(e.rec))}</td>
         <td>${fmt(e.a.applied)}</td>
         <td>${fmt(e.a.actualCount)}</td>
         <td>${fmt(e.a.diff)}</td>
@@ -3193,7 +3274,7 @@ async function deleteAudit(kind, rid, aid){
   if(!rec){ toast("找不到該單據，可能已被刪除；請重新整理後再試"); return; }
   const a = (rec.audits||[]).find(x=>x.id===aid);
   if(!a){ toast("找不到該筆稽核紀錄，可能已被刪除；請重新整理後再試"); return; }
-  if(!confirm(`確定刪除這筆稽核紀錄嗎？（${a.auditedAt}／${rec.vendor||""}）\n此操作影響所有使用者且無法復原。`)) return;
+  if(!confirm(`確定刪除這筆稽核紀錄嗎？（${a.auditedAt}／${recVendor(rec)}）\n此操作影響所有使用者且無法復原。`)) return;
   const updated = Object.assign({}, rec, { audits: rec.audits.filter(x=>x.id!==aid) });
   try{
     const resp = await apiSaveRecord(kind, updated, rec.v || 0);
@@ -3227,7 +3308,7 @@ function auditReportHTML(entries, subtitle){
   const secs = entries.map((e,n)=>{
     const bad = e.a.items.filter(i=>!i.ok).length;
     return `<div class="sec">
-      <h3>${n+1}. ${esc(e.rec.date)}｜${e.kind==="labor"?"點工":"機具"}｜${esc(e.rec.vendor||"（未填廠商）")} — ${bad?`<span class="r-bad">${bad} 項不符</span>`:`<span class="r-ok">全數相符</span>`}</h3>
+      <h3>${n+1}. ${esc(e.rec.date)}｜${e.kind==="labor"?"點工":"機具"}｜${esc(recVendor(e.rec)||"（未填廠商）")} — ${bad?`<span class="r-bad">${bad} 項不符</span>`:`<span class="r-ok">全數相符</span>`}</h3>
       <table class="info">
         <tr><th>工作內容</th><td>${esc(auditRecCats(e.kind, e.rec)||"—")}</td><th>工作地點</th><td>${esc((e.rec.locations||[]).join("、")||"—")}</td></tr>
         <tr><th>${e.kind==="labor"?"申請工數":"申請台數"}</th><td>${fmt(e.a.applied)}</td><th>現場實點</th><td>${fmt(e.a.actualCount)}（差異 ${fmt(e.a.diff)}）</td></tr>
@@ -3251,7 +3332,7 @@ function auditReportHTML(entries, subtitle){
 
   const sumRows = entries.map((e,n)=>{
     const bad = e.a.items.filter(i=>!i.ok).length;
-    return `<tr><td>${n+1}</td><td>${esc(e.a.auditedAt)}</td><td>${e.kind==="labor"?"點工":"機具"}</td><td>${esc(e.rec.date)}</td><td>${esc(e.rec.vendor||"")}</td><td>${fmt(e.a.applied)}</td><td>${fmt(e.a.actualCount)}</td><td>${fmt(e.a.diff)}</td><td class="${bad?"r-bad":"r-ok"}">${bad?bad+" 項不符":"全數相符"}</td><td>${esc(e.a.auditor)}</td></tr>`;
+    return `<tr><td>${n+1}</td><td>${esc(e.a.auditedAt)}</td><td>${e.kind==="labor"?"點工":"機具"}</td><td>${esc(e.rec.date)}</td><td>${esc(recVendor(e.rec))}</td><td>${fmt(e.a.applied)}</td><td>${fmt(e.a.actualCount)}</td><td>${fmt(e.a.diff)}</td><td class="${bad?"r-bad":"r-ok"}">${bad?bad+" 項不符":"全數相符"}</td><td>${esc(e.a.auditor)}</td></tr>`;
   }).join("");
 
   const auditors = [...new Set(entries.map(e=>e.a.auditor).filter(Boolean))];
@@ -3310,7 +3391,7 @@ function exportAuditCSV(){
     const badItems = e.a.items.filter(i=>!i.ok);
     return [
       e.a.auditedAt, e.a.editedAt||"", e.kind==="labor"?"點工":"機具", MASTER.currentSite,
-      e.rec.date, e.rec.vendor||"", auditRecCats(e.kind, e.rec),
+      e.rec.date, recVendor(e.rec), auditRecCats(e.kind, e.rec),
       (e.rec.locations||[]).join("、"),
       fmt(e.a.applied), fmt(e.a.actualCount), fmt(e.a.diff),
       badItems.length,
@@ -3724,7 +3805,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
   /* v22.5：說明文字欄位的自動列點。稽核的「現場狀況說明」與「不符原因」是動態
      產生，各自在 renderAuditForm／renderAuditItems 內掛；設定頁名單池與
      工作內容補充刻意不納入（見 initAutoNumber 上方說明）。 */
-  ["l_conclusion", "l_vendorNote", "e_vendorNote"]
+  ["l_conclusion", "l_vendorNote", "e_vendorNote", "e_applyNote", "e_workContent"]
     .forEach(id=>initAutoNumber(document.getElementById(id)));
   initIdleLogout();
 

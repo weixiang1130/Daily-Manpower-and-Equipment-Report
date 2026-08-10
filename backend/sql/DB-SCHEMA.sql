@@ -110,11 +110,15 @@ CREATE TABLE dbo.equip_records (
                     CONSTRAINT CK_equip_id CHECK (id NOT LIKE '%[^A-Za-z0-9_-]%' COLLATE Latin1_General_100_BIN2),
     site_id         INT NOT NULL CONSTRAINT FK_equip_site REFERENCES dbo.sites(site_id),
     work_date       DATE NOT NULL,
-    vendor          NVARCHAR(200) NOT NULL,       -- 機具廠商（=責任廠商）
+    -- v22.6：申請階段不再填廠商（工地統一叫車後才配車），故放寬為可空。
+    -- 實際廠商在 equip_reports.vendor；查詢請用 COALESCE(rep.vendor, rec.vendor)（見 vw 定義）
+    vendor          NVARCHAR(200) NULL,           -- 機具廠商（僅 v22.6 前的舊單有值）
     applicant       NVARCHAR(100) NOT NULL,
     types_json      NVARCHAR(MAX) NULL,           -- 機具類型 JSON 陣列（可複選）
     model           NVARCHAR(200) NULL,           -- 型號
-    required_qty    DECIMAL(8,2) NOT NULL DEFAULT 0,  -- 需求數量=預計使用時數
+    required_qty    DECIMAL(8,2) NOT NULL DEFAULT 0,  -- 需求數量（台數）
+    planned_hours   DECIMAL(8,2) NULL,            -- v22.6 預定使用時數（NULL=未填，差異不計算）
+    apply_note      NVARCHAR(MAX) NULL,           -- v22.6 申請備註（包月等計價前提）
     contracted      NVARCHAR(2) NULL CONSTRAINT CK_equip_contracted CHECK (contracted IN (N'是', N'否')),  -- 合約廠商
     locations_json  NVARCHAR(MAX) NULL,
     content         NVARCHAR(MAX) NULL,           -- 工作內容（文字，前端無字數上限）
@@ -123,7 +127,9 @@ CREATE TABLE dbo.equip_records (
     updated_at      DATETIME2(0) NOT NULL CONSTRAINT DF_equip_upd DEFAULT SYSDATETIME()
 );
 CREATE INDEX IX_equip_site_date ON dbo.equip_records(site_id, work_date);
-CREATE INDEX IX_equip_vendor    ON dbo.equip_records(site_id, vendor);
+-- v22.6 起新單的 vendor 在 equip_reports（見該表的 IX_equip_rep_vendor）；
+-- 本索引僅對 v22.6 前的舊單有效，保留供歷史查詢
+CREATE INDEX IX_equip_vendor    ON dbo.equip_records(site_id, vendor) WHERE vendor IS NOT NULL;
 
 /* ---------- 7. 機具回報（子，1:1） ---------- */
 CREATE TABLE dbo.equip_reports (
@@ -131,8 +137,14 @@ CREATE TABLE dbo.equip_reports (
                      CONSTRAINT FK_equip_rep REFERENCES dbo.equip_records(id) ON DELETE CASCADE,
     reported_at      DATE NULL,
     checker          NVARCHAR(100) NULL,          -- 簽單責任工程師
+    vendor           NVARCHAR(200) NULL,          -- v22.6 實際配到的機具廠商（計價分組依據）
     actual_hours     DECIMAL(8,2) NOT NULL DEFAULT 0,
-    diff             DECIMAL(8,2) NOT NULL DEFAULT 0,
+    -- v22.6：diff = actual_hours - equip_records.planned_hours；
+    -- planned_hours 為 NULL 的舊單無從比較，故 diff 亦放寬為可空
+    diff             DECIMAL(8,2) NULL,
+    days             DECIMAL(6,2) NOT NULL DEFAULT 0,  -- v22.6 出工天數（0.5／1／2…）
+    ot_hours         DECIMAL(6,2) NOT NULL DEFAULT 0,  -- v22.6 加班時數（單一欄，機具不分段）
+    work_content     NVARCHAR(MAX) NULL,               -- v22.6 實際工作內容
     zero_use         BIT NOT NULL DEFAULT 0,
     sign_return_date DATE NULL,
     vendor_done_work  DECIMAL(6,2) NULL,
@@ -144,6 +156,8 @@ CREATE TABLE dbo.equip_reports (
     legacy_self_done   NVARCHAR(MAX) NULL,
     legacy_vendor_done NVARCHAR(MAX) NULL
 );
+-- v22.6 起計價分組看的是這裡的 vendor（申請層僅舊單有值）
+CREATE INDEX IX_equip_rep_vendor ON dbo.equip_reports(vendor) WHERE vendor IS NOT NULL;
 
 /* ---------- 8. 機具回報 逐台明細（子，1:N） ---------- */
 CREATE TABLE dbo.equip_report_usage (
@@ -270,13 +284,19 @@ WHERE r.status = N'已回報'
 GROUP BY s.name, r.site_id, r.vendor;
 GO
 
-/* 機具歷程明細 */
+/* 機具歷程明細
+   ⚠ v22.6：廠商一律取 COALESCE(rep.vendor, r.vendor)——工地統一叫車後才配車，
+   廠商改於回報時填；舊單的值仍在申請層。**勿直接讀 r.vendor**，會漏掉全部新單。 */
 CREATE VIEW dbo.v_equip_detail AS
 SELECT
     s.name AS site,
-    r.work_date, r.vendor, r.types_json, r.model, r.required_qty, r.contracted,
+    r.work_date,
+    COALESCE(rep.vendor, r.vendor) AS vendor,        -- 有效廠商（合約 §4.4）
+    r.types_json, r.model, r.required_qty, r.planned_hours, r.apply_note, r.contracted,
     r.applicant, r.status, r.content, r.locations_json,
-    rep.sign_return_date, rep.actual_hours, rep.diff, rep.zero_use, rep.checker,
+    rep.sign_return_date, rep.actual_hours, rep.diff,
+    rep.days, rep.ot_hours, rep.work_content,
+    rep.zero_use, rep.checker,
     rep.vendor_done_work, rep.vendor_done_hours, rep.vendor_done_note,
     rep.self_done_work, rep.self_done_hours, rep.self_done_note,
     r.id AS record_id, r.v, r.updated_at
@@ -285,30 +305,41 @@ JOIN dbo.sites s ON s.site_id = r.site_id
 LEFT JOIN dbo.equip_reports rep ON rep.record_id = r.id;
 GO
 
-/* 機具計價彙總 */
+/* 機具計價彙總
+   v22.6：機具計價的組成是「出工天數＋加班時數」，兩者各出一欄；
+   實際使用時數保留供對帳。分組鍵同樣是有效廠商。 */
 CREATE VIEW dbo.v_equip_pricing_summary AS
+WITH e AS (
+    SELECT r.site_id, r.id, r.types_json, r.status,
+           COALESCE(rep.vendor, r.vendor) AS vendor,
+           rep.zero_use, rep.actual_hours, rep.days, rep.ot_hours,
+           rep.vendor_done_work, rep.vendor_done_hours,
+           rep.self_done_work, rep.self_done_hours
+      FROM dbo.equip_records r
+      JOIN dbo.equip_reports rep ON rep.record_id = r.id
+     WHERE r.status = N'已回報'
+)
 SELECT
     s.name AS site,
-    r.vendor,
+    e.vendor,
     COUNT(*) AS reported_count,
-    SUM(CASE WHEN rep.zero_use = 1 THEN 1 ELSE 0 END) AS zero_use_count,
-    SUM(rep.actual_hours) AS total_hours,
-    SUM(ISNULL(rep.vendor_done_work, 0))  AS vendor_done_work,
-    SUM(ISNULL(rep.vendor_done_hours, 0)) AS vendor_done_hours,
-    SUM(ISNULL(rep.self_done_work, 0))    AS self_done_work,
-    SUM(ISNULL(rep.self_done_hours, 0))   AS self_done_hours,
+    SUM(CASE WHEN e.zero_use = 1 THEN 1 ELSE 0 END) AS zero_use_count,
+    SUM(ISNULL(e.days, 0))     AS total_days,      -- 總出工天數
+    SUM(ISNULL(e.ot_hours, 0)) AS total_ot_hours,  -- 總加班時數
+    SUM(e.actual_hours) AS total_hours,
+    SUM(ISNULL(e.vendor_done_work, 0))  AS vendor_done_work,
+    SUM(ISNULL(e.vendor_done_hours, 0)) AS vendor_done_hours,
+    SUM(ISNULL(e.self_done_work, 0))    AS self_done_work,
+    SUM(ISNULL(e.self_done_hours, 0))   AS self_done_hours,
     /* 機具類型彙集（對應前端計價彙總最後一欄） */
     (SELECT STRING_AGG(d.val, N'、')
        FROM (SELECT DISTINCT j.value AS val
-               FROM dbo.equip_records r2
-               CROSS APPLY OPENJSON(r2.types_json) j
-              WHERE r2.site_id = r.site_id AND r2.vendor = r.vendor
-                AND r2.status = N'已回報') d) AS equip_types
-FROM dbo.equip_records r
-JOIN dbo.sites s ON s.site_id = r.site_id
-JOIN dbo.equip_reports rep ON rep.record_id = r.id
-WHERE r.status = N'已回報'
-GROUP BY s.name, r.site_id, r.vendor;
+               FROM e e2
+               CROSS APPLY OPENJSON(e2.types_json) j
+              WHERE e2.site_id = e.site_id AND e2.vendor = e.vendor) d) AS equip_types
+FROM e
+JOIN dbo.sites s ON s.site_id = e.site_id
+GROUP BY s.name, e.site_id, e.vendor;
 GO
 
 /* 成控現場稽核清單（v13；點工＋機具合併平面化，= 前端「稽核紀錄」清單） */

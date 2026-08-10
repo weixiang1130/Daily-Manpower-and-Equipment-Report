@@ -272,11 +272,14 @@ for site, store in (data["stores"] or {}).items():
             continue
         out.append(
             "INSERT INTO dbo.equip_records (id, site_id, work_date, vendor, applicant, "
-            "types_json, model, required_qty, contracted, locations_json, content, "
+            "types_json, model, required_qty, planned_hours, apply_note, contracted, "
+            "locations_json, content, "
             "status, v, updated_at) VALUES ("
-            f"{q(r['id'])}, {site_ref(site)}, {q(r['date'])}, {q(r.get('vendor'))}, "
+            # v22.6：vendor 允許 NULL（新單的廠商在 equip_reports）
+            f"{q(r['id'])}, {site_ref(site)}, {q(r['date'])}, {q(r.get('vendor') or None)}, "
             f"{q(r.get('applicant'))}, {qj(r.get('types'))}, {q(r.get('model') or None)}, "
-            f"{num(r.get('requiredQty'), '0')}, {q(r.get('contracted') or None)}, "
+            f"{num(r.get('requiredQty'), '0')}, {num(r.get('plannedHours'))}, "
+            f"{q(r.get('applyNote') or None)}, {q(r.get('contracted') or None)}, "
             f"{qj(r.get('locations'))}, {q(r.get('content') or None)}, "
             f"{q(r['status'])}, {int(r.get('v') or 1)}, {local_dt(r.get('updatedAt'))});"
         )
@@ -284,10 +287,16 @@ for site, store in (data["stores"] or {}).items():
         rep = r.get("report")
         if rep:
             out.append(
-                "INSERT INTO dbo.equip_reports (record_id, reported_at, checker, actual_hours, "
-                "diff, zero_use, sign_return_date, " + done_cols() + ") VALUES ("
+                "INSERT INTO dbo.equip_reports (record_id, reported_at, checker, vendor, "
+                "actual_hours, diff, days, ot_hours, work_content, "
+                "zero_use, sign_return_date, " + done_cols() + ") VALUES ("
                 f"{q(r['id'])}, {q(rep.get('reportedAt') or None)}, {q(rep.get('checker') or None)}, "
-                f"{num(rep.get('actualHours'), '0')}, {num(rep.get('diff'), '0')}, "
+                f"{q(rep.get('vendor') or None)}, "
+                # v22.6：diff 可為 NULL（申請單未填預定時數＝無從比較），
+                # 不可像舊版塞 0——0 在報表上會被讀成「相符」
+                f"{num(rep.get('actualHours'), '0')}, {num(rep.get('diff'))}, "
+                f"{num(rep.get('days'), '0')}, {num(rep.get('otHours'), '0')}, "
+                f"{q(rep.get('workContent') or None)}, "
                 f"{bit(rep.get('zeroUse'))}, {q(rep.get('signReturnDate') or None)}, "
                 + done_vals(rep) + ");"
             )

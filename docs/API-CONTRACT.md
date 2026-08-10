@@ -174,8 +174,40 @@
 | conclusion | string | 現場查核回饋（v12 起不限字數；後端請勿設過短的欄位長度上限，建議 TEXT/NVARCHAR(MAX) 級） |
 
 ### 4.4 機具紀錄（kind=equipment）
-父層：id/date/vendor/applicant/status/report/audits/v/updatedAt 同上，另有 `types:string[]`（機具類型）、`model:string`、`requiredQty:number`（需求數量=預計使用時數）、`contracted:"是"|"否"`、`locations:string[]`、`content:string`。
-子層 `report`：`checker`（簽單責任工程師）、`usage:{type,present,hours}[]`（逐台）、`actualHours`、`diff`、`zeroUse`、`signReturnDate`、自辦/代辦六欄（同 4.3）。
+
+父層：id/date/applicant/status/report/audits/v/updatedAt 同上，另有：
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| types | string[] | 機具類型 |
+| model | string | 型號 |
+| requiredQty | number | **需求數量（台數）**。v22.6 前的欄位說明誤寫為「預計使用時數」，實際一直是台數 |
+| plannedHours | number\|null | **預定使用時數**（v22.6 新增）。與回報的 `actualHours` 相減才是有意義的差異；舊單為 null，差異顯示空白 |
+| applyNote | string | **申請備註**（v22.6 新增）。包月機具等計價前提寫在這裡；支援自動列點（節點 31） |
+| contracted | "是"\|"否" | 是否為合約廠商 |
+| locations | string[] | 工作地點 |
+| content | string | 工作內容（申請時的預計內容） |
+| vendor | string | 機具廠商。**v22.6 起申請表單不再填**——工地統一叫車後才配車，廠商於回報時填。舊單保留原值，新單為空字串 |
+
+子層 `report`：
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| checker | string | 簽單責任工程師 |
+| usage | {type,present,hours}[] | 逐台到場與時數 |
+| actualHours | number | 實際使用時數 |
+| diff | number\|null | **`actualHours − plannedHours`**（v22.6 起）。`plannedHours` 為 null 的舊單則為 null（無從比較）。**v22.6 前是 `actualHours − requiredQty`＝時數減台數，本就無意義** |
+| vendor | string | **回報廠商**（v22.6 新增）。實際配到的車行 |
+| days | number | **出工天數**（v22.6 新增）。可填 0.5／1／2…；舊單視為 0 |
+| otHours | number | **加班時數**（v22.6 新增）。**單一欄不分段**——點工的「前 2 小時／第 3 小時起」分段規則**不適用於機具**（2026-08-10 裁示） |
+| workContent | string | **實際工作內容**（v22.6 新增）。支援自動列點 |
+| zeroUse | boolean | 0 使用確認 |
+| signReturnDate | string\|"" | 簽單繳回日 |
+| 自辦/代辦六欄 | 同 4.3 | |
+
+> **有效廠商（計價與報表分組依據）＝ `report.vendor || vendor`**。
+> 回報填了就以回報為準，沒填才回頭用申請單上的（僅舊單會有）。
+> 清單、歷程報表、計價彙總、稽核紀錄一律走這個規則，勿各自實作。
 
 ### 4.5 稽核紀錄（`audits[]` 元素；v13，點工/機具通用）
 | 欄位 | 型別 | 說明 |
@@ -184,7 +216,7 @@
 | auditedAt | "YYYY-MM-DD" | 稽核日期（本地時區）；編輯既有紀錄時**不變** |
 | editedAt | "YYYY-MM-DD"（可缺省） | 最近一次編輯日；僅編輯過的紀錄存在此欄 |
 | auditor | string | 稽核人（必填） |
-| applied | number | 稽核當下的申請數快照（點工=required；機具=requiredQty） |
+| applied | number | 稽核當下的申請數快照（點工=required；機具=requiredQty **台數**，非時數） |
 | actualCount | number | 現場實點數（人數/台數） |
 | diff | number | actualCount − applied |
 | items | {text,ok,reason}[] | 逐項查核結果：text=項目文字、ok=相符(true)/不相符(false)、reason=不符原因（ok=false 時必填，否則空字串） |

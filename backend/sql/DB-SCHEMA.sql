@@ -219,7 +219,9 @@ GO
 
 /* ---------- 11. 附件描述資料（v14；申請單簽單掃描檔／稽核現場照片） ----------
    對應合約 §4.6：檔案本體「不」入 DB——雲端存 Blobs、地端建議存檔案系統，
-   file_path 記錄地端實體路徑（遷移匯入時為 NULL，切換日附件搬運腳本補填）。
+   file_path 記錄檔案本體的位置，**相對於附件根目錄**（環境變數 ATTACH_DIR）而非絕對路徑
+   ——附件目錄搬家時只要改環境變數，不必回頭改幾百列路徑。
+   遷移匯入時為 NULL，切換日附件搬運腳本補填。
    parent 橫跨四種對象故不設 FK（以索引＋應用層維護參照）。 */
 CREATE TABLE dbo.attachments (
     attachment_id   VARCHAR(64) NOT NULL CONSTRAINT PK_attachments PRIMARY KEY

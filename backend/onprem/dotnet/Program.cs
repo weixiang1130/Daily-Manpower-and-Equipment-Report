@@ -9,16 +9,19 @@
        backend/cloud/functions/api.mjs（雲端現行版）
        backend/onprem/server.mjs（Node 參考版）
 
-   目前進度：**階段 A＋B** —— 唯讀端點與寫入
-     ✅ GET /api/data?scope=all      全量讀取（開站／備份）        合約 §2.1
-     ✅ GET /api/data?site=<工地>     單一工地（編輯前抓最新）      合約 §2.2
+   目前進度：**階段 A＋B＋C** —— 合約全部端點皆已實作
+     ✅ GET ?scope=all / ?site= / ?attachment= / ?rates=1          合約 §2.1～§2.4
      ✅ op:record（含 409 樂觀並發）                              合約 §3.3
      ✅ op:master / op:config / op:addOption / op:deleteRecord     合約 §3.1/§3.2/§3.4/§3.5
-     ⬜ 階段 C：附件上下載、行情通報費率書                        合約 §3.6/§3.7/§3.9/§3.10/§3.8
+     ✅ op:uploadAttachment / op:deleteAttachment                 合約 §3.6/§3.7
+     ✅ op:rateBook / op:deleteRateBook / op:clearSite / clearAll  合約 §3.9/§3.10/§3.8
      ⬜ 階段 D：SSO／權限過濾（見 docs/AUTH-PLAN.md）
 
-   尚未實作的操作一律回 501，**不可默默回 200**——前端的 await-first 紀律
-   會把 200 當成寫入成功而清掉表單，資料就真的不見了。
+   若日後有尚未實作的分支，一律回 501，**不可默默回 200**——前端的 await-first
+   紀律會把 200 當成寫入成功而清掉表單，資料就真的不見了。
+
+   環境變數：KGAUDIT_CONNECTION（連線字串）、ATTACH_DIR（附件根目錄）、
+             STATIC_DIR（前端靜態根）、SITE_AUTH_USER/PASS（Basic Auth）
    ========================================================================== */
 using System.Data;
 using System.Text;
@@ -349,9 +352,11 @@ app.MapGet("/api/data", async (HttpContext ctx) =>
     await using var cn = new SqlConnection(ConnStr());
     await cn.OpenAsync();
 
-    // 尚未實作的讀取分支一律 501，不可回空資料裝作正常
-    if (q.ContainsKey("attachment")) return Results.Json(new { error = "not implemented (階段 C)" }, statusCode: 501);
-    if (q.ContainsKey("rates")) return Results.Json(new { error = "not implemented (階段 C)" }, statusCode: 501);
+    // 合約 §2.3：附件下載（回二進位，不是 JSON）
+    if (q.ContainsKey("attachment")) return await GetAttachment(cn, q["site"].ToString(), q["attachment"].ToString());
+
+    // 合約 §2.4：費率書。**刻意不放進 scope=all**——一季 1,500 列會拖慢每個人開站
+    if (q.ContainsKey("rates")) return await GetRates(cn);
 
     var site = q["site"].ToString();
     if (!string.IsNullOrEmpty(site))
@@ -395,16 +400,12 @@ app.MapPost("/api/data", async (HttpContext ctx) =>
         case "record": return await OpRecord(cn, body);
         case "addOption": return await OpAddOption(cn, body);
         case "deleteRecord": return await OpDeleteRecord(cn, body);
-
-        // 階段 C／D 尚未實作。**必須明確回 501**：前端 await-first，
-        // 收到 2xx 就會清空表單，若這裡默默回 200 使用者的資料會直接消失。
-        case "uploadAttachment":
-        case "deleteAttachment":
-        case "rateBook":
-        case "deleteRateBook":
-        case "clearSite":
-        case "clearAll":
-            return Results.Json(new { error = "not implemented", reason = $"op:{op} 於階段 C 實作" }, statusCode: 501);
+        case "uploadAttachment": return await OpUploadAttachment(cn, body);
+        case "deleteAttachment": return await OpDeleteAttachment(cn, body);
+        case "rateBook": return await OpRateBook(cn, body);
+        case "deleteRateBook": return await OpDeleteRateBook(cn, body);
+        case "clearSite": return await OpClear(cn, body, false);
+        case "clearAll": return await OpClear(cn, body, true);
 
         default: return Results.Json(new { error = "unknown op" }, statusCode: 400);
     }
@@ -827,6 +828,10 @@ static async Task SyncAttachments(SqlConnection cn, SqlTransaction tx, int sid, 
         var name = Sx(a, "name");
         if (aid is null || !Wr.IdRe.IsMatch(aid) || name is null) continue;
         keep.TryGetValue(aid, out var path);
+        // 前端的順序是「先 uploadAttachment 落檔、再存單」，所以存單當下檔案已經在了，
+        // 但描述資料這一列還不存在（快照裡也就沒有）。檔案在就把 file_path 補上，
+        // 否則之後下載會誤判成「尚未搬運」。
+        if (path is null && File.Exists(Path.Combine(AttachDir(), aid))) path = aid;
         await Exec(cn, tx,
             @"INSERT INTO dbo.attachments (attachment_id, site_id, parent_kind, parent_id, name,
                   content_type, size_bytes, uploaded_at, file_path)
@@ -835,6 +840,287 @@ static async Task SyncAttachments(SqlConnection cn, SqlTransaction tx, int sid, 
             ("@ct", Trunc(Sx(a, "type") ?? "application/octet-stream", 50)), ("@sz", (int)D0(a, "size")),
             ("@up", Sx(a, "uploadedAt")), ("@fp", path));
     }
+}
+
+
+/* ==========================================================================
+   階段 C：附件（合約 §2.3／§3.6／§3.7）、費率書（§2.4／§3.9／§3.10）、清空（§3.8）
+   ========================================================================== */
+
+/* 附件本體放檔案系統，不進資料庫：
+   幾百 MB 的簽單照片塞進 DB 會讓備份與還原變得又慢又大，而且沒有任何好處
+   ——這些檔案上傳後就不再變動，也不需要交易保護。
+   ⚠ 檔名一律用已驗證格式的 attachment_id（^[A-Za-z0-9_-]{1,64}$），
+     所以不可能出現 ".." 或路徑分隔字元——路徑穿越在來源就被擋掉了。 */
+static string AttachDir()
+{
+    var dir = Environment.GetEnvironmentVariable("ATTACH_DIR")
+        ?? Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "data", "attachments");
+    dir = Path.GetFullPath(dir);
+    Directory.CreateDirectory(dir);
+    return dir;
+}
+
+static async Task<IResult> GetAttachment(SqlConnection cn, string site, string id)
+{
+    if (!Wr.IdRe.IsMatch(id)) return Results.Json(new { error = "bad id" }, statusCode: 400);
+    var rows = await Query(cn,
+        @"SELECT a.name, a.content_type, a.file_path FROM dbo.attachments a
+          JOIN dbo.sites s ON s.site_id = a.site_id
+          WHERE a.attachment_id = @id AND (@site = '' OR s.name = @site)",
+        ("@id", id), ("@site", site ?? ""));
+    if (rows.Count == 0) return Results.Json(new { error = "not found" }, statusCode: 404);
+
+    var r = rows[0];
+    var rel = Str(r["file_path"]);
+    var path = rel is null ? null : Path.Combine(AttachDir(), rel);
+    if (path is null || !File.Exists(path))
+        // 遷移進來的舊附件只有描述資料、沒有檔案本體（備份 JSON 不含檔案）。
+        // 講清楚是「還沒搬運」而不是「不存在」，否則切換日會被誤判成資料遺失。
+        return Results.Json(new { error = "not found", reason = "附件本體尚未搬運至地端（file_path 為空或檔案不存在）" }, statusCode: 404);
+
+    var name = Str(r["name"]) ?? id;
+    var type = Str(r["content_type"]) ?? "application/octet-stream";
+    return new AttachmentResult(await File.ReadAllBytesAsync(path), type, name);
+}
+
+/* ---------- §3.6 op:uploadAttachment ---------- */
+static async Task<IResult> OpUploadAttachment(SqlConnection cn, JsonObject body)
+{
+    var id = Sx(body, "id");
+    if (id is null || !Wr.IdRe.IsMatch(id)) return Results.Json(new { error = "bad id" }, statusCode: 400);
+    var type = Sx(body, "type") ?? "";
+    if (!Wr.AttachTypes.Contains(type)) return Results.Json(new { error = "bad type" }, statusCode: 400);
+
+    byte[] bytes;
+    try { bytes = Convert.FromBase64String(Sx(body, "data") ?? ""); }
+    catch { return Results.Json(new { error = "bad data" }, statusCode: 400); }
+    if (bytes.Length == 0) return Results.Json(new { error = "empty" }, statusCode: 400);
+    if (bytes.Length > Wr.AttachMaxBytes)
+        return Results.Json(new { error = "too large", limit = Wr.AttachMaxBytes, size = bytes.Length }, statusCode: 400);
+
+    // 先落檔。描述資料的那一列由後續的 op:record 建立（前端是「先上傳、再存單」），
+    // 所以這裡**不碰資料表**——此時還不知道它要掛在哪一張單下。
+    await File.WriteAllBytesAsync(Path.Combine(AttachDir(), id), bytes);
+
+    // 若這個 id 的描述資料已經存在（重新上傳同一附件），順手把 file_path 補上
+    await Exec(cn, null, "UPDATE dbo.attachments SET file_path = @p WHERE attachment_id = @id",
+        ("@p", id), ("@id", id));
+
+    return Results.Json(new { ok = true, id, size = bytes.Length });
+}
+
+/* ---------- §3.7 op:deleteAttachment（冪等） ---------- */
+static async Task<IResult> OpDeleteAttachment(SqlConnection cn, JsonObject body)
+{
+    var id = Sx(body, "id");
+    if (id is null || !Wr.IdRe.IsMatch(id)) return Results.Json(new { error = "bad id" }, statusCode: 400);
+
+    /* ⚠ 只憑 id 刪實體檔案，**不可依賴描述資料那一列還在**。
+       前端的順序是「先存單（被移除的附件當下就從資料表消失）、再呼叫本 op」，
+       若這裡要先查表才刪檔，那些檔案會全部變成孤兒永遠留在磁碟上。 */
+    var path = Path.Combine(AttachDir(), id);
+    if (File.Exists(path)) File.Delete(path);
+    await Exec(cn, null, "DELETE FROM dbo.attachments WHERE attachment_id = @id", ("@id", id));
+    return Results.Json(new { ok = true });
+}
+
+/* ---------- §2.4 GET ?rates=1 ---------- */
+static async Task<IResult> GetRates(SqlConnection cn)
+{
+    var books = await Query(cn,
+        "SELECT rate_book_id, kind, label, effective_from, imported_at FROM dbo.rate_books ORDER BY effective_from DESC");
+    var rows = await Query(cn, "SELECT * FROM dbo.rate_book_rows ORDER BY rate_row_id");
+    var byBook = rows.ToLookup(r => Convert.ToInt32(r["rate_book_id"]));
+
+    var outp = new JsonObject { ["labor"] = new JsonArray(), ["equipment"] = new JsonArray() };
+    foreach (var b in books)
+    {
+        var kind = (string)b["kind"]!;
+        var arr = new JsonArray();
+        foreach (var r in byBook[Convert.ToInt32(b["rate_book_id"])])
+        {
+            var o = new JsonObject
+            {
+                ["vendorCode"] = Str(r["vendor_code"]),
+                ["vendorName"] = Str(r["vendor_name"]),
+                ["region"] = Str(r["region"]) ?? "",
+                ["note"] = Str(r["note"]) ?? "",
+                ["item"] = Str(r["item"]),
+                ["unit"] = Str(r["unit"]) ?? "",
+                ["price"] = Num(r["price"])
+            };
+            // 兩種 kind 的專有欄位只在該 kind 出現——多送一堆 null 會讓前端的
+            // 「有沒有這個欄位」判斷失準
+            if (kind == "labor")
+            {
+                o["work"] = Num(r["work"]);
+                o["ot2"] = Num(r["ot2"]);
+                o["otOver"] = Num(r["ot_over"]);
+                o["otParsed"] = Bit(r["ot_parsed"]);
+            }
+            else o["chargeType"] = Str(r["charge_type"]) ?? "";
+            arr.Add(o);
+        }
+        ((JsonArray)outp[kind]!).Add(new JsonObject
+        {
+            ["label"] = Str(b["label"]),
+            ["effectiveFrom"] = DateStr(b["effective_from"]),
+            ["importedAt"] = DateStr(b["imported_at"]),
+            ["rows"] = arr
+        });
+    }
+    return Results.Content(outp.ToJsonString(), "application/json; charset=utf-8");
+}
+
+/* ---------- §3.9 op:rateBook ---------- */
+static async Task<IResult> OpRateBook(SqlConnection cn, JsonObject body)
+{
+    var kind = Sx(body, "kind");
+    if (kind != "labor" && kind != "equipment") return Results.Json(new { error = "bad kind" }, statusCode: 400);
+    var eff = Sx(body, "effectiveFrom");
+    if (eff is null || !DateTime.TryParseExact(eff, "yyyy-MM-dd",
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.None, out _))
+        return Results.Json(new { error = "bad effectiveFrom" }, statusCode: 400);
+    if (body["rows"] is not JsonArray rows || rows.Count == 0)
+        return Results.Json(new { error = "rows required" }, statusCode: 400);
+
+    await using var tx = (SqlTransaction)await cn.BeginTransactionAsync();
+
+    // 以 effectiveFrom 為鍵整季覆蓋：同生效日重匯即取代（可重複匯入修正檔）
+    await Exec(cn, tx, "DELETE FROM dbo.rate_books WHERE kind = @k AND effective_from = @e",
+        ("@k", kind), ("@e", eff));
+
+    var bookId = Convert.ToInt32(await Scalar(cn, tx,
+        @"INSERT INTO dbo.rate_books (kind, label, effective_from, imported_at)
+          OUTPUT INSERTED.rate_book_id VALUES (@k, @l, @e, @i)",
+        ("@k", kind), ("@l", Trunc(Sx(body, "label") ?? eff, 40)), ("@e", eff),
+        ("@i", DateTime.Now.ToString("yyyy-MM-dd"))));
+
+    var kept = 0;
+    foreach (var r in rows)
+    {
+        var code = Sx(r, "vendorCode");
+        var item = Sx(r, "item");
+        var price = Dx(r, "price");
+        // 匯入時就濾掉沒有單價的列：0 會在計價時被讀成「免費」，
+        // 而不是「這一項沒有報價」——後者必須讓使用者看到原因（合約 §4.9）
+        if (code is null || item is null || price is null || price <= 0) continue;
+        await Exec(cn, tx,
+            @"INSERT INTO dbo.rate_book_rows (rate_book_id, vendor_code, vendor_name, region, note,
+                  item, unit, price, work, ot2, ot_over, ot_parsed, charge_type)
+              VALUES (@b,@vc,@vn,@rg,@nt,@it,@un,@pr,@wk,@o2,@oo,@op,@ct)",
+            ("@b", bookId), ("@vc", Trunc(code, 40)), ("@vn", Trunc(Sx(r, "vendorName") ?? code, 200)),
+            ("@rg", Sx(r, "region")), ("@nt", Sx(r, "note")), ("@it", Trunc(item, 400)),
+            ("@un", Sx(r, "unit")), ("@pr", price),
+            ("@wk", kind == "labor" ? Dx(r, "work") : null),
+            ("@o2", kind == "labor" ? Dx(r, "ot2") : null),
+            ("@oo", kind == "labor" ? Dx(r, "otOver") : null),
+            ("@op", kind == "labor" ? (object)Bx(r, "otParsed") : null),
+            ("@ct", kind == "equipment" ? Sx(r, "chargeType") : null));
+        kept++;
+    }
+
+    // 每個 kind 最多留 RATE_BOOK_MAX 季，超過丟最舊的（rows 有 ON DELETE CASCADE）
+    var dropped = await Exec(cn, tx,
+        @"DELETE FROM dbo.rate_books WHERE rate_book_id IN (
+              SELECT rate_book_id FROM dbo.rate_books WHERE kind = @k
+              ORDER BY effective_from DESC OFFSET @max ROWS)",
+        ("@k", kind), ("@max", Wr.RateBookMax));
+
+    var brief = await BookBrief(cn, tx, kind);
+    await tx.CommitAsync();
+    return Results.Json(new { ok = true, kind, books = brief, dropped, rowCount = kept });
+}
+
+/* ---------- §3.10 op:deleteRateBook（冪等） ---------- */
+static async Task<IResult> OpDeleteRateBook(SqlConnection cn, JsonObject body)
+{
+    var kind = Sx(body, "kind");
+    if (kind != "labor" && kind != "equipment") return Results.Json(new { error = "bad kind" }, statusCode: 400);
+    var eff = Sx(body, "effectiveFrom");
+    if (eff is null) return Results.Json(new { error = "effectiveFrom required" }, statusCode: 400);
+
+    await using var tx = (SqlTransaction)await cn.BeginTransactionAsync();
+    await Exec(cn, tx, "DELETE FROM dbo.rate_books WHERE kind = @k AND effective_from = @e",
+        ("@k", kind), ("@e", eff));
+    var brief = await BookBrief(cn, tx, kind);
+    await tx.CommitAsync();
+    return Results.Json(new { ok = true, books = brief });
+}
+
+static async Task<List<object>> BookBrief(SqlConnection cn, SqlTransaction tx, string kind)
+{
+    var list = new List<object>();
+    await using var c = Cmd(cn, tx,
+        @"SELECT b.label, b.effective_from, b.imported_at,
+                 (SELECT COUNT(*) FROM dbo.rate_book_rows r WHERE r.rate_book_id = b.rate_book_id) AS n
+          FROM dbo.rate_books b WHERE b.kind = @k ORDER BY b.effective_from DESC", ("@k", kind));
+    await using var rd = await c.ExecuteReaderAsync();
+    while (await rd.ReadAsync())
+        list.Add(new
+        {
+            label = rd.GetString(0),
+            effectiveFrom = rd.GetDateTime(1).ToString("yyyy-MM-dd"),
+            importedAt = rd.GetDateTime(2).ToString("yyyy-MM-dd"),
+            rowCount = rd.GetInt32(3)
+        });
+    return list;
+}
+
+/* ---------- §3.8 op:clearSite / op:clearAll（危險操作） ----------
+   ⚠ 合約現行版本對這兩個 op **沒有伺服器端權限檢查**，這裡維持相同行為以求
+     前後端一致。這是已知的安審遺留項（建議加 ADMIN_TOKEN 或併入階段 D 的
+     SSO 權限），**尚待決策**——不在本階段單方面加，否則地端與雲端行為分歧，
+     過渡期兩邊並行會出現「同一操作在雲端可以、在地端不行」。 */
+static async Task<IResult> OpClear(SqlConnection cn, JsonObject body, bool all)
+{
+    var site = Sx(body, "site");
+    if (!all && site is null) return Results.Json(new { error = "site required" }, statusCode: 400);
+
+    await using var tx = (SqlTransaction)await cn.BeginTransactionAsync();
+    var where = all ? "" : " WHERE r.site_id = @s";
+    var p = all ? Array.Empty<(string, object?)>() : new (string, object?)[] { ("@s", await SiteId(cn, tx, site!)) };
+
+    // 先收集要刪的附件檔名，交易提交後才動磁碟——交易若回滾，檔案不該已經沒了
+    var files = new List<string>();
+    await using (var c = Cmd(cn, tx,
+        all ? "SELECT file_path FROM dbo.attachments WHERE file_path IS NOT NULL"
+            : "SELECT file_path FROM dbo.attachments WHERE site_id = @s AND file_path IS NOT NULL", p))
+    await using (var rd = await c.ExecuteReaderAsync())
+        while (await rd.ReadAsync()) files.Add(rd.GetString(0));
+
+    var deleted = 0;
+    foreach (var (recT, repT, childT, audT) in new[]
+             {
+                 ("labor_records", "labor_reports", "labor_report_worktypes", "labor_audits"),
+                 ("equip_records", "equip_reports", "equip_report_usage", "equip_audits")
+             })
+    {
+        foreach (var t in new[] { audT, childT, repT })
+            await Exec(cn, tx, $"DELETE FROM dbo.{t} WHERE record_id IN (SELECT r.id FROM dbo.{recT} r{where})", p);
+        deleted += await Exec(cn, tx, $"DELETE FROM r FROM dbo.{recT} r{where}", p);
+    }
+    await Exec(cn, tx, all ? "DELETE FROM dbo.attachments" : "DELETE FROM dbo.attachments WHERE site_id = @s", p);
+
+    /* clearSite 到此為止——合約明訂**不含 config**（名單池與鎖單日留著）。
+       clearAll 則是整庫清空：雲端版是「列出 store 裡所有 blob 全刪」，
+       包含 master、各站 cfg2 與費率書，這裡必須刪到一樣的範圍，
+       否則地端清完還留著工地清單與名單池，兩邊行為不一致。 */
+    if (all)
+    {
+        foreach (var t in new[] { "rate_book_rows", "rate_books", "site_rate_bindings", "site_options", "sites" })
+            deleted += await Exec(cn, tx, $"DELETE FROM dbo.{t}", Array.Empty<(string, object?)>());
+    }
+    await tx.CommitAsync();
+
+    foreach (var f in files)
+    {
+        var path = Path.Combine(AttachDir(), f);
+        if (File.Exists(path)) File.Delete(path);
+    }
+    return Results.Json(new { ok = true, deleted });
 }
 
 
@@ -854,4 +1140,28 @@ static class Wr
 
     /* status_at_audit 欄位有 CHECK 值域限制，只接受這兩個值 */
     public static readonly string[] Statuses = { "待回報", "已回報" };
+
+    /* 附件型別白名單與大小上限的正準定義在 docs/API-CONTRACT.md §3.6 */
+    public static readonly string[] AttachTypes =
+        { "image/jpeg", "image/png", "image/webp", "application/pdf" };
+    public const int AttachMaxBytes = 4 * 1024 * 1024;
+
+    /* 每個 kind 最多保留幾季（合約 §3.9）：三年 */
+    public const int RateBookMax = 12;
+}
+
+/* 合約 §2.3 明訂附件下載要 inline＋UTF-8 檔名，Results.Bytes 沒辦法自訂
+   Content-Disposition 的 filename*，所以自己寫一個 IResult。 */
+sealed class AttachmentResult(byte[] bytes, string type, string name) : IResult
+{
+    public async Task ExecuteAsync(HttpContext ctx)
+    {
+        ctx.Response.ContentType = type;
+        ctx.Response.ContentLength = bytes.Length;
+        // 附件內容不可變（同 id 不會被改寫成不同內容），可安心長快取
+        ctx.Response.Headers.CacheControl = "private, max-age=86400";
+        ctx.Response.Headers.ContentDisposition =
+            "inline; filename*=UTF-8''" + Uri.EscapeDataString(name);
+        await ctx.Response.Body.WriteAsync(bytes);
+    }
 }

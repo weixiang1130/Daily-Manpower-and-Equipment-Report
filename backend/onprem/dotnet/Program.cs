@@ -9,27 +9,35 @@
        backend/cloud/functions/api.mjs（雲端現行版）
        backend/onprem/server.mjs（Node 參考版）
 
-   目前進度：**階段 A＋B＋C** —— 合約全部端點皆已實作
+   目前進度：**階段 A＋B＋C＋D** —— 合約全部端點皆已實作，權限機制亦已內建
      ✅ GET ?scope=all / ?site= / ?attachment= / ?rates=1          合約 §2.1～§2.4
      ✅ op:record（含 409 樂觀並發）                              合約 §3.3
      ✅ op:master / op:config / op:addOption / op:deleteRecord     合約 §3.1/§3.2/§3.4/§3.5
      ✅ op:uploadAttachment / op:deleteAttachment                 合約 §3.6/§3.7
      ✅ op:rateBook / op:deleteRateBook / op:clearSite / clearAll  合約 §3.9/§3.10/§3.8
-     ⬜ 階段 D：SSO／權限過濾（見 docs/AUTH-PLAN.md）
+     ✅ 階段 D：身分與權限過濾（見 Auth.cs 與 docs/AUTH-PLAN.md）
+        —— **預設關閉**（Auth:Mode=Off），不設定就維持現行行為
 
    若日後有尚未實作的分支，一律回 501，**不可默默回 200**——前端的 await-first
    紀律會把 200 當成寫入成功而清掉表單，資料就真的不見了。
 
-   環境變數：KGAUDIT_CONNECTION（連線字串）、ATTACH_DIR（附件根目錄）、
-             STATIC_DIR（前端靜態根）、SITE_AUTH_USER/PASS（Basic Auth）
+   環境變數：KGAUDIT_CONNECTION（連線字串）、KGAUDIT_ERP_CONNECTION（ERP 權限檢視表）、
+             ATTACH_DIR（附件根目錄）、STATIC_DIR（前端靜態根）、
+             SITE_AUTH_USER/PASS（Basic Auth）、Auth__Mode（Off／Windows／Dev）
    ========================================================================== */
 using System.Data;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using KgAudit.Api;
 using Microsoft.Data.SqlClient;
 
 var builder = WebApplication.CreateBuilder(args);
+
+/* ---------- 權限設定（階段 D，見 Auth.cs 與 docs/AUTH-PLAN.md） ----------
+   預設 Mode=Off：**不設定就完全維持現行行為**，部署新版不會突然把人擋在外面。 */
+var authOpt = builder.Configuration.GetSection("Auth").Get<AuthOptions>() ?? new AuthOptions();
+
 var app = builder.Build();
 
 /* ---------- 靜態前端 ----------
@@ -156,6 +164,18 @@ static JsonArray BuildAudits(List<Dictionary<string, object?>> auds,
         arr.Add(o);
     }
     return arr;
+}
+
+/* 稽核紀錄只給成控與管理者。
+   v13 的「成控現場稽核」對工地端是**前端隱藏**，資料照樣傳到瀏覽器；
+   這裡把它降級為真隔離——工地使用者的回應裡根本沒有 audits 內容。
+   仍保留空陣列而不是刪掉鍵：合約 §4.5 的型別是陣列，塌成 null 會讓前端 .map 爆炸。 */
+static void StripAudits(JsonNode? store, Authz? az)
+{
+    if (az is null || az.CanSeeAudits || store is null) return;
+    foreach (var kind in new[] { "labor", "equipment" })
+        foreach (var r in (store[kind] as JsonArray) ?? new JsonArray())
+            if (r is JsonObject o && o.ContainsKey("audits")) o["audits"] = new JsonArray();
 }
 
 /* ---------- 讀取整站資料 ---------- */
@@ -332,6 +352,67 @@ static async Task<JsonObject> ReadStores(SqlConnection cn, string? onlySite)
     return stores;
 }
 
+/* ---------- 權限中介層（階段 D） ----------
+   只擋 /api：靜態前端一律放行，否則使用者連「你沒有權限」的畫面都載不出來。 */
+Func<SqlConnection>? erpDb = null;
+var erpConn = Environment.GetEnvironmentVariable("KGAUDIT_ERP_CONNECTION")
+              ?? app.Configuration.GetConnectionString("KgAuditErp");
+if (!string.IsNullOrWhiteSpace(erpConn)) erpDb = () => new SqlConnection(erpConn);
+
+IIdentitySource? identitySource = authOpt.Mode switch
+{
+    AuthMode.Dev => new DevIdentitySource(),
+    AuthMode.Windows => new WindowsIdentitySource(),
+    _ => null
+};
+IEmployeeDirectory directory = new ConfigEmployeeDirectory(authOpt);
+var authorizer = new Authorizer(authOpt, () => new SqlConnection(ConnStr()), erpDb);
+
+if (authOpt.Mode != AuthMode.Off)
+{
+    if (authOpt.Mode == AuthMode.Dev)
+        app.Logger.LogWarning("Auth:Mode=Dev —— 身分由 X-Dev-User 標頭指定，**正式環境絕不可使用**");
+
+    app.Use(async (ctx, next) =>
+    {
+        if (!ctx.Request.Path.StartsWithSegments("/api")) { await next(); return; }
+
+        var account = identitySource!.Account(ctx);
+        if (account is null) { await Deny(ctx, 401,
+                "無法辨識您的網域帳號。若您已在公司內網登入，請確認主機（IIS／HTTP.sys）"
+                + "已啟用 Windows 驗證並停用匿名存取"); return; }
+
+        var user = await directory.LookupAsync(account);
+        if (user is null) { await Deny(ctx, 403, $"查無「{account}」的員工資料，請洽資訊處"); return; }
+
+        Authz? authz;
+        try { authz = await authorizer.ResolveAsync(user); }
+        catch (Exception ex)
+        {
+            /* 授權查詢失敗一律拒絕（fail-closed）。放行比擋住危險得多——
+               ERP 一斷線就變成全員全站可見，而且沒有人會發現。 */
+            app.Logger.LogError(ex, "權限查詢失敗，已拒絕存取：{Account}", account);
+            await Deny(ctx, 503, "無法查詢權限資料，請稍後再試或洽資訊處");
+            return;
+        }
+        if (authz is null) { await Deny(ctx, 403, "您在 ERP 尚無任何專案權限，請洽成本管理部"); return; }
+
+        ctx.Items["user"] = user;
+        ctx.Items["authz"] = authz;
+        // 操作軌跡：單一共用帳密時代做不到的問責，AD 化後自然獲得
+        if (ctx.Request.Method == "POST")
+            app.Logger.LogInformation("op by {Emp}({Name}/{Role}) {Path}", user.EmpId, user.Name, authz.Role, ctx.Request.Path);
+        await next();
+    });
+}
+
+static async Task Deny(HttpContext ctx, int code, string message)
+{
+    ctx.Response.StatusCode = code;
+    ctx.Response.ContentType = "application/json; charset=utf-8";
+    await ctx.Response.WriteAsync(new JsonObject { ["error"] = "forbidden", ["message"] = message }.ToJsonString());
+}
+
 /* ---------- 靜態檔（在 API 路由之前掛，但 /api 前綴不受影響） ---------- */
 if (Directory.Exists(staticRoot))
 {
@@ -358,23 +439,36 @@ app.MapGet("/api/data", async (HttpContext ctx) =>
     // 合約 §2.4：費率書。**刻意不放進 scope=all**——一季 1,500 列會拖慢每個人開站
     if (q.ContainsKey("rates")) return await GetRates(cn);
 
+    var az = ctx.Items["authz"] as Authz;
+
     var site = q["site"].ToString();
     if (!string.IsNullOrEmpty(site))
     {
+        if (az is not null && !az.CanSee(site))
+            return Results.Json(new { error = "forbidden", message = "您沒有這個工地的權限" }, statusCode: 403);
         var one = await ReadStores(cn, site);
         // 合約 §2.2：單站回 { config, labor, equipment }（不含外層工地名）
         if (one.Count == 0) return Results.Json(new JsonObject { ["config"] = null, ["labor"] = new JsonArray(), ["equipment"] = new JsonArray() });
         var first = one.First().Value!;
+        StripAudits(first, az);
         return Results.Content(first.ToJsonString(), "application/json; charset=utf-8");
     }
 
     // 合約 §2.1：{ master, stores }。master.sites 只列 is_active=1（退場專案保留歷史但不上線）
     var siteRows = await Query(cn, "SELECT name FROM dbo.sites WHERE is_active = 1 ORDER BY sort_order");
+    var visible = siteRows.Select(s => (string)s["name"]!).Where(n => az is null || az.CanSee(n)).ToArray();
     var master = new JsonObject
     {
-        ["sites"] = new JsonArray(siteRows.Select(s => (JsonNode)JsonValue.Create((string)s["name"]!)!).ToArray())
+        ["sites"] = new JsonArray(visible.Select(n => (JsonNode)JsonValue.Create(n)!).ToArray())
     };
     var stores = await ReadStores(cn, null);
+    if (az is not null)
+    {
+        // master.sites 與 stores 必須同步過濾：只濾清單而 stores 照給，
+        // 等於資料還是送到瀏覽器了，那是「看起來隔離」而不是隔離。
+        foreach (var k in stores.Select(kv => kv.Key).Where(k => !az.CanSee(k)).ToList()) stores.Remove(k);
+        foreach (var kv in stores) StripAudits(kv.Value, az);
+    }
     var payload = new JsonObject { ["master"] = master, ["stores"] = stores };
     return Results.Content(payload.ToJsonString(), "application/json; charset=utf-8");
 });
@@ -390,6 +484,21 @@ app.MapPost("/api/data", async (HttpContext ctx) =>
     catch { return Results.Json(new { error = "bad json" }, statusCode: 400); }
 
     var op = Sx(body, "op") ?? "";
+
+    /* 寫入端的權限把關（AUTH-PLAN §3 第 2／4 點）。
+       ⚠ 只靠前端隱藏按鈕不算數——直接 POST 就繞過去了。 */
+    if (ctx.Items["authz"] is Authz az)
+    {
+        // 全域設定與破壞性操作限系統管理者，一併解決「伺服器端無權限分級」的安審遺留
+        if (op is "master" or "config" or "clearSite" or "clearAll" or "rateBook" or "deleteRateBook" && !az.IsAdmin)
+            return Results.Json(new { error = "forbidden", message = "此操作限系統管理者" }, statusCode: 403);
+
+        // 其餘與單一工地相關的操作：檢查該站是否在權限內
+        var target = Sx(body, "site");
+        if (target is not null && !az.CanSee(target))
+            return Results.Json(new { error = "forbidden", message = "您沒有這個工地的權限" }, statusCode: 403);
+    }
+
     await using var cn = new SqlConnection(ConnStr());
     await cn.OpenAsync();
 

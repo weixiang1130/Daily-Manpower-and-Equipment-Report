@@ -14,6 +14,13 @@
     <!-- 只用 ADO.NET，不引 EF：合約的 JSON 形狀是固定且巢狀的，
          ORM 的物件關聯反而要多一層轉換，直接寫 SQL 比較好對照 sql/README.md -->
     <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.2" />
+    <!-- ⚠ 刻意**不引** Microsoft.AspNetCore.Authentication.Negotiate：
+         該套件 8.0 線（含最新的 8.0.20）仍帶兩則高嚴重性弱點告警
+         （GHSA-2p3q-h3hg-jcqq／GHSA-8prm-248r-h957）。
+         內網 Windows 驗證改由**主機層**提供（IIS 啟用 Windows 驗證並停用匿名，
+         或 HTTP.sys 設 Negotiate/NTLM），本程式只讀取已驗證的 HttpContext.User
+         ——沒有相依、沒有弱點，而且驗證方式由資訊處用他們既有的工具管理。
+         詳見 docs/DEPLOYMENT.md 的 Windows 驗證章節。 -->
   </ItemGroup>
 
 </Project>

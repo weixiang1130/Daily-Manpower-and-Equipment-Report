@@ -73,6 +73,45 @@ node backend/onprem/server.mjs
 6. DNS／內網入口改指地端；通知使用者新網址
 7. **退場舊站**：更換或停用 Netlify 站台密碼、（建議）刪除 Netlify 站台與環境變數，避免兩份資料並存造成誤填
 
+## 4.5 Windows 驗證與權限（.NET 8 API，選用）
+
+權限機制**預設關閉**（`Auth:Mode=Off`）——不做任何設定就維持現行行為
+（整站 Basic Auth、所有人可見全部工地）。要啟用時：
+
+**① 主機層開啟 Windows 驗證。**
+本程式**刻意不引** `Microsoft.AspNetCore.Authentication.Negotiate` 套件
+（該套件 8.0 線含最新版仍帶兩則高嚴重性弱點告警：GHSA-2p3q-h3hg-jcqq、
+GHSA-8prm-248r-h957），改由主機提供身分，本程式只讀取已驗證的 `HttpContext.User`：
+
+| 主機 | 設定 |
+|---|---|
+| IIS | 網站 → 驗證 → **啟用「Windows 驗證」、停用「匿名驗證」** |
+| HTTP.sys（Windows 服務） | `UseHttpSys` 設 `Authentication.Schemes = Negotiate \| NTLM`、`AllowAnonymous = false` |
+
+> ⚠ 只開 Windows 驗證但**保留匿名**，未登入者會以匿名身分進來、`Identity.Name` 為空，
+> 本系統一律回 401——功能不會壞，但使用者會看到「無法辨識您的網域帳號」。
+
+**② 設定檔。**
+
+```jsonc
+"Auth": { "Mode": "Windows" },              // Off（預設）／Windows／Dev
+"ConnectionStrings": {
+  "KgAudit":    "...",                       // 本系統資料庫
+  "KgAuditErp": "..."                        // ERP 權限檢視表（唯讀），Mode 非 Off 時必填
+}
+```
+連線字串建議改用環境變數 `KGAUDIT_CONNECTION`／`KGAUDIT_ERP_CONNECTION`，不寫進進版控的檔案。
+角色白名單（哪些 ERP 角色算工地／成控／管理者）也在 `Auth` 區段，ERP 日後新增角色時**改設定即可，免改版**。
+
+**③ 填入專案代碼對映。**
+`dbo.sites.project_code` 對應 ERP 專案代碼；未填的工地**只有管理員看得到**。
+判定規則與角色對照見 [`AUTH-PLAN.md`](AUTH-PLAN.md) §2.4。
+
+**④ 驗收。** 跑 `AUTH-PLAN.md` §6 的 11 個情境。其中情境 7 與 Windows 驗證本身
+**未在網域環境實測過**（開發機無網域），請務必在正式環境複驗。
+
+> `Auth:Mode=Dev` 讓身分由 `X-Dev-User` 標頭指定，僅供開發測試——**正式環境絕不可使用**。
+
 ## 5. 維運
 
 | 項目 | 建議 |

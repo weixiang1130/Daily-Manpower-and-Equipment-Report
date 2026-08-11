@@ -145,6 +145,9 @@ CREATE TABLE dbo.equip_reports (
     days             DECIMAL(6,2) NOT NULL DEFAULT 0,  -- v22.6 出工天數（0.5／1／2…）
     ot_hours         DECIMAL(6,2) NOT NULL DEFAULT 0,  -- v22.6 加班時數（單一欄，機具不分段）
     work_content     NVARCHAR(MAX) NULL,               -- v22.6 實際工作內容
+    -- v22.8 行情通報：只存「挑了哪一項」，金額不落庫（計價時依出工日回查當季，合約 §4.9）
+    rate_item        NVARCHAR(400) NULL,               -- 主品項原文
+    rate_ot_item     NVARCHAR(400) NULL,               -- 加班費率品項原文
     zero_use         BIT NOT NULL DEFAULT 0,
     sign_return_date DATE NULL,
     vendor_done_work  DECIMAL(6,2) NULL,
@@ -232,6 +235,59 @@ CREATE TABLE dbo.attachments (
     file_path       NVARCHAR(400) NULL
 );
 CREATE INDEX IX_att_parent ON dbo.attachments(parent_kind, parent_id);
+GO
+
+/* ---------- 12～14. 行情通報費率（v22.8；合約 §2.4／§3.9／§4.8／§4.9） ----------
+   公司按季發布租工／機具行情通報 xlsx，管理員自行匯入，計價時依**出工日期**
+   取「生效日 ≤ 出工日」中最新的一季。單據不存金額，只存「挑了哪一項」——
+   換季重匯不會改到歷史單據，行情通報事後修正則會自動反映。
+
+   ⚠ **費率書不在備份 JSON 裡**（雲端是獨立的 blob，不進 scope=all）。
+   切換日必須比照附件另行搬運：`GET ?rates=1` 匯出 → 匯入下列兩張表。
+   見 MIGRATION-PLAN.md 切換流程。 */
+CREATE TABLE dbo.rate_books (
+    rate_book_id   INT IDENTITY(1,1) CONSTRAINT PK_rate_books PRIMARY KEY,
+    kind           VARCHAR(10) NOT NULL CONSTRAINT CK_rate_kind CHECK (kind IN ('labor','equipment')),
+    label          NVARCHAR(40) NOT NULL,          -- 季別標示，例 115Q3（僅供顯示）
+    effective_from DATE NOT NULL,                  -- 生效日；同時是季別唯一鍵
+    imported_at    DATE NOT NULL,
+    CONSTRAINT UQ_rate_books UNIQUE (kind, effective_from)   -- 同生效日重匯＝取代
+);
+
+CREATE TABLE dbo.rate_book_rows (
+    rate_row_id  INT IDENTITY(1,1) CONSTRAINT PK_rate_rows PRIMARY KEY,
+    rate_book_id INT NOT NULL CONSTRAINT FK_rate_rows
+                 REFERENCES dbo.rate_books(rate_book_id) ON DELETE CASCADE,
+    vendor_code  VARCHAR(40) NOT NULL,     -- 供應商編號＝綁定用的穩定鍵（公司全名會改寫，編號不會）
+    vendor_name  NVARCHAR(200) NOT NULL,
+    region       NVARCHAR(20) NULL,        -- 北區／中區／南區／全省
+    note         NVARCHAR(400) NULL,       -- 說明欄，例「打石工-一般工地」；租工綁定的關鍵
+    item         NVARCHAR(400) NOT NULL,   -- 品項原文
+    unit         NVARCHAR(10) NULL,        -- 工／天／HR／月／趟
+    price        DECIMAL(12,2) NOT NULL,   -- 匯入時已濾掉 <= 0 的列（0 會被讀成「免費」）
+    -- 租工專有（自品項文字解析；對應合約 §4.3 的前2h／第3h起分段）
+    work         DECIMAL(10,2) NULL,
+    ot2          DECIMAL(10,2) NULL,
+    ot_over      DECIMAL(10,2) NULL,
+    ot_parsed    BIT NULL,                 -- 品項是否真的載明加班費率；
+                                           -- false 時 ot2/ot_over 的 0 代表「沒寫」而非「免費」
+    -- 機具專有
+    charge_type  NVARCHAR(10) NULL         -- 全天／半天／時租／加班／月租／趟次
+);
+CREATE INDEX IX_rate_rows_book   ON dbo.rate_book_rows(rate_book_id);
+CREATE INDEX IX_rate_rows_vendor ON dbo.rate_book_rows(rate_book_id, vendor_code);
+
+/* 各工地的費率綁定（合約 §4.8）：
+   labor  → bind_key = "<系統廠商>|<工種>"，綁到 (vendor_code, note)
+   equip  → bind_key = "<系統廠商>"，只綁 vendor_code（品項由工程師回報時挑） */
+CREATE TABLE dbo.site_rate_bindings (
+    site_id     INT NOT NULL CONSTRAINT FK_bind_site REFERENCES dbo.sites(site_id),
+    kind        VARCHAR(10) NOT NULL CONSTRAINT CK_bind_kind CHECK (kind IN ('labor','equipment')),
+    bind_key    NVARCHAR(400) NOT NULL,
+    vendor_code VARCHAR(40) NOT NULL,
+    note        NVARCHAR(400) NULL,        -- 僅 labor 使用
+    CONSTRAINT PK_site_rate_bindings PRIMARY KEY (site_id, kind, bind_key)
+);
 GO
 
 /* ==========================================================================

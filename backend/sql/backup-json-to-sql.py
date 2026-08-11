@@ -52,7 +52,7 @@ skipped = {"id": 0, "date": 0, "status": 0, "type": 0, "option_dup": 0, "audit":
 counts = {"sites": 0, "site_options": 0, "labor_records": 0, "labor_reports": 0,
           "labor_report_worktypes": 0, "equip_records": 0, "equip_reports": 0,
           "equip_report_usage": 0, "labor_audits": 0, "equip_audits": 0,
-          "attachments": 0}
+          "attachments": 0, "site_rate_bindings": 0}
 
 
 def q(s):
@@ -218,6 +218,29 @@ for site, store in (data["stores"] or {}).items():
                        f"VALUES ({site_ref(site)}, '{pool}', {q(val)});")
             counts["site_options"] += 1
 
+# ---------- 費率綁定（v22.8；合約 §4.8 config.rateBindings） ----------
+# labor  → bind_key "<廠商>|<工種>"，值為 {vendorCode, note}
+# equip  → bind_key "<廠商>"，值為 vendorCode 字串
+# ⚠ 費率書本身（rates:labor／rates:equipment）**不在備份 JSON 裡**，
+#   切換日需比照附件另行搬運：GET ?rates=1 → rate_books / rate_book_rows
+for site, store in (data["stores"] or {}).items():
+    binds = ((store or {}).get("config") or {}).get("rateBindings") or {}
+    for key, val in (binds.get("labor") or {}).items():
+        code = (val or {}).get("vendorCode")
+        if not key or not code:
+            continue
+        out.append("INSERT INTO dbo.site_rate_bindings (site_id, kind, bind_key, vendor_code, note) "
+                   f"VALUES ({site_ref(site)}, 'labor', {q(str(key)[:400])}, "
+                   f"{q(str(code)[:40])}, {q((val or {}).get('note') or None)});")
+        counts["site_rate_bindings"] += 1
+    for key, code in (binds.get("equipment") or {}).items():
+        if not key or not code:
+            continue
+        out.append("INSERT INTO dbo.site_rate_bindings (site_id, kind, bind_key, vendor_code, note) "
+                   f"VALUES ({site_ref(site)}, 'equipment', {q(str(key)[:400])}, "
+                   f"{q(str(code)[:40])}, NULL);")
+        counts["site_rate_bindings"] += 1
+
 # ---------- labor ----------
 for site, store in (data["stores"] or {}).items():
     for r in (store or {}).get("labor") or []:
@@ -288,7 +311,7 @@ for site, store in (data["stores"] or {}).items():
         if rep:
             out.append(
                 "INSERT INTO dbo.equip_reports (record_id, reported_at, checker, vendor, "
-                "actual_hours, diff, days, ot_hours, work_content, "
+                "actual_hours, diff, days, ot_hours, work_content, rate_item, rate_ot_item, "
                 "zero_use, sign_return_date, " + done_cols() + ") VALUES ("
                 f"{q(r['id'])}, {q(rep.get('reportedAt') or None)}, {q(rep.get('checker') or None)}, "
                 f"{q(rep.get('vendor') or None)}, "
@@ -297,6 +320,8 @@ for site, store in (data["stores"] or {}).items():
                 f"{num(rep.get('actualHours'), '0')}, {num(rep.get('diff'))}, "
                 f"{num(rep.get('days'), '0')}, {num(rep.get('otHours'), '0')}, "
                 f"{q(rep.get('workContent') or None)}, "
+                # v22.8：只存挑了哪一項，金額不落庫（合約 §4.9）
+                f"{q(rep.get('rateItem') or None)}, {q(rep.get('rateOtItem') or None)}, "
                 f"{bit(rep.get('zeroUse'))}, {q(rep.get('signReturnDate') or None)}, "
                 + done_vals(rep) + ");"
             )

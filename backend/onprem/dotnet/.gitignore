@@ -1,0 +1,5 @@
+bin/
+obj/
+# 正式環境的連線字串／密碼一律走環境變數，不進版控
+appsettings.Production.json
+appsettings.Development.json

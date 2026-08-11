@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>KgAudit.Api</RootNamespace>
+    <!-- ⚠ 不可設 InvariantGlobalization=true：Microsoft.Data.SqlClient 在該模式下
+         一開連線就丟 NotSupportedException（實測）。中文定序與日期格式也需要
+         完整的 globalization 支援，部署到 Linux 容器時記得裝 ICU。 -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 只用 ADO.NET，不引 EF：合約的 JSON 形狀是固定且巢狀的，
+         ORM 的物件關聯反而要多一層轉換，直接寫 SQL 比較好對照 sql/README.md -->
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.2" />
+  </ItemGroup>
+
+</Project>

@@ -37,13 +37,19 @@ const KINDS = ["labor", "equipment"];
 const ATT_TYPES = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
 const ATT_MAX_BYTES = 4 * 1024 * 1024;
 
-/* 行情通報費率書（v22.8，合約 §4.8）：單一 blob，**不進 scope=all**——
+/* 行情通報費率書（v22.8，合約 §4.8）：**不進 scope=all**——
    一季 1,500 列、多季累積數 MB，塞進開站全量讀取會拖慢每個人。
-   以 effectiveFrom 為季別唯一鍵；保留上限 12 季（三年），超過丟最舊的。 */
-const RATES_KEY = "rates";
+   以 effectiveFrom 為季別唯一鍵；保留上限 12 季（三年），超過丟最舊的。
+
+   ⚠ **一個 kind 一把 key**（rates:labor / rates:equipment）：
+   兩種放同一把時，同時匯入租工與機具會是兩個「讀整包→改→寫整包」互相覆蓋，
+   後寫的把先寫的那一半蓋掉且無聲無息（不像 op:record 有 409 保護）。
+   拆開後跨 kind 不再競爭；同 kind 的重複匯入本來就是同一個操作，後者取代即為預期。 */
+const ratesKey = kind => "rates:" + kind;
 const RATE_BOOK_MAX = 12;
-const EMPTY_RATES = () => ({ labor: [], equipment: [] });
 const isDate = v => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+const bookBrief = books => books.map(b => ({ label: b.label, effectiveFrom: b.effectiveFrom,
+  importedAt: b.importedAt, rowCount: b.rows.length }));
 
 /* 刪單據時連同其附件（含各稽核紀錄的附件）一併清除，避免孤兒檔案 */
 function attIdsOf(rec){
@@ -134,8 +140,10 @@ export default async (req) => {
 
     /* 費率書（v22.8）：獨立端點，前端只在設定頁／報表需要時才抓 */
     if(url.searchParams.get("rates")){
-      const r = await s.get(RATES_KEY, { type: "json" });
-      return json(r && r.labor && r.equipment ? r : EMPTY_RATES());
+      const [labor, equipment] = await Promise.all(
+        KINDS.map(k => s.get(ratesKey(k), { type: "json" })));
+      return json({ labor: Array.isArray(labor) ? labor : [],
+                    equipment: Array.isArray(equipment) ? equipment : [] });
     }
 
     await migrateLegacyKeys(s);
@@ -259,35 +267,33 @@ export default async (req) => {
         if(!KINDS.includes(body.kind)) return json({ error: "invalid kind" }, 400);
         if(!isDate(body.effectiveFrom)) return json({ error: "effectiveFrom must be YYYY-MM-DD" }, 400);
         if(!Array.isArray(body.rows) || !body.rows.length) return json({ error: "rows required" }, 400);
-        const cur = (await s.get(RATES_KEY, { type: "json" })) || EMPTY_RATES();
-        if(!Array.isArray(cur[body.kind])) cur[body.kind] = [];
+        const key = ratesKey(body.kind);
+        let books = await s.get(key, { type: "json" });
+        if(!Array.isArray(books)) books = [];
         const book = {
           label: String(body.label || body.effectiveFrom).slice(0, 40),
           effectiveFrom: body.effectiveFrom,
           importedAt: new Date().toISOString().slice(0, 10),
           rows: body.rows
         };
-        cur[body.kind] = cur[body.kind].filter(b => b.effectiveFrom !== book.effectiveFrom);
-        cur[body.kind].push(book);
-        cur[body.kind].sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom));   // 新→舊
-        const dropped = Math.max(0, cur[body.kind].length - RATE_BOOK_MAX);
-        if(dropped) cur[body.kind] = cur[body.kind].slice(0, RATE_BOOK_MAX);
-        await s.setJSON(RATES_KEY, cur);
-        return json({ ok: true, kind: body.kind, dropped,
-          books: cur[body.kind].map(b => ({ label: b.label, effectiveFrom: b.effectiveFrom,
-            importedAt: b.importedAt, rowCount: b.rows.length })) });
+        books = books.filter(b => b.effectiveFrom !== book.effectiveFrom);
+        books.push(book);
+        books.sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom));   // 新→舊
+        const dropped = Math.max(0, books.length - RATE_BOOK_MAX);
+        if(dropped) books = books.slice(0, RATE_BOOK_MAX);
+        await s.setJSON(key, books);
+        return json({ ok: true, kind: body.kind, dropped, books: bookBrief(books) });
       }
 
       case "deleteRateBook": {
         if(!KINDS.includes(body.kind)) return json({ error: "invalid kind" }, 400);
         if(!isDate(body.effectiveFrom)) return json({ error: "effectiveFrom must be YYYY-MM-DD" }, 400);
-        const cur = (await s.get(RATES_KEY, { type: "json" })) || EMPTY_RATES();
-        if(!Array.isArray(cur[body.kind])) cur[body.kind] = [];
-        cur[body.kind] = cur[body.kind].filter(b => b.effectiveFrom !== body.effectiveFrom);
-        await s.setJSON(RATES_KEY, cur);
-        return json({ ok: true,
-          books: cur[body.kind].map(b => ({ label: b.label, effectiveFrom: b.effectiveFrom,
-            importedAt: b.importedAt, rowCount: b.rows.length })) });
+        const key = ratesKey(body.kind);
+        let books = await s.get(key, { type: "json" });
+        if(!Array.isArray(books)) books = [];
+        books = books.filter(b => b.effectiveFrom !== body.effectiveFrom);
+        await s.setJSON(key, books);
+        return json({ ok: true, books: bookBrief(books) });
       }
 
       case "clearSite": {

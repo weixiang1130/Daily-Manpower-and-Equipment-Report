@@ -53,13 +53,16 @@ const cfgKey = s => "cfg2:" + b64e(s);
 const recKey = (s, kind, id) => `rec2:${b64e(s)}:${kind}:${id}`;
 const KINDS = ["labor", "equipment"];
 
-/* 行情通報費率書（v22.8，合約 §4.8）：單一 key，不進 scope=all。
+/* 行情通報費率書（v22.8，合約 §4.8）：不進 scope=all。
    以 effectiveFrom 為季別唯一鍵，保留上限 12 季（三年）。
+   ⚠ **一個 kind 一把 key**：兩種放同一把時，同時匯入租工與機具會是兩個
+   「讀整包→改→寫整包」互相覆蓋，後寫的把先寫的那一半無聲蓋掉。
    ⚠ 與 cloud/functions/api.mjs 為同一份合約的兩個實作，改規則要兩邊一起改。 */
-const RATES_KEY = "rates";
+const ratesKey = kind => "rates:" + kind;
 const RATE_BOOK_MAX = 12;
-const EMPTY_RATES = () => ({ labor: [], equipment: [] });
 const isDate = v => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+const bookBrief = books => books.map(b => ({ label: b.label, effectiveFrom: b.effectiveFrom,
+  importedAt: b.importedAt, rowCount: b.rows.length }));
 
 /* ---------------- 檔案儲存層（對應 Netlify Blobs） ---------------- */
 async function ensureDataDir(){
@@ -172,8 +175,10 @@ async function handleApi(req, res, body, query){
 
     /* 行情通報費率書（v22.8，合約 §2.4）：獨立端點，不進 scope=all */
     if(query.get("rates")){
-      const r = await kvGet(RATES_KEY);
-      return sendJson(res, (r && r.labor && r.equipment) ? r : EMPTY_RATES());
+      const labor = await kvGet(ratesKey("labor"));
+      const equipment = await kvGet(ratesKey("equipment"));
+      return sendJson(res, { labor: Array.isArray(labor) ? labor : [],
+                             equipment: Array.isArray(equipment) ? equipment : [] });
     }
 
     const site = query.get("site");
@@ -286,35 +291,33 @@ async function handleApi(req, res, body, query){
         if(!KINDS.includes(data.kind)) return sendJson(res, { error: "invalid kind" }, 400);
         if(!isDate(data.effectiveFrom)) return sendJson(res, { error: "effectiveFrom must be YYYY-MM-DD" }, 400);
         if(!Array.isArray(data.rows) || !data.rows.length) return sendJson(res, { error: "rows required" }, 400);
-        const cur = (await kvGet(RATES_KEY)) || EMPTY_RATES();
-        if(!Array.isArray(cur[data.kind])) cur[data.kind] = [];
+        const key = ratesKey(data.kind);
+        let books = await kvGet(key);
+        if(!Array.isArray(books)) books = [];
         const book = {
           label: String(data.label || data.effectiveFrom).slice(0, 40),
           effectiveFrom: data.effectiveFrom,
           importedAt: new Date().toISOString().slice(0, 10),
           rows: data.rows
         };
-        cur[data.kind] = cur[data.kind].filter(b => b.effectiveFrom !== book.effectiveFrom);
-        cur[data.kind].push(book);
-        cur[data.kind].sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom));
-        const dropped = Math.max(0, cur[data.kind].length - RATE_BOOK_MAX);
-        if(dropped) cur[data.kind] = cur[data.kind].slice(0, RATE_BOOK_MAX);
-        await kvSet(RATES_KEY, cur);
-        return sendJson(res, { ok: true, kind: data.kind, dropped,
-          books: cur[data.kind].map(b => ({ label: b.label, effectiveFrom: b.effectiveFrom,
-            importedAt: b.importedAt, rowCount: b.rows.length })) });
+        books = books.filter(b => b.effectiveFrom !== book.effectiveFrom);
+        books.push(book);
+        books.sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom));
+        const dropped = Math.max(0, books.length - RATE_BOOK_MAX);
+        if(dropped) books = books.slice(0, RATE_BOOK_MAX);
+        await kvSet(key, books);
+        return sendJson(res, { ok: true, kind: data.kind, dropped, books: bookBrief(books) });
       }
 
       case "deleteRateBook": {
         if(!KINDS.includes(data.kind)) return sendJson(res, { error: "invalid kind" }, 400);
         if(!isDate(data.effectiveFrom)) return sendJson(res, { error: "effectiveFrom must be YYYY-MM-DD" }, 400);
-        const cur = (await kvGet(RATES_KEY)) || EMPTY_RATES();
-        if(!Array.isArray(cur[data.kind])) cur[data.kind] = [];
-        cur[data.kind] = cur[data.kind].filter(b => b.effectiveFrom !== data.effectiveFrom);
-        await kvSet(RATES_KEY, cur);
-        return sendJson(res, { ok: true,
-          books: cur[data.kind].map(b => ({ label: b.label, effectiveFrom: b.effectiveFrom,
-            importedAt: b.importedAt, rowCount: b.rows.length })) });
+        const key = ratesKey(data.kind);
+        let books = await kvGet(key);
+        if(!Array.isArray(books)) books = [];
+        books = books.filter(b => b.effectiveFrom !== data.effectiveFrom);
+        await kvSet(key, books);
+        return sendJson(res, { ok: true, books: bookBrief(books) });
       }
 
       case "clearSite": {

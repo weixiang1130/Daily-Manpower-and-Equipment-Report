@@ -192,7 +192,7 @@ const COL_W = new Map([
   ["已回報單數",62], ["0工單數",62], ["0使用單數",62],
   ["總出工數",62], ["總實際使用時數",68], ["總出工天數",62], ["總加班時數",62],
   /* v22.8 行情通報 */
-  ["計價金額",96], ["未能計價單數",68], ["計價品項",180], ["加班費率品項",180],
+  ["計價金額",96], ["計價組成",220], ["未能計價單數",68], ["計價品項",180], ["加班費率品項",180],
   /* 操作欄：內含按鈕，寬度要能整排放下，不足會擠成兩行。
      實測「編輯申請／編輯回報／刪除」整排需 255px，取 260 留餘裕；
      按鈕數或字數不同的表（如稽核紀錄）以 fixedTableOpen 的 opts.actionW 覆蓋。 */
@@ -2043,7 +2043,7 @@ function doneCols(rep){
 const REPORT_DEFS = {
   labor: {
     title:"點工紀錄",
-    headers:["出工日期","廠商","需求工數","工作內容","工作地點","申請人","狀態","人臉紀錄","白卡紀錄","工具箱紀錄","簽單繳回日","簽單實際出工數","差異","0工確認","簽單責任工程師","加班時數(前2小時)","加班時數(第3小時起)","加班總時數","出工明細(工種)","計價金額","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註","現場查核回饋"],
+    headers:["出工日期","廠商","需求工數","工作內容","工作地點","申請人","狀態","人臉紀錄","白卡紀錄","工具箱紀錄","簽單繳回日","簽單實際出工數","差異","0工確認","簽單責任工程師","加班時數(前2小時)","加班時數(第3小時起)","加班總時數","出工明細(工種)","計價金額","計價組成","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註","現場查核回饋"],
     records: ()=>cur().labor.filter(r=>inReportRange(r.date) && matchReportVendor(r) && matchReportCat(r,"labor") && matchReportEngineer(r,"labor")),
     rows(recs){ return (recs || this.records()).map(r=>{
       const rep = r.report || {};
@@ -2063,7 +2063,7 @@ const REPORT_DEFS = {
         reported ? fmt(seg.otOver) : "",
         reported ? fmt(rep.totalOT) : "",
         laborDetail(rep),
-        reported ? amountCell(laborAmount(r)) : ""      // v22.8 行情通報金額
+        ...(reported ? amountCells(laborAmount(r)) : ["", ""])   // v22.8 金額＋組成
       ].concat(doneCols(rep), [rep.conclusion||""]);
     }); }
   },
@@ -2073,7 +2073,7 @@ const REPORT_DEFS = {
        - 「機具廠商」＝有效廠商（回報優先，見 recVendor）；移除重複的「責任廠商」欄
        - 「預計使用時數(需求數量)」正名為「需求數量(台)」——它一直是台數，欄名寫錯
        - 新增：預定使用時數／申請備註／出工天數／加班時數／實際工作內容 */
-    headers:["出工日期","機具廠商","機具類型","型號","工作內容","工作地點","需求數量(台)","預定使用時數","申請備註","申請人","狀態","簽單繳回日","機具實際工作使用時數","差異","出工天數","加班時數","實際工作內容","計價品項","加班費率品項","計價金額","0使用確認","機具使用明細","簽單責任工程師","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註"],
+    headers:["出工日期","機具廠商","機具類型","型號","工作內容","工作地點","需求數量(台)","預定使用時數","申請備註","申請人","狀態","簽單繳回日","機具實際工作使用時數","差異","出工天數","加班時數","實際工作內容","計價品項","加班費率品項","計價金額","計價組成","0使用確認","機具使用明細","簽單責任工程師","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註"],
     records: ()=>cur().equipment.filter(x=>inReportRange(x.date) && matchReportVendor(x) && matchReportCat(x,"equipment") && matchReportEngineer(x,"equipment")),
     rows(recs){ return (recs || this.records()).map(x=>{
       const rep = x.report || {};
@@ -2091,7 +2091,7 @@ const REPORT_DEFS = {
         reported && rep.diff != null ? fmt(rep.diff) : "",
         reported?fmt(rep.days||0):"", reported?fmt(rep.otHours||0):"", rep.workContent||"",
         rep.rateItem||"", rep.rateOtItem||"",
-        reported ? amountCell(equipAmount(x)) : "",     // v22.8 行情通報金額
+        ...(reported ? amountCells(equipAmount(x)) : ["", ""]),  // v22.8 金額＋組成
         rep.zeroUse?"V":"", usageDetail,
         rep.checker||""
       ].concat(doneCols(rep));
@@ -2249,11 +2249,16 @@ function reportTableHTML(headers, rows){
 function renderReport(key){
   if(!READY) return;
   /* v22.8：費率書不在 scope=all 裡（合約 §2.4），首次進報表才抓；
-     抓到後重繪一次把金額補上。失敗不擋畫面——金額欄會顯示原因 */
-  if(RATES === null){
-    RATES = { labor: [], equipment: [] };          // 先佔位，避免重複發請求
-    loadRates(true).then(()=>{ if(currentReport === key) renderReport(key); })
-      .catch(()=>toast("⚠ 無法載入行情通報費率，金額欄將顯示「無適用季別」"));
+     抓到後重繪一次把金額補上。
+     ⚠ 用獨立旗標防重入，**不可拿空的 RATES 當佔位**——那樣一旦載入失敗，
+     RATES 就永遠是非 null 的空物件、再也不會重試，所有金額都會變成
+     「該出工日無適用季別」，而彙總的金額欄會靜靜地印 0。 */
+  if(RATES === null && !ratesLoading){
+    ratesLoading = true;
+    loadRates(true)
+      .then(()=>{ if(currentReport === key) renderReport(key); })
+      .catch(()=>{ RATES = null; toast("⚠ 無法載入行情通報費率，重新整理報表可再試一次"); })
+      .finally(()=>{ ratesLoading = false; });
   }
   // v19：叫工排名走專用渲染；內容/工程師篩選對排名無意義，一併隱藏
   const isRank = key === "ranking";
@@ -2513,11 +2518,16 @@ async function xlsxRows(arrayBuffer){
   if(!rows.length) throw new Error("這份 Excel 沒有資料");
   const head = rows[0], colOf = {};
   for(const c in head) colOf[c] = String(head[c]).trim();
-  return rows.slice(1).map(cells => {
-    const o = {};
-    for(const c in cells) if(colOf[c]) o[colOf[c]] = cells[c];
-    return o;
-  });
+  /* ⚠ 必須連表頭一起回傳：空儲存格不會出現在資料列裡，若拿第一筆「資料列」
+     去檢查必要欄位，只要那筆的某欄剛好空白就會誤判成「檔案格式不符」 */
+  return {
+    headers: Object.values(colOf),
+    rows: rows.slice(1).map(cells => {
+      const o = {};
+      for(const c in cells) if(colOf[c]) o[colOf[c]] = cells[c];
+      return o;
+    })
+  };
 }
 
 /* Excel 序列日期 → YYYY-MM-DD。
@@ -2532,12 +2542,14 @@ function excelSerialToDate(v){
 }
 const rateNum = s => Number(String(s).replace(/[,\s]/g, "")) || 0;
 
-/* 租工品項 → { work, ot2, otOver }（元）。回傳 null 代表這列不是費率列。
+/* 租工品項 → { work, ot2, otOver, otParsed }（元）。回傳 null 代表這列不是費率列。
    來源檔把費率寫在品項文字裡，有三種寫法：
      打石工3,000元/工、加班前2hr=499元、第3hr起=623元   ← 分兩段
      打石工2,800元/工、加班466元/HR                      ← 單一費率
      打石工2,800元/工、打石工加班466元/HR                ← 前綴帶工種名
-   沒寫「第3hr起」者視為不分段（otOver = ot2）。 */
+   沒寫「第3hr起」者視為不分段（otOver = ot2）。
+   ⚠ otParsed 一定要留著：品項完全沒寫加班費率時 ot2/otOver 會是 0，
+   若不區分「沒寫」與「真的是 0」，有加班時數的單會用 0 元計價卻還算成功。 */
 function parseLaborRateItem(itemText){
   const t = String(itemText || "").replace(/\s+/g, "");
   const mWork = /([\d,]+)元\/工/.exec(t);
@@ -2546,7 +2558,8 @@ function parseLaborRateItem(itemText){
   const m3 = /第3hr起[=＝]([\d,]+)/i.exec(t);
   const mFlat = /加班([\d,]+)元\/HR/i.exec(t);
   const ot2 = m2 ? rateNum(m2[1]) : (mFlat ? rateNum(mFlat[1]) : 0);
-  return { work: rateNum(mWork[1]), ot2, otOver: m3 ? rateNum(m3[1]) : ot2 };
+  return { work: rateNum(mWork[1]), ot2, otOver: m3 ? rateNum(m3[1]) : ot2,
+           otParsed: !!(m2 || m3 || mFlat) };
 }
 
 /* 機具品項 → 計價單位。單位欄雖有 天/HR/月/趟，但同樣是 HR，
@@ -2572,37 +2585,51 @@ function normalizeRateRow(kind, row){
     price: rateNum(row["單位價格"])
   };
   if(!base.vendorCode || !base.item) return null;
+  /* ⚠ 單價 0 或空白一律當成「這列不可用」而非「免費」——rateNum 會把空白、
+     文字都收斂成 0，放行的話報表會印出金額 0，那是計價表上最危險的數字 */
+  if(!(base.price > 0)) return null;
+  base.effectiveFrom = excelSerialToDate(row["生效日期"]);
   if(kind === "labor"){
     const r = parseLaborRateItem(base.item);
     if(!r) return null;                       // 加保加價說明等非費率列
+    if(!(r.work > 0)) return null;
     return Object.assign(base, r);
   }
   return Object.assign(base, { chargeType: classifyEquipItem(base.item, base.unit) });
 }
 
 /* 整份 xlsx → { effectiveFrom, rows, total, skipped } */
-function buildRateBook(kind, rawRows){
+function buildRateBook(kind, parsed){
   const need = ["供應商", "供應商名稱", "單位價格", "品項", "單位", "生效日期"];
-  const miss = need.filter(h => !(h in (rawRows[0] || {})));
+  // 用**表頭**檢查，不可用第一筆資料列——空儲存格不會出現在資料列裡（見 xlsxRows）
+  const miss = need.filter(h => !parsed.headers.includes(h));
   if(miss.length) throw new Error("欄位不符，缺少：" + miss.join("、") + "（請確認是行情通報匯入檔）");
   const rows = [];
   let skipped = 0;
-  for(const r of rawRows){
+  for(const r of parsed.rows){
     const n = normalizeRateRow(kind, r);
     if(n) rows.push(n); else skipped++;
   }
   if(!rows.length) throw new Error("這份檔案解析不出任何費率列");
-  const dates = rawRows.map(r => excelSerialToDate(r["生效日期"])).filter(Boolean);
-  const effectiveFrom = dates.sort()[0] || localDate();
-  return { effectiveFrom, rows, total: rawRows.length, skipped };
+  /* 生效日取**留用列**裡最常見的那個，不可取全部原始列的最小值：
+     被濾掉的非費率列若帶著一個更舊的日期，整季就會被往前挪，
+     而 effectiveFrom 又是伺服器端的季別唯一鍵——會靜默蓋掉上一季 */
+  const tally = new Map();
+  for(const r of rows) if(r.effectiveFrom) tally.set(r.effectiveFrom, (tally.get(r.effectiveFrom) || 0) + 1);
+  const ranked = [...tally.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const effectiveFrom = ranked.length ? ranked[0][0] : localDate();
+  const mixedDates = ranked.length > 1 ? ranked.length : 0;
+  return { effectiveFrom, rows, total: parsed.rows.length, skipped, mixedDates };
 }
 
 /* ---- 費率書快取與查詢 ---- */
-let RATES = null;          // { labor:[book], equipment:[book] }；null＝尚未抓取
+let RATES = null;          // { labor:[book], equipment:[book] }；null＝尚未抓取（失敗也回到 null 以便重試）
+let ratesLoading = false;  // 防重入；不可用「空的 RATES」當佔位（見 renderReport 註解）
 async function loadRates(force){
   if(RATES && !force) return RATES;
-  RATES = await api("GET", null, { rates: "1" });
-  if(!RATES || !RATES.labor) RATES = { labor: [], equipment: [] };
+  const got = await api("GET", null, { rates: "1" });   // 失敗就讓錯誤往上拋，RATES 維持 null
+  RATES = (got && Array.isArray(got.labor) && Array.isArray(got.equipment))
+    ? got : { labor: [], equipment: [] };
   return RATES;
 }
 /* 取「生效日 ≤ 出工日」之中最新的一季（合約 §4.9）。查無回 null——
@@ -2625,9 +2652,12 @@ function fillEquipRateSelects(workDate, selMain, selOt){
   const book = bookFor("equipment", workDate || localDate());
   const code = rateBindings().equipment[vendor];
   const opt = (v, label, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(label)}</option>`;
+  /* 費率書抓不到／未綁定時同樣不能把已存的品項洗掉——保留成唯一選項 */
   const reset = msg => {
-    main.innerHTML = opt("", "（不計價）", "");
-    ot.innerHTML = opt("", "（不計價）", "");
+    const hold = (sel) => opt("", "（不計價）", sel ? "x" : "")
+      + (sel ? opt(sel, `${sel}（目前無費率可對照）`, sel) : "");
+    main.innerHTML = hold(selMain);
+    ot.innerHTML = hold(selOt);
     if(hint) hint.textContent = msg;
   };
   if(!vendor) return reset("請先選機具廠商");
@@ -2637,9 +2667,14 @@ function fillEquipRateSelects(workDate, selMain, selOt){
   if(!rows.length) return reset("本季查無該供應商的品項");
   const otRows = rows.filter(r => r.chargeType === "加班");
   const mainRows = rows.filter(r => r.chargeType !== "加班");
-  main.innerHTML = opt("", "（不計價）", selMain || "")
+  /* 已存的品項若在本季找不到（換季後品項改名），**不可讓它掉回「（不計價）」**
+     ——使用者只要再開一次回報單按儲存，原本選的品項就永久消失了。
+     改成保留成一個標示「本季查無」的選項，由人決定要不要改。 */
+  const keep = (list, sel) => (sel && !list.some(r => r.item === sel))
+    ? opt(sel, `${sel}　⚠ 本季查無此品項`, sel) : "";
+  main.innerHTML = opt("", "（不計價）", selMain || "") + keep(mainRows, selMain)
     + mainRows.map(r => opt(r.item, `${r.item}　${r.price}元/${r.unit}`, selMain || "")).join("");
-  ot.innerHTML = opt("", "（不計價）", selOt || "")
+  ot.innerHTML = opt("", "（不計價）", selOt || "") + keep(otRows, selOt)
     + otRows.map(r => opt(r.item, `${r.item}　${r.price}元/${r.unit}`, selOt || "")).join("");
   if(hint) hint.textContent = `${book.label}（${book.effectiveFrom} 起）：主品項 ${mainRows.length} 項、加班費率 ${otRows.length} 項`;
 }
@@ -2675,6 +2710,9 @@ function laborAmount(r){
     if(!bind) return NO_RATE(`未綁定費率：${row.type}`);
     const rate = book.rows.find(x => x.vendorCode === bind.vendorCode && x.note === bind.note);
     if(!rate) return NO_RATE(`本季查無綁定的費率列：${row.type}`);
+    /* 品項沒寫加班費率、這張單卻有加班時數 → 不可用 0 元帶過去而還算成功 */
+    if((row.ot2 || row.otOver) && !rate.otParsed)
+      return NO_RATE(`有加班時數但行情通報未載明加班費率：${row.type}`);
     const amt = row.work * rate.work + row.ot2 * rate.ot2 + row.otOver * rate.otOver;
     total += amt;
     parts.push(`${row.type} ${fmt(row.work)}工×${rate.work}`
@@ -2697,8 +2735,19 @@ function equipAmount(x){
   if(!main) return NO_RATE("未選計價品項");
   const days = rep.days || 0;
   const ot = rep.otHours || 0;
-  let total = days * main.price;
-  const parts = [`${fmt(days)}${main.unit === "月" ? "月" : "天"}×${main.price}`];
+  /* ⚠ 主品項的計價單位決定要乘哪個數量，不是一律乘天數。
+     行情通報同一台機具會拆成 全天／半天／時租／月租／趟次 多列，
+     全部當成「天數×單價」會把時租單算成 1/8、把月租單算成 22 倍。
+     只有數量依據明確的兩種能自動計價，其餘擋下並說明——
+     半天/月租/趟次 的數量（幾個半天、幾個月、幾趟）系統目前沒有欄位可填。 */
+  let qty, unitLabel;
+  if(main.chargeType === "全天"){ qty = days; unitLabel = "天"; }
+  else if(main.chargeType === "時租"){ qty = rep.actualHours || 0; unitLabel = "小時"; }
+  else return NO_RATE(`所選品項為「${main.chargeType}」計價，系統無對應數量欄位——請改選全天或時租品項`);
+  if(!(qty > 0)) return NO_RATE(`所選品項為「${main.chargeType}」計價，但${unitLabel}數為 0`);
+
+  let total = qty * main.price;
+  const parts = [`${fmt(qty)}${unitLabel}×${main.price}`];
   if(ot){
     const otRow = pick(rep.rateOtItem);
     if(!otRow) return NO_RATE("有加班時數但未選（或查無）加班費率品項");
@@ -2710,6 +2759,9 @@ function equipAmount(x){
 
 /* 報表用：有金額印金額，沒有就印原因（外面加括號以示區別） */
 const amountCell = a => a.amount == null ? `（${a.why}）` : String(a.amount);
+/* 金額 ＋ 計價組成兩格。**組成一定要印出來**——計價紅線 4：報表不能只給一個
+   算完的數字，成本部要能逐項核對「3工×3000＋前2h 2×499」才驗得動。 */
+const amountCells = a => [amountCell(a), a.amount == null ? "" : (a.detail || "")];
 
 /* ---- 設定頁：匯入與綁定 UI ---- */
 let rateImportKind = "labor";
@@ -2809,7 +2861,10 @@ function renderRateBindings(){
         const cur0 = binds.labor[key];
         const sug = suggestVendorCode(p.vendor, lb.rows);
         const opts = lb.rows
-          .filter(r => !sug || r.vendorCode === sug)        // 有唯一建議就只列那家，避免上百筆難選
+          /* 有唯一建議就只列那家，避免上百筆難選；
+             但**已綁定的那家一定要列出來**，否則手動綁到別家的會顯示成「未綁定」，
+             下次儲存就被當成使用者取消而清掉 */
+          .filter(r => !sug || r.vendorCode === sug || (cur0 && r.vendorCode === cur0.vendorCode))
           .map(r => {
             const val = `${r.vendorCode}|${r.note}`;
             const sel = cur0 && cur0.vendorCode === r.vendorCode && cur0.note === r.note;
@@ -2845,20 +2900,32 @@ function renderRateBindings(){
 }
 
 async function saveRateBindings(){
-  const labor = {}, equipment = {};
+  /* ⚠ 必須以既有綁定為底再套用畫面上的異動，不可整包重建：
+     沒渲染出來的區塊（例如本季沒有租工費率書時整個租工區塊不存在）
+     若被當成「使用者清空」，一次儲存就會把另一類的綁定全部抹掉。
+     只有畫面上真的出現的那些鍵才會被更新／刪除。 */
+  const cfgSite = MASTER.currentSite;              // 快照：await 期間若切站不可寫錯站
+  const prev = rateBindings();
+  const labor = Object.assign({}, prev.labor);
+  const equipment = Object.assign({}, prev.equipment);
+  let nL = 0, nE = 0;
   document.querySelectorAll(".rate-bind-labor").forEach(sel => {
-    if(!sel.value) return;
+    nL++;
+    if(!sel.value){ delete labor[sel.dataset.key]; return; }
     const [vendorCode, ...rest] = sel.value.split("|");
     labor[sel.dataset.key] = { vendorCode, note: rest.join("|") };
   });
   document.querySelectorAll(".rate-bind-equip").forEach(sel => {
+    nE++;
     if(sel.value) equipment[sel.dataset.vendor] = sel.value;
+    else delete equipment[sel.dataset.vendor];
   });
-  const cfg = Object.assign({}, cur().config, { rateBindings: { labor, equipment } });
+  if(!nL && !nE){ toast("畫面上沒有可儲存的綁定"); return; }
+  const cfg = Object.assign({}, SITE_CACHE[cfgSite].config, { rateBindings: { labor, equipment } });
   try{
-    await api("POST", { op: "config", site: MASTER.currentSite, config: cfg });
-    cur().config = cfg;
-    toast(`綁定已儲存（租工 ${Object.keys(labor).length} 筆、機具 ${Object.keys(equipment).length} 筆）`);
+    await api("POST", { op: "config", site: cfgSite, config: cfg });
+    SITE_CACHE[cfgSite].config = cfg;
+    toast(`「${cfgSite}」綁定已儲存（租工 ${Object.keys(labor).length} 筆、機具 ${Object.keys(equipment).length} 筆）`);
   }catch(e){ toast("⚠ 儲存失敗，請檢查網路後再試"); }
 }
 
@@ -2869,6 +2936,15 @@ function initRatesPanel(){
   document.getElementById("importLaborRates").addEventListener("click", ()=>pick("labor"));
   document.getElementById("importEquipRates").addEventListener("click", ()=>pick("equipment"));
   fileInput.addEventListener("change", ()=>{ if(fileInput.files[0]) importRateFile(fileInput.files[0]); });
+  /* ⚠ 這裡只掛監聽，不在此渲染：initRatesPanel 在 boot() 之前跑，
+     那時 cur() 還是 undefined，畫出來的會是空的且再也不會更新。
+     實際渲染交給 renderRatesPanel()，由 renderAll() 每次（含切換工地）呼叫。 */
+}
+
+/* 由 renderAll() 呼叫：資料就緒後、以及每次切換工地都要重畫，
+   否則畫面會留著上一個工地的選單，按儲存就把 A 站的綁定寫進 B 站 */
+function renderRatesPanel(){
+  if(!READY || !cur()) return;
   loadRates().then(()=>{ renderRateBooks(); renderRateBindings(); }).catch(()=>{});
 }
 
@@ -4228,6 +4304,7 @@ function renderAll(){
   renderReport(currentReport);
   if(document.getElementById("tab-audit").classList.contains("active")) renderAuditView();
   renderSettings();
+  renderRatesPanel();   // v22.8：含切換工地——綁定選單必須跟著換站重畫
 }
 
 /* ==========================================================

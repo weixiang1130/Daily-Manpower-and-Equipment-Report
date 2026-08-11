@@ -29,6 +29,7 @@ backend/cloud/functions/api.mjs        資料 API（函式內二次驗證同一�
 | `cfg2:<b64url(工地)>` | 該工地基礎資料：vendors/locations/categories/equipTypes/people/workers/laborTypes 陣列 ＋ `lockDate` 字串（**v17 起各站自建，新工地全部名單池皆空**；workers 為 v11 起棄用的舊池，僅相容保留） |
 | `rec2:<b64url(工地)>:<labor\|equipment>:<id>` | 單筆紀錄（父單含子層 `report`、`audits[]`、`attachments[]`） |
 | `att2:<b64url(工地)>:<附件id>` | **附件檔案本體**（二進位＋name/type metadata；v14）——不進單據 JSON，JSON 備份亦不含 |
+| `rates` | **行情通報費率書**（v22.8）：`{labor:[季別], equipment:[季別]}`，以 `effectiveFrom` 為季別唯一鍵、上限 12 季。**刻意不進 `scope=all`**（一季 1,500 列會拖慢每個人開站），走獨立端點 `GET ?rates=1`。工地的綁定存在各站 config 的 `rateBindings` |
 
 - **工地段必須 base64url**：Blobs 後端會解碼 key 中的 `%` 序列，encodeURIComponent 不可靠（節點 10/11 踩過的坑）。舊 `rec:`/`cfg:` 命名空間由 GET 時的 `migrateLegacyKeys()` 一次性搬移。
 - **紀錄結構**：`{ id, date, vendor, applicant, ..., status: "待回報"|"已回報", report: null|{...}, audits: [...], v, updatedAt }`。點工父單的 `workers[]` 為 v11 前的預計進場名單（**v11 起新單一律空陣列**，僅舊單保留）、子層 `report.attendance[]`（逐人 present/work/ot）；機具子層 `report.usage[]`（逐台 present/hours）。`report.zeroWork`/`zeroUse` 為 0 工/0 使用確認旗標。`audits[]`（v13）＝成控現場稽核紀錄（合約 §4.5），查核項目文字可由 config.local.js `auditItems` 覆蓋。
@@ -63,7 +64,8 @@ frontend/                      ★ 前端，唯一對外發布的目錄（netlif
 
 backend/
   cloud/functions/api.mjs      資料 API（op: master/config/record/addOption/deleteRecord/
-                               uploadAttachment/deleteAttachment/clearSite/clearAll ＋ GET ?attachment=）
+                               uploadAttachment/deleteAttachment/rateBook/deleteRateBook/
+                               clearSite/clearAll ＋ GET ?attachment= ＋ GET ?rates=1）
   cloud/edge-functions/auth.ts 整站 Basic Auth
   onprem/server.mjs            可攜式伺服器（零依賴 Node 18+；同一 API 合約＋靜態服務＋Basic Auth）
   onprem/import-backup.mjs     資料遷移（備份 JSON → 地端資料目錄；**不含附件本體**）

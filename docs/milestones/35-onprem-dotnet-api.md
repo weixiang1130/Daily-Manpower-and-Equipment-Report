@@ -297,3 +297,42 @@ ERP 斷線時工地使用者回 503（未退化為全站可見）、成本管理
 - `sites.project_code` 尚未填入正式對映（敏感資訊，不進 repo）；
   且系統現有 **12 個工地**而 `AUTH-PLAN` 記錄的是 **11 站已對映**，差的一站待確認
 - adminPin 與 Basic Auth 尚未移除——待權限正式啟用後才拆（`AUTH-PLAN` §2.5）
+
+---
+
+## 階段 D 續：人資 API 目錄（AD 帳號 → 工號＋部門）實作完成
+
+節點 35 階段 D 當時把「AD 帳號 → 工號＋部門」列為唯一未定案的一段
+（`IEmployeeDirectory` 只有設定檔假名單版）。資訊處的 AD SSO 規格書 v2 提供了
+人員資料 API（`GetEmployeeByAD`）——正好補上這段：以 AD 帳號查得
+`userId`（工號，授權查詢的鍵）、`deptName`（部門，規則 1 依據）、
+`isOnJob`／`leaveDate`（在職判斷）。
+
+### 實作
+
+`HrApiEmployeeDirectory`：POST 人資 API、解析 `data[0]`。以 `Auth:Directory` 切換
+（`config`＝假名單／`hrapi`＝人資 API）。端點／`system`／`apiKey` 一律由環境變數帶入，
+**絕不寫死**；金鑰只由後端持有（規格要求：避免 CORS 且不落地前端）。
+
+- 在職判斷取交集：`isOnJob=="1"` **且** 無 `leaveDate` 才算在職——任一顯示離職即拒
+- API 呼叫失敗（非 2xx）拋例外 → 上層 fail-closed 拒絕，不會誤放行
+- `data` 為空陣列＝查無此人 → 回 403 引導洽資訊處
+
+### 認證方式的抉擇（待資訊處確認主機能否開 Windows 驗證）
+
+規格書用的是 SSO 導轉流程，但其範例直接相信前端送來的 AD 帳號字串——
+不驗 `AccessToken` 即可冒名登入。而規格的 SSO 端點本身即 NTLM，與
+**Windows 整合驗證同源**。故建議正式採 `Auth:Mode=Windows`（主機層驗證、
+無 token 可偽造），而非自行實作 SSO token 驗證。兩條路都不影響已完成的授權邏輯。
+
+### 驗證（9 項全過，去識別化）
+
+本機無網域也連不到內網，故以假人資 API（回傳**與規格書 §7 完全相同的 JSON 形狀**，
+值全為 TEST 假資料）＋權限檢視表替身跑完整鏈路：AD 帳號 → 人資 API 換工號＋部門 →
+查權限 → 授權。涵蓋管理者（部門命中）、工程師（工號→ERP→單站）、跨站、成控、
+在職旗標=0 拒絕、有離職日拒絕、無角色拒絕、查無此人 403、無身分 401。
+
+### 仍待資訊處
+
+- 正式環境端點／`system`／`apiKey`／PRD ERP 連線（實值不進 repo）
+- 主機是否能開 Windows 整合驗證（決定認證方式）

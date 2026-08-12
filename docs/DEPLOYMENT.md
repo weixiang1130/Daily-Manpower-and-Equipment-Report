@@ -94,13 +94,32 @@ GHSA-8prm-248r-h957），改由主機提供身分，本程式只讀取已驗證�
 **② 設定檔。**
 
 ```jsonc
-"Auth": { "Mode": "Windows" },              // Off（預設）／Windows／Dev
+"Auth": {
+  "Mode": "Windows",           // Off（預設）／Windows／Dev
+  "Directory": "hrapi",        // hrapi＝呼叫人資 API 換工號＋部門；config＝設定檔假名單（測試）
+  "HrApi": {                   // 實值改用環境變數帶入，不寫進版控檔（見下）
+    "Url": "", "System": "", "ApiKey": ""
+  }
+},
 "ConnectionStrings": {
-  "KgAudit":    "...",                       // 本系統資料庫
-  "KgAuditErp": "..."                        // ERP 權限檢視表（唯讀），Mode 非 Off 時必填
+  "KgAudit":    "...",         // 本系統資料庫
+  "KgAuditErp": "..."          // ERP 權限檢視表（唯讀），Mode 非 Off 時必填
 }
 ```
-連線字串建議改用環境變數 `KGAUDIT_CONNECTION`／`KGAUDIT_ERP_CONNECTION`，不寫進進版控的檔案。
+
+**機密一律走環境變數**（不寫進進版控的檔案）：
+
+| 環境變數 | 用途 |
+|---|---|
+| `KGAUDIT_CONNECTION` | 本系統資料庫連線 |
+| `KGAUDIT_ERP_CONNECTION` | ERP 權限檢視表（唯讀）連線 |
+| `Auth__HrApi__Url` | 人資 API `GetEmployeeByAD` 端點 |
+| `Auth__HrApi__System` | 呼叫端系統識別名（資訊處配發） |
+| `Auth__HrApi__ApiKey` | 人資 API 金鑰（資訊處配發） |
+
+**身分鏈**：主機層 Windows 驗證取得 AD 帳號 → `GetEmployeeByAD` 換工號＋部門 →
+以工號查 ERP 權限檢視表決定角色與可見工地。人資 API 只能由後端呼叫（金鑰不落地前端）。
+
 角色白名單（哪些 ERP 角色算工地／成控／管理者）也在 `Auth` 區段，ERP 日後新增角色時**改設定即可，免改版**。
 
 **③ 填入專案代碼對映。**

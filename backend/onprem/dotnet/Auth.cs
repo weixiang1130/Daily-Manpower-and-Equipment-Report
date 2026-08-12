@@ -16,6 +16,8 @@
      不會因為部署了新版就突然把人擋在外面。
    ========================================================================== */
 using System.Collections.Concurrent;
+using System.Text;
+using System.Text.Json.Nodes;
 using Microsoft.Data.SqlClient;
 
 namespace KgAudit.Api;
@@ -74,11 +76,26 @@ public sealed class AuthOptions
     /// 授權結果快取分鐘數。權限檢視表約 10 萬列且每日才更新，不必每次呼叫都查
     public int CacheMinutes { get; set; } = 30;
 
+    /// 身分目錄來源：config（設定檔查表，預設，供開發／部署前驗證）｜
+    /// hrapi（呼叫公司人資 API GetEmployeeByAD，見 AD_SSO 規格書 §6）
+    public string Directory { get; set; } = "config";
+
+    /// 人資 API 連線設定。**實值一律由環境變數帶入，不寫進版控檔**——
+    /// 金鑰只由後端持有（規格要求：避免 CORS 且金鑰不落地前端）
+    public HrApiOptions HrApi { get; set; } = new();
+
     /// Dev 模式的假身分表：AD 帳號 → "工號|姓名|部門|在職(1/0，可省略，預設 1)"
     public Dictionary<string, string> DevUsers { get; set; } = new();
 
     public IEnumerable<string> AllRoles() =>
         AdminRoles.Concat(CostControlRoles).Concat(SiteLeadRoles).Concat(SiteUserRoles);
+}
+
+public sealed class HrApiOptions
+{
+    public string Url { get; set; } = "";      // GetEmployeeByAD 端點（內網）
+    public string System { get; set; } = "";   // 呼叫端系統識別名（資訊處配發）
+    public string ApiKey { get; set; } = "";    // API 金鑰（資訊處配發，機密）
 }
 
 /* ---------- ① 認證 ---------- */
@@ -119,7 +136,7 @@ public interface IEmployeeDirectory
     Task<UserIdentity?> LookupAsync(string account);
 }
 
-/// 設定檔查表。給本機開發與資訊處部署前的驗證用；正式環境請換成 LDAP 或人資 API 實作。
+/// 設定檔查表。給本機開發與資訊處部署前的驗證用；正式環境請改用 HrApiEmployeeDirectory。
 public sealed class ConfigEmployeeDirectory(AuthOptions opt) : IEmployeeDirectory
 {
     public Task<UserIdentity?> LookupAsync(string account)
@@ -129,6 +146,51 @@ public sealed class ConfigEmployeeDirectory(AuthOptions opt) : IEmployeeDirector
         return Task.FromResult<UserIdentity?>(
             new UserIdentity(account, p[0].Trim(), p.ElementAtOrDefault(1) ?? account,
                              p.ElementAtOrDefault(2) ?? "", p.ElementAtOrDefault(3)?.Trim() != "0"));
+    }
+}
+
+/// 呼叫公司人資 API（GetEmployeeByAD）以 AD 帳號換取工號＋部門（AD_SSO 規格書 §6）。
+/// 端點／system／apiKey 一律由設定帶入，**絕不寫死**；金鑰只由後端持有。
+/// 回傳的 data[0].userId＝工號（授權查詢的鍵）、deptName＝部門（規則 1 的依據）、
+/// isOnJob／leaveDate＝在職判斷（離職者即使 ERP 權限未清也拒絕）。
+public sealed class HrApiEmployeeDirectory(HrApiOptions opt, HttpClient http) : IEmployeeDirectory
+{
+    // JsonNode 讀字串：欄位可能是 null 或非字串，安全取值避免 GetValue 丟例外
+    static string? S(JsonObject o, string k) =>
+        o[k] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+
+    public async Task<UserIdentity?> LookupAsync(string account)
+    {
+        if (string.IsNullOrWhiteSpace(opt.Url))
+            throw new InvalidOperationException("未設定人資 API 端點（Auth:HrApi:Url）");
+
+        var body = new JsonObject
+        {
+            ["system"] = opt.System,
+            ["apiKey"] = opt.ApiKey,
+            ["sessionId"] = Guid.NewGuid().ToString("N"),   // 配 log 用，規格 §6.1
+            ["id"] = account
+        };
+        using var req = new HttpRequestMessage(HttpMethod.Post, opt.Url)
+        {
+            Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json")
+        };
+        using var resp = await http.SendAsync(req);
+        if (!resp.IsSuccessStatusCode)
+            // 拋出 → 上層 fail-closed 拒絕存取，不會誤放行
+            throw new InvalidOperationException($"人資 API 回應 HTTP {(int)resp.StatusCode}");
+
+        var json = JsonNode.Parse(await resp.Content.ReadAsStringAsync()) as JsonObject;
+        var row = (json?["data"] as JsonArray)?.FirstOrDefault() as JsonObject;
+        if (row is null) return null;   // 查無此人（data 為空）
+
+        var empId = S(row, "userId")?.Trim();
+        if (string.IsNullOrEmpty(empId)) return null;
+
+        // isOnJob=="1" 且無離職日 才算在職；兩者取交集，任一顯示離職即拒絕
+        var onJob = S(row, "isOnJob") == "1" && string.IsNullOrWhiteSpace(S(row, "leaveDate"));
+        return new UserIdentity(account, empId,
+            S(row, "userName") ?? account, S(row, "deptName") ?? "", onJob);
     }
 }
 

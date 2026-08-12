@@ -16,6 +16,12 @@
 - **機具申請可選填廠商**（Scott 要求跟點工一樣）：v22.6 曾把廠商移到回報，現改兩段皆可——申請時已知車行先填（選填），否則回報時再填。資料模型未動，`recVendor()` 仍以回報值優先，先填後改不衝突
 - 驗證：地端 API 供應真實資料，瀏覽器實際操作，涵蓋單台填寫／清空／自動補勾／送出存值／空白攔截／多台加總／申請廠商流轉；全程攔截 fetch 未寫入資料庫
 
+## [節點 35 補強] 2026-08-12 — 人資 API 目錄（AD→工號＋部門）實作完成
+- 階段 D 唯一未定案的一段（AD 帳號 → 工號＋部門）補上：資訊處 AD SSO 規格書 v2 的人員資料 API（`GetEmployeeByAD`）提供工號、部門、在職狀態，正好是判定規則要的三樣
+- `HrApiEmployeeDirectory`：以 `Auth:Directory` 切換（config 假名單／hrapi 人資 API）；端點／system／apiKey 一律環境變數帶入不寫死，金鑰只由後端持有；在職取 isOnJob 與 leaveDate 交集；API 失敗 fail-closed
+- 認證方式建議採 `Auth:Mode=Windows`（主機層驗證、無 token 可偽造）——規格的 SSO 端點本身即 NTLM、同源；避免自行實作 SSO token 驗證的冒名風險。待資訊處確認主機能否開 Windows 驗證
+- 驗證 9 項全過：假人資 API（回傳規格 §7 形狀、值全 TEST）＋權限檢視表替身跑完整鏈路，涵蓋管理者／工程師／跨站／成控／離職兩種／無角色／查無此人／無身分
+
 ## [節點 35] 2026-08-11 — 地端 .NET 8 API 階段 A～D（合約全端點＋權限機制）
 - **先補 v22.8 的 SQL 缺口**：節點 34 改了合約卻沒改 DDL，`rateItem`/`rateOtItem`、各站 `rateBindings`、費率書三樣在 SQL 都沒有落點，照原樣移轉會**靜默消失**。已補 2 欄＋3 表，**11 表 → 14 表 5 VIEW**，遷移工具同步
 - **`backend/onprem/dotnet/`**：.NET 8 Minimal API 實作 `GET ?scope=all`／`GET ?site=`＋同服務供應靜態前端（同源、免 CORS）。不用 EF、直接 ADO.NET；日期一律本地字串（計價紅線 2）

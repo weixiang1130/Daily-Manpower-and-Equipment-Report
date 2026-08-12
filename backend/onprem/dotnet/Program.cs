@@ -365,7 +365,10 @@ IIdentitySource? identitySource = authOpt.Mode switch
     AuthMode.Windows => new WindowsIdentitySource(),
     _ => null
 };
-IEmployeeDirectory directory = new ConfigEmployeeDirectory(authOpt);
+// 身分目錄：config（設定檔查表，預設）｜hrapi（呼叫公司人資 API GetEmployeeByAD）
+IEmployeeDirectory directory = authOpt.Directory == "hrapi"
+    ? new HrApiEmployeeDirectory(authOpt.HrApi, new HttpClient { Timeout = TimeSpan.FromSeconds(10) })
+    : new ConfigEmployeeDirectory(authOpt);
 var authorizer = new Authorizer(authOpt, () => new SqlConnection(ConnStr()), erpDb);
 
 if (authOpt.Mode != AuthMode.Off)

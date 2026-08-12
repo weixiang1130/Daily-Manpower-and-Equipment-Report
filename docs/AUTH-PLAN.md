@@ -34,11 +34,16 @@
 > 網域身分，**沒有 token 可偽造**。連帶不再需要 SSO 端點、apiKey 與前端 `/auth` 路由
 > （§4 第 4 項因此取消，前端維持零修改）。
 >
-> ⚠ **仍未解**：權限檢視表的鍵是**工號**（`UserID`）不是 AD 帳號，中間需要一次
-> 「AD 帳號 → 工號＋部門名稱」對應。兩條路——查 AD 的 `employeeID`／`department`
-> 屬性（零外部依賴），或呼叫人資 API（需資訊處配發 system／apiKey）。
-> 實作已把這一段做成可抽換介面（`IEmployeeDirectory`），兩條路都是換一個實作，
-> 認證與授權不受影響。**待確認公司 AD 是否存有工號與部門。**
+> ✅ **已解（2026-08-12）**：權限檢視表的鍵是**工號**不是 AD 帳號，中間需要一次
+> 「AD 帳號 → 工號＋部門名稱」對應——**資訊處的人員資料 API（`GetEmployeeByAD`）
+> 正好提供**：以 AD 帳號查得 `userId`（工號）、`deptName`（部門，規則 1 依據）、
+> `isOnJob`／`leaveDate`（在職判斷）。已在 `IEmployeeDirectory` 的 `HrApiEmployeeDirectory`
+> 實作並以假 API（回傳規格書的回應形狀）＋權限檢視表替身跑完整鏈路驗證通過。
+> 端點／`system`／`apiKey` 一律由環境變數帶入（機密，不進 repo）。
+>
+> **認證方式待抉擇**：`Auth:Mode=Windows`（主機層 Windows 整合驗證，無 token 可偽造，
+> 直接解 §3 第 7 點）或走規格書的 SSO 導轉流程（需另驗 AccessToken）。
+> 規格的 SSO 端點本身即 NTLM，與 Windows 整合驗證同源，建議採 Windows 模式。
 
 以下為原規畫（導轉式 SSO），保留備查；③授權部分不受影響、仍然有效：
 

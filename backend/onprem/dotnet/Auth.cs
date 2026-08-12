@@ -194,6 +194,29 @@ public sealed class HrApiEmployeeDirectory(HrApiOptions opt, HttpClient http) : 
     }
 }
 
+/// 身分目錄的快取層。人資 API 回傳的工號／部門／在職狀態，變動頻率與授權結果相同，
+/// 但它落在 Authorizer 的快取**之外**——沒有這一層，每一個 /api 請求都會同步打一次
+/// 人資 API（開站的 scope=all 再加上後續每次讀寫各一次）。後果有兩個：
+/// 本系統把自己的流量整批放大到人資系統；而人資 API 一慢或一停，本系統立刻全面 503。
+public sealed class CachingEmployeeDirectory(IEmployeeDirectory inner, int minutes) : IEmployeeDirectory
+{
+    private readonly ConcurrentDictionary<string, (DateTime At, UserIdentity Value)> _cache = new();
+
+    public async Task<UserIdentity?> LookupAsync(string account)
+    {
+        if (_cache.TryGetValue(account, out var hit) &&
+            DateTime.UtcNow - hit.At < TimeSpan.FromMinutes(minutes))
+            return hit.Value;
+
+        // ⚠ 一律轉呼叫 inner，不可回頭走自己或其他來源
+        var v = await inner.LookupAsync(account);
+        /* 查無此人不快取（理由同 Authorizer：新到職者不該被一次失敗鎖住）。
+           inner 拋出的例外（人資 API 不通）也不會進快取——由上層 fail-closed 處理。 */
+        if (v is not null) _cache[account] = (DateTime.UtcNow, v);
+        return v;
+    }
+}
+
 /* ---------- ③ 授權 ---------- */
 public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<SqlConnection>? erpDb)
 {
@@ -210,7 +233,12 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
             return hit.Value;
 
         var authz = await ComputeAsync(user);
-        _cache[user.EmpId] = (DateTime.UtcNow, authz);
+        /* 只快取成功的授權結果。**拒絕的結果不快取**——新到職或剛被加進 ERP 專案的人，
+           若在權限生效前先試登入一次，那次的「拒絕」會被記住，之後即使 ERP 端已經
+           正確授權，他仍會持續看到「您在 ERP 尚無任何專案權限」直到快取過期，
+           而且重登、換瀏覽器都沒用（快取在伺服器端、鍵是工號）。
+           拒絕本來就少見，每次重查的成本可以接受。 */
+        if (authz is not null) _cache[user.EmpId] = (DateTime.UtcNow, authz);
         return authz;
     }
 

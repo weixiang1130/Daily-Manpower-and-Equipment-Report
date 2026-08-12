@@ -26,7 +26,9 @@
              SITE_AUTH_USER/PASS（Basic Auth）、Auth__Mode（Off／Windows／Dev）
    ========================================================================== */
 using System.Data;
+using System.Globalization;
 using System.Text;
+using Microsoft.AspNetCore.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using KgAudit.Api;
@@ -54,6 +56,19 @@ string ConnStr() =>
     ?? app.Configuration.GetConnectionString("KgAudit")
     ?? throw new InvalidOperationException(
         "未設定連線字串：請設環境變數 KGAUDIT_CONNECTION 或 appsettings 的 ConnectionStrings:KgAudit");
+
+/* ---------- 統一的例外出口（必須掛在最前面才攔得到後面全部中介層） ----------
+   沒有這一層時：Production 回一個空白 500，維運從回應完全查不到原因；
+   Development 則會把完整堆疊與 SQL 陳述式直接回給瀏覽器——整站 Basic Auth
+   之後的任何使用者都看得到。這裡一律寫伺服器端日誌、只回固定形狀的 JSON。 */
+app.UseExceptionHandler(b => b.Run(async ctx =>
+{
+    var ex = ctx.Features.Get<IExceptionHandlerFeature>()?.Error;
+    app.Logger.LogError(ex, "未處理的例外：{Method} {Path}", ctx.Request.Method, ctx.Request.Path);
+    ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
+    ctx.Response.ContentType = "application/json; charset=utf-8";
+    await ctx.Response.WriteAsync(new JsonObject { ["error"] = "server error" }.ToJsonString());
+}));
 
 /* ---------- Basic Auth（與 auth.ts／api.mjs 同一邏輯） ----------
    未設定密碼＝不啟用（僅限本機開發；正式環境務必設定）。 */
@@ -89,19 +104,30 @@ static JsonNode? Num(object? v) => v is null or DBNull ? null : JsonValue.Create
 static string? Str(object? v) => v is null or DBNull ? null : (string)v;
 static bool Bit(object? v) => v is not (null or DBNull) && (bool)v;
 
-// 日期一律輸出本地日期字串（合約：YYYY-MM-DD）。**不可經 UTC 轉換**——
-// UTC 會把台灣早上記成前一天，直接改變計價月份歸屬（計價紅線 2）。
-static string? DateStr(object? v) => v is null or DBNull ? null : ((DateTime)v).ToString("yyyy-MM-dd");
+/* 日期一律輸出本地日期字串（合約：YYYY-MM-DD）。**不可經 UTC 轉換**——
+   UTC 會把台灣早上記成前一天，直接改變計價月份歸屬（計價紅線 2）。
+
+   ⚠ 格式化一律指定 InvariantCulture。`yyyy` 取的是 CurrentCulture 的行事曆年份，
+     而 Windows 區域設定可以把 zh-TW 的行事曆改成「中華民國曆」——那樣
+     2026-08-12 會輸出成 0115-08-12，整批日期靜默錯誤且不會拋任何例外。 */
+static string? DateStr(object? v) =>
+    v is null or DBNull ? null : ((DateTime)v).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
 // updatedAt：帶時區位移的 ISO 8601。資料庫存的是本地時間，若當成 UTC 輸出會整整差 8 小時。
 static string? StampStr(object? v) => v is null or DBNull
     ? null
-    : new DateTimeOffset((DateTime)v, TimeZoneInfo.Local.GetUtcOffset((DateTime)v)).ToString("yyyy-MM-ddTHH:mm:sszzz");
+    : new DateTimeOffset((DateTime)v, TimeZoneInfo.Local.GetUtcOffset((DateTime)v))
+        .ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture);
 
 static async Task<List<Dictionary<string, object?>>> Query(SqlConnection cn, string sql, params (string, object?)[] ps)
+    => await QueryTx(cn, null, sql, ps);
+
+/* 交易內的讀取要走同一個交易，否則會被自己持有的 UPDLOCK 擋住而逾時。
+   （區域函式不能多載，所以另取名字而不是寫成 Query 的第二個版本。） */
+static async Task<List<Dictionary<string, object?>>> QueryTx(SqlConnection cn, SqlTransaction? tx, string sql, params (string, object?)[] ps)
 {
     var rows = new List<Dictionary<string, object?>>();
-    await using var cmd = new SqlCommand(sql, cn);
+    await using var cmd = new SqlCommand(sql, cn, tx);
     foreach (var (n, v) in ps) cmd.Parameters.AddWithValue(n, v ?? DBNull.Value);
     await using var rd = await cmd.ExecuteReaderAsync();
     while (await rd.ReadAsync())
@@ -365,9 +391,13 @@ IIdentitySource? identitySource = authOpt.Mode switch
     AuthMode.Windows => new WindowsIdentitySource(),
     _ => null
 };
-// 身分目錄：config（設定檔查表，預設）｜hrapi（呼叫公司人資 API GetEmployeeByAD）
+/* 身分目錄：config（設定檔查表，預設）｜hrapi（呼叫公司人資 API GetEmployeeByAD）。
+   hrapi 一定要包一層快取——否則每個 /api 請求都會同步打一次人資 API。
+   config 是記憶體查表，不需要。 */
 IEmployeeDirectory directory = authOpt.Directory == "hrapi"
-    ? new HrApiEmployeeDirectory(authOpt.HrApi, new HttpClient { Timeout = TimeSpan.FromSeconds(10) })
+    ? new CachingEmployeeDirectory(
+          new HrApiEmployeeDirectory(authOpt.HrApi, new HttpClient { Timeout = TimeSpan.FromSeconds(10) }),
+          authOpt.CacheMinutes)
     : new ConfigEmployeeDirectory(authOpt);
 var authorizer = new Authorizer(authOpt, () => new SqlConnection(ConnStr()), erpDb);
 
@@ -436,13 +466,18 @@ app.MapGet("/api/data", async (HttpContext ctx) =>
     await using var cn = new SqlConnection(ConnStr());
     await cn.OpenAsync();
 
+    /* ⚠ authz 必須在**所有**分支之前取得。
+       原本附件與費率兩個分支寫在取得 authz 之前就 return，等於這兩條路
+       完全沒有經過權限判定——scope=all 那邊辛苦做的 stores 同步過濾與
+       StripAudits 真隔離，會被「知道附件 id 就能下載」整個抵銷掉。 */
+    var az = ctx.Items["authz"] as Authz;
+
     // 合約 §2.3：附件下載（回二進位，不是 JSON）
-    if (q.ContainsKey("attachment")) return await GetAttachment(cn, q["site"].ToString(), q["attachment"].ToString());
+    if (q.ContainsKey("attachment")) return await GetAttachment(cn, q["site"].ToString(), q["attachment"].ToString(), az);
 
     // 合約 §2.4：費率書。**刻意不放進 scope=all**——一季 1,500 列會拖慢每個人開站
+    // 費率書是全域資料（不屬於任何工地），工地使用者的報表也要用它計價，故不另做工地過濾。
     if (q.ContainsKey("rates")) return await GetRates(cn);
-
-    var az = ctx.Items["authz"] as Authz;
 
     var site = q["site"].ToString();
     if (!string.IsNullOrEmpty(site))
@@ -489,17 +524,31 @@ app.MapPost("/api/data", async (HttpContext ctx) =>
     var op = Sx(body, "op") ?? "";
 
     /* 寫入端的權限把關（AUTH-PLAN §3 第 2／4 點）。
-       ⚠ 只靠前端隱藏按鈕不算數——直接 POST 就繞過去了。 */
+       ⚠ 只靠前端隱藏按鈕不算數——直接 POST 就繞過去了。
+
+       每個 op 必須在 Wr.OpScopes 裡**明確宣告**所需範圍，未登記的一律拒絕。
+       原本的寫法是「body 裡有 site 才檢查」——那是「有宣告才把關」，
+       呼叫者只要不送 site 欄位，整段授權就被跳過（附件的上傳與刪除正是
+       這樣漏掉的）。改成預設拒絕後，日後新增 op 若忘了登記，會在測試階段
+       就被擋下，而不是安靜地取得跨工地權限。 */
     if (ctx.Items["authz"] is Authz az)
     {
-        // 全域設定與破壞性操作限系統管理者，一併解決「伺服器端無權限分級」的安審遺留
-        if (op is "master" or "config" or "clearSite" or "clearAll" or "rateBook" or "deleteRateBook" && !az.IsAdmin)
-            return Results.Json(new { error = "forbidden", message = "此操作限系統管理者" }, statusCode: 403);
+        switch (Wr.OpScopes.TryGetValue(op, out var sc) ? sc : OpScope.Deny)
+        {
+            case OpScope.Admin when !az.IsAdmin:
+                return Results.Json(new { error = "forbidden", message = "此操作限系統管理者" }, statusCode: 403);
 
-        // 其餘與單一工地相關的操作：檢查該站是否在權限內
-        var target = Sx(body, "site");
-        if (target is not null && !az.CanSee(target))
-            return Results.Json(new { error = "forbidden", message = "您沒有這個工地的權限" }, statusCode: 403);
+            case OpScope.Site:
+                // 工地是必填：沒有工地就無從判定範圍，擋下而不是放行
+                var target = Sx(body, "site");
+                if (target is null) return Results.Json(new { error = "site required" }, statusCode: 400);
+                if (!az.CanSee(target))
+                    return Results.Json(new { error = "forbidden", message = "您沒有這個工地的權限" }, statusCode: 403);
+                break;
+
+            case OpScope.Deny:
+                return Results.Json(new { error = "unknown op" }, statusCode: 400);
+        }
     }
 
     await using var cn = new SqlConnection(ConnStr());
@@ -507,7 +556,16 @@ app.MapPost("/api/data", async (HttpContext ctx) =>
 
     switch (op)
     {
-        case "master": return await OpMaster(cn, body);
+        case "master":
+        {
+            var r = await OpMaster(cn, body);
+            /* 工地清單變動會改變授權結果（ComputeAsync 只看 is_active=1 的站），
+               不清快取的話新工地對已登入的工地使用者最多 30 分鐘不會出現，
+               現場會誤判成「權限沒設好」而重複回報。
+               op:config 不需要——它不碰 is_active 與 project_code。 */
+            authorizer.Invalidate();
+            return r;
+        }
         case "config": return await OpConfig(cn, body);
         case "record": return await OpRecord(cn, body);
         case "addOption": return await OpAddOption(cn, body);
@@ -553,7 +611,11 @@ static decimal? Dx(JsonNode? o, string k)
     var v = o?[k];
     if (v is null) return null;
     if (v.GetValueKind() == JsonValueKind.Number) return v.GetValue<decimal>();
-    return v.GetValueKind() == JsonValueKind.String && decimal.TryParse(v.GetValue<string>(), out var d) ? d : null;
+    // JSON 的數字字面一律是 invariant 格式，解析也必須用 invariant——
+    // 小數點符號不同的地區設定會把 "8.5" 讀成 null（靜默變成沒填）
+    return v.GetValueKind() == JsonValueKind.String
+           && decimal.TryParse(v.GetValue<string>(), NumberStyles.Number, CultureInfo.InvariantCulture, out var d)
+        ? d : null;
 }
 static decimal D0(JsonNode? o, string k) => Dx(o, k) ?? 0m;
 static bool Bx(JsonNode? o, string k) => o?[k]?.GetValueKind() == JsonValueKind.True;
@@ -735,6 +797,17 @@ static async Task DeleteRecordRows(SqlConnection cn, SqlTransaction tx, int sid,
         ? ("labor_records", "labor_reports", "labor_report_worktypes", "record_id", "labor_audits", "labor_audit")
         : ("equip_records", "equip_reports", "equip_report_usage", "record_id", "equip_audits", "equip_audit");
 
+    /* ⚠ 跨工地守衛，不可省略。
+       單據 id 是**全域主鍵**（DB-SCHEMA.sql：PK_labor / PK_equip 只有 id），
+       而下面三張子表只以 record_id 為鍵——父表那道 site_id 條件擋得住父列，
+       擋不住子列。少了這道守衛，帶著別站的 id ＋自己有權限的工地名呼叫
+       op:deleteRecord，就會刪掉別站的回報、逐工種明細與成控稽核紀錄，
+       而且交易正常提交、不報任何錯。
+       子表都有 ON DELETE CASCADE 指向父表，所以「父列不在本站」就等於
+       「本站沒有任何該刪的東西」，直接返回是安全的。 */
+    var owned = await Scalar(cn, tx, $"SELECT 1 FROM dbo.{recT} WHERE id=@id AND site_id=@s", ("@id", id), ("@s", sid));
+    if (owned is null) return;
+
     await Exec(cn, tx,
         $@"DELETE FROM dbo.attachments
            WHERE site_id=@s AND ((parent_kind=@pk AND parent_id=@id)
@@ -744,6 +817,47 @@ static async Task DeleteRecordRows(SqlConnection cn, SqlTransaction tx, int sid,
     await Exec(cn, tx, $"DELETE FROM dbo.{childT} WHERE {childCol}=@id", ("@id", id));
     await Exec(cn, tx, $"DELETE FROM dbo.{repT} WHERE record_id=@id", ("@id", id));
     await Exec(cn, tx, $"DELETE FROM dbo.{recT} WHERE id=@id AND site_id=@s", ("@id", id), ("@s", sid));
+}
+
+/* ---------- 合約 §4.7 日期防呆（伺服器端） ----------
+   合約明訂「目前僅前端強制。地端 API 應在伺服器端重做同樣檢查——前端驗證
+   擋得住誤填，擋不住直接打 API」。這兩個欄位最容易被拿來製造「有按時出工／
+   按時繳回」的假象，是計價會採信的依據。
+
+   ⚠ 只在這次請求**真的改動**了出工日或簽單繳回日時才驗證。原因：
+     前端只在「回報送出」那兩處檢查（app.js 的 reportTimingError／signReturnError），
+     成控**稽核儲存並不經過**——而稽核儲存同樣是整筆 op:record 覆寫。
+     若對每一次寫入都驗，成控就無法對既有的違規舊單建稽核紀錄。
+     （正式資料實測：1,120 筆單據中有 1 筆繳回日超期。）
+   原樣重送放行、任何想把值設成違規的請求一律擋下，兩邊都顧到。 */
+static string? DateGuardError(JsonObject rec, string? storedDate, string? storedSrd)
+{
+    if (rec["report"] is not JsonObject rep) return null;   // 沒有回報就不適用
+
+    var dateStr = Sx(rec, "date");
+    var srdStr = Sx(rep, "signReturnDate");
+    if (string.Equals(dateStr, storedDate, StringComparison.Ordinal)
+        && string.Equals(srdStr, storedSrd, StringComparison.Ordinal)) return null;
+
+    // 出工日缺漏或格式不符由資料表的 DATE NOT NULL 把關，這裡不重複判斷
+    if (!DateOnly.TryParseExact(dateStr ?? "", "yyyy-MM-dd",
+            CultureInfo.InvariantCulture, DateTimeStyles.None, out var wd)) return null;
+
+    if (wd > DateOnly.FromDateTime(DateTime.Now))
+        return $"出工日期（{dateStr}）還沒到，無法回報——回報必須在出工當天或之後";
+
+    if (srdStr is null) return null;
+    if (!DateOnly.TryParseExact(srdStr, "yyyy-MM-dd",
+            CultureInfo.InvariantCulture, DateTimeStyles.None, out var sd))
+        return $"簽單繳回日（{srdStr}）格式不正確";
+    if (sd < wd)
+        return $"簽單繳回日（{srdStr}）早於出工日期（{dateStr}）——簽單不可能在出工前繳回";
+
+    var deadline = wd.AddDays(Wr.SignReturnMaxDays);
+    if (sd > deadline)
+        return $"簽單繳回日（{srdStr}）已超過出工日後 {Wr.SignReturnMaxDays} 天的期限"
+             + $"（最晚 {deadline.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}），逾期不予採計";
+    return null;
 }
 
 /* ---------- §3.3 op:record ★核心（含樂觀並發） ---------- */
@@ -760,14 +874,20 @@ static async Task<IResult> OpRecord(SqlConnection cn, JsonObject body)
     var baseV = (int)D0(body, "baseV");
 
     var recT = kind == "labor" ? "labor_records" : "equip_records";
+    var repT = kind == "labor" ? "labor_reports" : "equip_reports";
 
     /* 整段包在一個交易裡。UPDLOCK+HOLDLOCK 讓「讀版本 → 比對 → 覆寫」成為
        不可分割的臨界區：兩人同時送出時後者會等前者提交，讀到新的 v 而正確吃到 409。
        若只做 SELECT 再 UPDATE，兩人可能都讀到舊 v 而雙雙寫入——409 就形同虛設。 */
     await using var tx = (SqlTransaction)await cn.BeginTransactionAsync(IsolationLevel.ReadCommitted);
     var sid = await SiteId(cn, tx, site);
-    var curV = await Scalar(cn, tx,
-        $"SELECT v FROM dbo.{recT} WITH (UPDLOCK, HOLDLOCK) WHERE id=@id AND site_id=@s", ("@id", id), ("@s", sid));
+    // 版本與「目前存著的兩個日期」一次讀出來——後者是 §4.7 判斷「這次有沒有改到日期」的基準
+    var cur = await QueryTx(cn, tx,
+        $@"SELECT r.v, r.work_date, rp.sign_return_date
+           FROM dbo.{recT} r WITH (UPDLOCK, HOLDLOCK)
+           LEFT JOIN dbo.{repT} rp ON rp.record_id = r.id
+           WHERE r.id=@id AND r.site_id=@s", ("@id", id), ("@s", sid));
+    var curV = cur.Count == 0 ? null : cur[0]["v"];
 
     // 合約 §3.3：版本不符→modified；紀錄不存在但宣告基準>0→deleted。語意不可改。
     if (curV is null)
@@ -777,11 +897,30 @@ static async Task<IResult> OpRecord(SqlConnection cn, JsonObject body)
             await tx.RollbackAsync();
             return Results.Json(new { error = "conflict", reason = "deleted" }, statusCode: 409);
         }
+        /* 這個 id 在別的工地已經存在（id 是全域主鍵）。不擋的話會走到下面的
+           INSERT 撞 PK 而丟出 500，訊息對使用者毫無意義；直接講清楚。 */
+        var elsewhere = await Scalar(cn, tx, $"SELECT 1 FROM dbo.{recT} WHERE id=@id", ("@id", id));
+        if (elsewhere is not null)
+        {
+            await tx.RollbackAsync();
+            return Results.Json(new { error = "conflict", reason = "modified",
+                message = "此單據 id 已存在於其他工地" }, statusCode: 409);
+        }
     }
     else if (Convert.ToInt32(curV) != baseV)
     {
         await tx.RollbackAsync();
         return Results.Json(new { error = "conflict", reason = "modified" }, statusCode: 409);
+    }
+
+    // 合約 §4.7 日期防呆（伺服器端重做，前端擋不住直接打 API）
+    var dateErr = DateGuardError(rec,
+        cur.Count == 0 ? null : DateStr(cur[0]["work_date"]),
+        cur.Count == 0 ? null : DateStr(cur[0]["sign_return_date"]));
+    if (dateErr is not null)
+    {
+        await tx.RollbackAsync();
+        return Results.Json(new { error = "invalid date", message = dateErr }, statusCode: 400);
     }
 
     var newV = baseV + 1;
@@ -964,26 +1103,44 @@ static async Task SyncAttachments(SqlConnection cn, SqlTransaction tx, int sid, 
    ——這些檔案上傳後就不再變動，也不需要交易保護。
    ⚠ 檔名一律用已驗證格式的 attachment_id（^[A-Za-z0-9_-]{1,64}$），
      所以不可能出現 ".." 或路徑分隔字元——路徑穿越在來源就被擋掉了。 */
-static string AttachDir()
+// 解析一次就好，見 Wr.AttachRoot 的說明
+static string AttachDir() => Wr.AttachRoot;
+
+/* 附件的跨工地守衛（合約 §3.6／§3.7 的請求都帶 site，但 site 是**宣告**不是憑證）。
+
+   描述資料那一列若存在，它的 site_id 才是唯一權威——宣告的工地對不上就擋下。
+   列不存在時放行是刻意的：前端的兩個正常流程都會在「沒有列」的狀態下呼叫這兩個 op
+     上傳：先 uploadAttachment 落檔 → 再存單才建立描述資料
+     刪除：先存單（被移除的附件當下就從資料表消失）→ 再 deleteAttachment 刪檔
+   而要讓**別站**的附件變成「沒有列」，本來就得先有那一站的寫入權限，
+   所以這個放行不會成為繞道。 */
+static async Task<bool> AttachSiteMismatch(SqlConnection cn, string id, string? site)
 {
-    var dir = Environment.GetEnvironmentVariable("ATTACH_DIR")
-        ?? Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "data", "attachments");
-    dir = Path.GetFullPath(dir);
-    Directory.CreateDirectory(dir);
-    return dir;
+    if (site is null) return true;   // 合約要求帶 site；沒帶就無從判定，擋下
+    var owner = await Scalar(cn, null,
+        @"SELECT s.name FROM dbo.attachments a JOIN dbo.sites s ON s.site_id = a.site_id
+          WHERE a.attachment_id = @id", ("@id", id));
+    return owner is not null && !string.Equals((string)owner, site, StringComparison.Ordinal);
 }
 
-static async Task<IResult> GetAttachment(SqlConnection cn, string site, string id)
+static async Task<IResult> GetAttachment(SqlConnection cn, string site, string id, Authz? az)
 {
     if (!Wr.IdRe.IsMatch(id)) return Results.Json(new { error = "bad id" }, statusCode: 400);
     var rows = await Query(cn,
-        @"SELECT a.name, a.content_type, a.file_path FROM dbo.attachments a
+        @"SELECT s.name AS owner_site, a.name, a.content_type, a.file_path FROM dbo.attachments a
           JOIN dbo.sites s ON s.site_id = a.site_id
           WHERE a.attachment_id = @id AND (@site = '' OR s.name = @site)",
         ("@id", id), ("@site", site ?? ""));
     if (rows.Count == 0) return Results.Json(new { error = "not found" }, statusCode: 404);
 
     var r = rows[0];
+    /* 權限一律以**描述資料所記的所屬工地**判定，不可信呼叫者送來的 site：
+       上面的 @site 條件允許空字串（前端有些呼叫不帶工地），所以它擋不住
+       「不帶 site ＋知道附件 id」這條路。稽核照片只有成控看得到，
+       附件是它們的載體，這裡漏掉就等於稽核隔離沒做。 */
+    if (az is not null && !az.CanSee(Str(r["owner_site"]) ?? ""))
+        return Results.Json(new { error = "forbidden", message = "您沒有這個工地的權限" }, statusCode: 403);
+
     var rel = Str(r["file_path"]);
     var path = rel is null ? null : Path.Combine(AttachDir(), rel);
     if (path is null || !File.Exists(path))
@@ -1011,6 +1168,13 @@ static async Task<IResult> OpUploadAttachment(SqlConnection cn, JsonObject body)
     if (bytes.Length > Wr.AttachMaxBytes)
         return Results.Json(new { error = "too large", limit = Wr.AttachMaxBytes, size = bytes.Length }, statusCode: 400);
 
+    /* ⚠ 落檔是**覆寫**不是新建。少了這道守衛，帶著別站既有的附件 id 上傳，
+       就能把該站的簽單照片內容整個換掉，而描述資料（檔名、大小、上傳日）不變
+       ——畫面上完全看不出來，對成控稽核等同證據遭竄改且無痕跡。 */
+    var site = Sx(body, "site");
+    if (await AttachSiteMismatch(cn, id, site))
+        return Results.Json(new { error = "forbidden", message = "此附件不屬於指定工地" }, statusCode: 403);
+
     // 先落檔。描述資料的那一列由後續的 op:record 建立（前端是「先上傳、再存單」），
     // 所以這裡**不碰資料表**——此時還不知道它要掛在哪一張單下。
     await File.WriteAllBytesAsync(Path.Combine(AttachDir(), id), bytes);
@@ -1028,9 +1192,15 @@ static async Task<IResult> OpDeleteAttachment(SqlConnection cn, JsonObject body)
     var id = Sx(body, "id");
     if (id is null || !Wr.IdRe.IsMatch(id)) return Results.Json(new { error = "bad id" }, statusCode: 400);
 
-    /* ⚠ 只憑 id 刪實體檔案，**不可依賴描述資料那一列還在**。
+    /* 描述資料還在的話，先確認它屬於宣告的工地——否則帶著別站的附件 id
+       就能連檔案帶描述資料一起刪掉，而且交易正常提交、不報任何錯。 */
+    var site = Sx(body, "site");
+    if (await AttachSiteMismatch(cn, id, site))
+        return Results.Json(new { error = "forbidden", message = "此附件不屬於指定工地" }, statusCode: 403);
+
+    /* ⚠ 過了上面那道之後，這裡**不可依賴描述資料那一列還在**才刪檔。
        前端的順序是「先存單（被移除的附件當下就從資料表消失）、再呼叫本 op」，
-       若這裡要先查表才刪檔，那些檔案會全部變成孤兒永遠留在磁碟上。 */
+       若要先查表才刪檔，那些檔案會全部變成孤兒永遠留在磁碟上。 */
     var path = Path.Combine(AttachDir(), id);
     if (File.Exists(path)) File.Delete(path);
     await Exec(cn, null, "DELETE FROM dbo.attachments WHERE attachment_id = @id", ("@id", id));
@@ -1108,7 +1278,7 @@ static async Task<IResult> OpRateBook(SqlConnection cn, JsonObject body)
         @"INSERT INTO dbo.rate_books (kind, label, effective_from, imported_at)
           OUTPUT INSERTED.rate_book_id VALUES (@k, @l, @e, @i)",
         ("@k", kind), ("@l", Trunc(Sx(body, "label") ?? eff, 40)), ("@e", eff),
-        ("@i", DateTime.Now.ToString("yyyy-MM-dd"))));
+        ("@i", DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))));
 
     var kept = 0;
     foreach (var r in rows)
@@ -1174,18 +1344,17 @@ static async Task<List<object>> BookBrief(SqlConnection cn, SqlTransaction tx, s
         list.Add(new
         {
             label = rd.GetString(0),
-            effectiveFrom = rd.GetDateTime(1).ToString("yyyy-MM-dd"),
-            importedAt = rd.GetDateTime(2).ToString("yyyy-MM-dd"),
+            effectiveFrom = rd.GetDateTime(1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            importedAt = rd.GetDateTime(2).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             rowCount = rd.GetInt32(3)
         });
     return list;
 }
 
 /* ---------- §3.8 op:clearSite / op:clearAll（危險操作） ----------
-   ⚠ 合約現行版本對這兩個 op **沒有伺服器端權限檢查**，這裡維持相同行為以求
-     前後端一致。這是已知的安審遺留項（建議加 ADMIN_TOKEN 或併入階段 D 的
-     SSO 權限），**尚待決策**——不在本階段單方面加，否則地端與雲端行為分歧，
-     過渡期兩邊並行會出現「同一操作在雲端可以、在地端不行」。 */
+   權限：階段 D 起已列入 Wr.OpScopes 的 Admin 範圍，**Auth:Mode≠Off 時限系統管理者**
+   ——這正是安審遺留的「破壞性操作無伺服器端權限分級」。
+   Auth:Mode=Off（預設／過渡期）時仍與雲端一致由整站 Basic Auth 把守。 */
 static async Task<IResult> OpClear(SqlConnection cn, JsonObject body, bool all)
 {
     var site = Sx(body, "site");
@@ -1260,7 +1429,47 @@ static class Wr
 
     /* 每個 kind 最多保留幾季（合約 §3.9）：三年 */
     public const int RateBookMax = 12;
+
+    /* op → 所需權限範圍。**新增 op 一定要在這裡登記**，否則會被判為 Deny。
+       Admin＝全域設定與破壞性操作；Site＝需對 body 的 site 有權限。 */
+    public static readonly IReadOnlyDictionary<string, OpScope> OpScopes =
+        new Dictionary<string, OpScope>(StringComparer.Ordinal)
+        {
+            ["master"] = OpScope.Admin,
+            ["config"] = OpScope.Admin,
+            ["clearSite"] = OpScope.Admin,
+            ["clearAll"] = OpScope.Admin,
+            ["rateBook"] = OpScope.Admin,
+            ["deleteRateBook"] = OpScope.Admin,
+            ["record"] = OpScope.Site,
+            ["addOption"] = OpScope.Site,
+            ["deleteRecord"] = OpScope.Site,
+            ["uploadAttachment"] = OpScope.Site,
+            ["deleteAttachment"] = OpScope.Site
+        };
+
+    /* 簽單繳回日的期限天數（合約 §4.7，與前端常數 SIGN_RETURN_MAX_DAYS 同值） */
+    public const int SignReturnMaxDays = 20;
+
+    /* 附件根目錄，**程序生命期內只解析一次**。
+       原本每次呼叫 AttachDir() 都做一次 Path.GetFullPath ＋ Directory.CreateDirectory
+       系統呼叫，而它被放在逐筆附件的迴圈裡（SyncAttachments 在 op:record 的交易之中），
+       等於在持有 UPDLOCK／HOLDLOCK 的臨界區內做多餘的檔案系統 I/O，拉長鎖定時間、
+       墊高並發下的等待。目錄在執行期間不會改變，沒有重算的理由。 */
+    public static readonly string AttachRoot = InitAttachRoot();
+
+    static string InitAttachRoot()
+    {
+        var dir = Environment.GetEnvironmentVariable("ATTACH_DIR")
+            ?? Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "data", "attachments");
+        dir = Path.GetFullPath(dir);
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
 }
+
+/* op 的權限範圍。Deny 是預設值——沒登記就是拒絕，不是放行。 */
+enum OpScope { Deny, Admin, Site }
 
 /* 合約 §2.3 明訂附件下載要 inline＋UTF-8 檔名，Results.Bytes 沒辦法自訂
    Content-Disposition 的 filename*，所以自己寫一個 IResult。 */

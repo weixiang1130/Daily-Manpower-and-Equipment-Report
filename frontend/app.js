@@ -1538,7 +1538,11 @@ function initEquipReportForm(){
     if(!cb) return;
     const i = parseInt(cb.dataset.i,10);
     usageState[i].present = cb.checked;
-    if(cb.checked && !(usageState[i].hours > 0)) usageState[i].hours = 8;
+    /* v22.9：勾選**不預填時數**。改版前預設 8 小時，而總計欄位是唯讀的（逐台加總），
+       使用者看到的就是「一勾就鎖 8 小時」——申請 4 小時、實際只用 1 小時的單子，
+       只要沒人特地去改逐台欄位就會以 8 小時進計價（時租品項直接乘上去）。
+       系統不猜數字，讓工地依實際使用情形填。 */
+    if(!cb.checked) usageState[i].hours = null;
     renderUsage();
     syncTotalsFromUsage();
   });
@@ -1546,7 +1550,9 @@ function initEquipReportForm(){
     const el = e.target;
     const i = parseInt(el.dataset.i,10);
     if(Number.isNaN(i)) return;
-    if(el.classList.contains("usage-hours")) usageState[i].hours = parseFloat(el.value)||0;
+    // 空白＝還沒填（送出時擋下），0＝確實填了 0（走既有的異常警告）——兩者不可混為一談
+    if(el.classList.contains("usage-hours"))
+      usageState[i].hours = el.value.trim() === "" ? null : (parseFloat(el.value) || 0);
     syncTotalsFromUsage();
   });
 
@@ -1585,6 +1591,19 @@ function initEquipReportForm(){
     const days = parseFloat(document.getElementById("e_days").value) || 0;
     const otHours = parseFloat(document.getElementById("e_otHours").value) || 0;
 
+    /* v22.9：勾了到場卻沒填時數就擋下來。**空白與 0 是兩件事**——
+       0 是「確實填了 0」（走下面的異常警告可確認送出），空白是還沒填，
+       放行會靜默變成 0 小時進計價。
+       ⚠ 必須擺在下面「時數為 0」那道之前：單台機具沒填時總計也是 0，
+         會先被那道攔下而叫使用者去勾「0 使用確認」——那是錯的指引。 */
+    if(!zeroUse){
+      const blank = usageState.filter(u=>u.present && u.hours == null).map(u=>u.type);
+      if(blank.length){
+        toast(`請填寫實際使用時數：${blank.join("、")}`);
+        return;
+      }
+    }
+
     if(actualHours === 0 && !zeroUse){
       toast("實際使用時數為 0：若機具確實未到場／未使用，請先勾選「0 使用確認」再送出");
       return;
@@ -1611,7 +1630,7 @@ function initEquipReportForm(){
       report: {
         reportedAt: localDate(),
         checker,
-        usage: usageState.map(u=>({type:u.type, present:u.present, hours:u.present?u.hours:0})),
+        usage: usageState.map(u=>({type:u.type, present:u.present, hours:u.present?(u.hours ?? 0):0})),
         actualHours,
         // v22.6：差異＝實際時數 − **預定時數**。改版前是減 requiredQty（台數），
         // 等於拿時數減台數，算出來的差異沒有意義。舊單沒有預定時數 → null（不比較）
@@ -1690,7 +1709,7 @@ function renderUsage(){
     <div class="att-row ${u.present?'present':''}">
       <label class="att-check"><input type="checkbox" data-i="${i}" ${u.present?'checked':''} ${zero?'disabled':''}><span>${esc(u.type)}</span></label>
       <div class="att-fields" ${u.present?'':'style="visibility:hidden;"'}>
-        <label>使用時數<input type="number" class="usage-hours" data-i="${i}" step="0.5" min="0" value="${u.hours}" ${zero?'disabled':''}></label>
+        <label>使用時數<input type="number" class="usage-hours" data-i="${i}" step="0.5" min="0" placeholder="請填寫" value="${u.hours ?? ""}" ${zero?'disabled':''}></label>
       </div>
     </div>`).join("");
 }
@@ -1759,7 +1778,8 @@ async function loadEquipReportRecord(id){
   const prev = (rec.report && rec.report.usage) || [];
   usageState = (rec.types||[]).map(type=>{
     const p = prev.find(x=>x.type===type);
-    return p ? {type, present:!!p.present, hours:p.hours||0} : {type, present:false, hours:8};
+    // v22.9：未回報過的機具**不預填時數**（改版前是 8），避免沒人改就以 8 小時計價
+    return p ? {type, present:!!p.present, hours:p.hours ?? null} : {type, present:false, hours:null};
   });
 
   // v22.6：申請單不再必有廠商；改秀「預定使用時數」——回報要跟它比對差異

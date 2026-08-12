@@ -1405,9 +1405,9 @@ function initEquipApplyForm(){
     const rec = {
       id: editingEquipApplyId || uid(),
       date, applicant, types,
-      // v22.6：申請表單不再填廠商（改於回報填）。編輯舊單時原值必須原樣承繼，
-      // 否則按一次「編輯申請」就會把既有廠商洗成空字串
-      vendor: existing ? (existing.vendor || "") : "",
+      // v22.9.1：申請時可選填廠商（已知車行就先填）。留白＝待回報時再填，
+      // 沿用 v22.6 的「統一叫車再配車」流程。計價分組一律走 recVendor()（回報值優先）
+      vendor: getCombo("cb_e_applyVendor"),
       model: document.getElementById("e_model").value.trim(),
       requiredQty,
       plannedHours,
@@ -1458,6 +1458,7 @@ function resetEquipApplyForm(){
   document.getElementById("equipApplyForm").reset();
   document.getElementById("e_date").valueAsDate = new Date(Date.now()+86400000);
   document.getElementById("e_requiredQty").value = 1;
+  setCombo("cb_e_applyVendor", "");   // v22.9.1
   setCombo("cb_e_applicant", "");
   setTags("e_type", []);
   setTags("e_locations", []);
@@ -1483,6 +1484,7 @@ async function loadEquipApplyRecord(id){
   editingEquipApplyBaseV = rec.v || 0;   // v18：版本快照，送出以此為 baseV
 
   document.getElementById("e_date").value = rec.date;
+  setCombo("cb_e_applyVendor", rec.vendor || "");   // v22.9.1：帶回申請時填的廠商（可能為空）
   setCombo("cb_e_applicant", rec.applicant);
   setTags("e_type", rec.types);
   document.getElementById("e_model").value = rec.model || "";
@@ -1519,7 +1521,21 @@ let editingEquipReportBaseV = 0;
 let usageState = [];
 
 function initEquipReportForm(){
-  document.getElementById("e_actualHours").addEventListener("input", updateEquipDiff);
+  /* v22.9.1：單台機具時「實際使用時數」直接可編輯，輸入即寫回該台。
+     正式資料中一張多類型機具單都沒有，計價（時租）用的也是這個總時數而非逐台，
+     所以單台情形不再要求去改那個不起眼的逐台小欄位——直接填這一格即可。 */
+  document.getElementById("e_actualHours").addEventListener("input", ()=>{
+    if(usageState.length === 1){
+      const v = document.getElementById("e_actualHours").value.trim();
+      usageState[0].hours = v === "" ? null : (parseFloat(v) || 0);
+      if(usageState[0].hours != null && !usageState[0].present){
+        usageState[0].present = true;   // 填了時數即視為到場，順手補勾核取方塊
+        const cb = document.querySelector('#e_usage input[type=checkbox][data-i="0"]');
+        if(cb) cb.checked = true;
+      }
+    }
+    updateEquipDiff();
+  });
   /* v22.8：換廠商就要換品項清單——不重填會留著上一家的品項，計價抓錯人 */
   const vendorInput = COMBO["cb_e_vendor"] && COMBO["cb_e_vendor"].input;
   if(vendorInput) vendorInput.addEventListener("change", ()=>{
@@ -1696,10 +1712,13 @@ function collectEquipWarnings(usage, actualHours, zeroUse, days, otHours){
 function renderUsage(){
   const box = document.getElementById("e_usage");
   const zero = document.getElementById("e_zeroUse").checked;
-  const lock = usageState.length > 0;
+  /* 只有「多台不同機具」才需要逐台拆時數；單台（實務上的全部情形）與無類型
+     一律讓上方「實際使用時數」直接可編輯——逐台唯讀加總正是 v22.9 造成
+     「看到 0 卻改不動」的來源。 */
+  const multi = usageState.length >= 2;
   const hoursEl = document.getElementById("e_actualHours");
-  hoursEl.readOnly = lock;
-  hoursEl.classList.toggle("readonly-field", lock);
+  hoursEl.readOnly = multi;
+  hoursEl.classList.toggle("readonly-field", multi);
   if(!usageState.length){
     box.innerHTML = '<div class="empty-row">此申請單未填寫機具類型，請直接於下方輸入實際使用時數</div>';
     return;
@@ -1708,24 +1727,34 @@ function renderUsage(){
   box.innerHTML = usageState.map((u,i)=>`
     <div class="att-row ${u.present?'present':''}">
       <label class="att-check"><input type="checkbox" data-i="${i}" ${u.present?'checked':''} ${zero?'disabled':''}><span>${esc(u.type)}</span></label>
-      <div class="att-fields" ${u.present?'':'style="visibility:hidden;"'}>
+      ${multi ? `<div class="att-fields" ${u.present?'':'style="visibility:hidden;"'}>
         <label>使用時數<input type="number" class="usage-hours" data-i="${i}" step="0.5" min="0" placeholder="請填寫" value="${u.hours ?? ""}" ${zero?'disabled':''}></label>
-      </div>
+      </div>` : (u.present ? '<span style="color:var(--ink-600);font-size:13px;">時數請填於下方「實際使用時數」↓</span>' : '')}
     </div>`).join("");
 }
 
 function syncTotalsFromUsage(){
-  if(!usageState.length){ updateEquipDiff(); return; }
-  const present = usageState.filter(u=>u.present);
-  document.getElementById("e_actualHours").value = present.reduce((s,u)=>s+(u.hours||0),0);
+  const hoursEl = document.getElementById("e_actualHours");
+  if(usageState.length >= 2){
+    // 多台：總計＝各到場台加總；全部尚未填時留空白而非 0（0 會被誤看成「已填 0」）
+    const present = usageState.filter(u=>u.present);
+    const anyFilled = present.some(u=>u.hours != null);
+    hoursEl.value = anyFilled ? present.reduce((s,u)=>s+(u.hours||0),0) : "";
+  }else if(usageState.length === 1){
+    // 單台：總時數欄由使用者直接填；取消勾選到場時清空
+    if(!usageState[0].present) hoursEl.value = "";
+  }
   updateEquipDiff();
 }
 
 function onZeroUseToggle(){
   const zero = document.getElementById("e_zeroUse").checked;
   if(zero){
-    usageState.forEach(u=>{ u.present = false; });
+    usageState.forEach(u=>{ u.present = false; u.hours = null; });
     document.getElementById("e_actualHours").value = 0;
+  }else{
+    // 取消 0 使用確認：清掉那個 0，讓使用者重新填實際時數（否則會殘留 0 看似已填）
+    document.getElementById("e_actualHours").value = "";
   }
   renderUsage();
   updateEquipDiff();
@@ -1790,7 +1819,9 @@ async function loadEquipReportRecord(id){
   const rep = rec.report || {};
   document.getElementById("e_zeroUse").checked = !!rep.zeroUse;
   renderUsage();
-  document.getElementById("e_actualHours").value = rep.actualHours != null ? rep.actualHours : 0;
+  /* v22.9.1：未回報過的單**留空白**而非預設 0——0 加上單台唯讀（舊版）正是
+     「看到 0 卻改不動」的來源。已回報單顯示原值。 */
+  document.getElementById("e_actualHours").value = rep.actualHours != null ? rep.actualHours : "";
   updateEquipDiff();
   document.getElementById("e_signReturnDate").value = rep.signReturnDate || "";
   lockSignReturnRange("e_signReturnDate", rec.date);   // v22.7：選擇器直接限制在可採計範圍內
@@ -4428,6 +4459,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
   initCombobox("cb_l_type_add", "laborTypes", "加入出工工種：輸入搜尋（粗工／技術工／打石工⋯），選取後加入覆核清單", {onPick: addTypeRow});
   initCombobox("cb_l_locations", "locations", "輸入以搜尋工作地點", {multi:"l_locations"});
   initCombobox("cb_e_vendor", "vendors", "輸入以搜尋機具廠商");
+  initCombobox("cb_e_applyVendor", "vendors", "選填：已知車行可先填，否則回報時再填");   // v22.9.1
   initCombobox("cb_e_applicant", "people", "輸入以搜尋申請人");
   initCombobox("cb_e_checker", "people", "輸入以搜尋簽單責任工程師");
   initCombobox("cb_e_locations", "locations", "輸入以搜尋工作地點", {multi:"e_locations"});

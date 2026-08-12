@@ -280,7 +280,13 @@
             <label>需求日期</label>
             <input type="date" id="e_date" required>
           </div>
-          <!-- v22.6：機具廠商移到回報表單——工地統一叫車後才配車，申請當下還不知道是哪家 -->
+          <!-- v22.9.1：機具廠商可於申請時先填（選填）。v22.6 曾把它移到回報，是因為
+               「工地統一叫車後才配車」；但已知車行時先填更方便，故改為兩段皆可，
+               回報時仍能修改／補填。recVendor() 以回報值優先。 -->
+          <div class="field">
+            <label title="選填：申請時已知配到的車行可先填，否則回報時再填">機具廠商（選填）</label>
+            <div class="combobox" id="cb_e_applyVendor"></div>
+          </div>
           <div class="field">
             <label title="申請人（工程師）">申請人</label>
             <div class="combobox" id="cb_e_applicant"></div>

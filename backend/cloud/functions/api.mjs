@@ -181,13 +181,22 @@ export default async (req) => {
         /* v23.2：adminDepartments 省略＝保留既有值，**不是清空**（合約 §3.1）。
            舊版前端與其他呼叫端只送 sites，比照 sites 的整包覆蓋會把管理員設定洗掉。
            要清空請明確送空陣列。 */
-        const prev = (await s.getJSON("master")) || {};
+        /* ⚠ 讀 JSON 一律用 s.get(key, { type: "json" })——@netlify/blobs **沒有 getJSON**
+           （只有寫入端的 setJSON）。誤用會讓整個 op:master 回 502，症狀是
+           「管理員儲存設定失敗」而一般申請/回報正常，很容易被當成偶發網路問題。 */
+        const prev = (await s.get("master", { type: "json" })) || {};
         const next = { sites: body.sites };
         const depts = Array.isArray(body.adminDepartments) ? body.adminDepartments : prev.adminDepartments;
         if(Array.isArray(depts)) next.adminDepartments = depts;
         await s.setJSON("master", next);
         return json({ ok: true });
       }
+
+      /* v23.3 工地納管（合約 §3.11）：需要 ERP 權限檢視表連線，雲端沒有。
+         ⚠ 回 501 而不是靜默成功——前端 await-first 會把 200 當成寫入成功。 */
+      case "adoptSite":
+        return json({ error: "not implemented",
+          message: "工地納管需要 ERP 連線，僅地端環境可用" }, 501);
 
       case "config":
         if(!body.site || !body.config) return json({ error: "site/config required" }, 400);

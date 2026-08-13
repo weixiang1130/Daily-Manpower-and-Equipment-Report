@@ -428,6 +428,11 @@ if (authOpt.Mode != AuthMode.Off)
     if (authOpt.Mode == AuthMode.Dev)
         app.Logger.LogWarning("Auth:Mode=Dev —— 身分由 X-Dev-User 標頭指定，**正式環境絕不可使用**");
 
+    /* 啟動時把管理員部門印出來。部門名稱是逐字元比對人資 API 的 deptName，
+       寫錯不會報錯、只會讓整個部門被擋在門外——印出來才有機會在上線前用肉眼發現。 */
+    app.Logger.LogInformation("管理員部門（需與人資 API 的 deptName 逐字相符）：{Depts}",
+        string.Join("／", authOpt.AdminDepartments));
+
     app.Use(async (ctx, next) =>
     {
         if (!ctx.Request.Path.StartsWithSegments("/api")) { await next(); return; }
@@ -450,7 +455,16 @@ if (authOpt.Mode != AuthMode.Off)
             await Deny(ctx, 503, "無法查詢權限資料，請稍後再試或洽資訊處");
             return;
         }
-        if (authz is null) { await Deny(ctx, 403, "您在 ERP 尚無任何專案權限，請洽成本管理部"); return; }
+        if (authz is null)
+        {
+            /* 把「他實際的部門字串」記下來。管理員判定是逐字元比對，設定寫成「採購處」
+               而人資回「採購部」就會落到這裡——沒有這行日誌，現場只會看到一句
+               「您在 ERP 尚無任何專案權限」，完全查不出是設定字串對不上。 */
+            app.Logger.LogWarning("拒絕存取：{Emp}（{Name}）部門「{Dept}」不在管理員部門清單、且 ERP 無可用專案角色",
+                user.EmpId, user.Name, user.DeptName);
+            await Deny(ctx, 403, "您在 ERP 尚無任何專案權限，請洽成本管理部");
+            return;
+        }
 
         ctx.Items["user"] = user;
         ctx.Items["authz"] = authz;

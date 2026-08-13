@@ -63,7 +63,11 @@ public sealed class AuthOptions
 
     /// 部門名稱命中即為系統管理者（AUTH-PLAN §2.4 規則 1）。
     /// 用部門而非 ERP 角色，是因為實查發現部門內有人未掛成控角色，只看角色會漏判。
-    public string[] AdminDepartments { get; set; } = { "成本管理部" };
+    ///
+    /// ⚠ 比對是 <see cref="StringComparer.Ordinal"/>——**必須與人資 API 回傳的 deptName
+    ///   逐字元相符**（含全半形與空白）。寫錯不會報錯，只會讓那個部門的人全部被擋在門外，
+    ///   而且從畫面上看不出原因。部署後請照 DEPLOYMENT §4.5 用實際帳號各驗一位。
+    public string[] AdminDepartments { get; set; } = { "成本管理部", "採購部", "總經理室" };
 
     /* ERP 原生角色 → 本系統角色。**寫成設定不寫死**：ERP 日後新增角色時免改版。
        ⚠ 不可用「這人在此專案有幾列」判斷權限——大多數列是公司別角色（如 K02 佔三萬多列）。

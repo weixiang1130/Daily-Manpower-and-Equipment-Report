@@ -4768,6 +4768,9 @@ function applyAdminUI(){
 
   document.getElementById("cfg_sites").readOnly = !admin;
   document.getElementById("cfg_adminDepts").readOnly = !admin;   // v23.2
+  // v23.3：納管會建立工地並寫入專案代碼，非管理員不開放
+  const adopt = document.getElementById("adoptPanel");
+  if(adopt) adopt.style.display = admin ? "" : "none";
   Object.keys(SITE_CFG_MAP).forEach(id=>{
     document.getElementById(id).readOnly = !admin;
   });
@@ -4812,6 +4815,89 @@ function renderSettings(){
   });
   document.getElementById("cfg_lockDate").value = c.lockDate || "";
   applyAdminUI();
+}
+
+/* ==========================================================
+   工地納管（v23.3，合約 §2.5／§3.11／§4.11）
+
+   要解決的是「新工地要人工做三件事」，其中 project_code 漏填**不會報錯**，
+   只會讓該站除了管理員以外沒人看得到——最難察覺的一種設定失誤。
+
+   ⚠ 僅地端可用（需要 ERP 權限檢視表連線）。雲端會回空清單並附 reason，
+     畫面照實說明「此環境無法列出」，不是顯示失敗。
+   ========================================================== */
+let candidateState = [];   // [{projectCode, projectName, engineers, leads}]
+
+function renderCandidates(msg){
+  const box = document.getElementById("candidateBox");
+  if(!box) return;
+  if(msg){ box.innerHTML = `<div class="empty-row">${esc(msg)}</div>`; return; }
+  if(!candidateState.length){
+    box.innerHTML = '<div class="empty-row">目前沒有可納管的專案——ERP 裡有工地角色人員的專案都已建立</div>';
+    return;
+  }
+  box.innerHTML = candidateState.map((c,i)=>`
+    <div class="att-row present">
+      <span class="tr-name">${esc(c.projectCode)}<br><small>${esc(c.projectName||"（無專案名稱）")}</small></span>
+      <div class="att-fields">
+        <label class="ag-note">工地名稱<input type="text" class="cand-name" data-i="${i}"
+          value="${esc(c.siteName != null ? c.siteName : (c.projectName||""))}" placeholder="顯示在選單上的名稱"></label>
+        <span class="cand-cnt">工程師 ${c.engineers}${c.leads ? "・主任 " + c.leads : ""}</span>
+      </div>
+      <button type="button" class="btn-secondary btn-sm cand-adopt" data-i="${i}">納管</button>
+    </div>`).join("");
+}
+
+async function loadCandidates(){
+  if(!isAdmin()){ toast("僅限管理員操作"); return; }
+  renderCandidates("比對中…");
+  try{
+    const r = await api("GET", null, { candidates: "1" });
+    candidateState = (r.candidates || []).map(c=>Object.assign({}, c));
+    renderCandidates(r.reason && !candidateState.length ? r.reason : null);
+  }catch(err){
+    renderCandidates("⚠ 無法取得候選清單" + (err && err.status ? `（HTTP ${err.status}）` : ""));
+  }
+}
+
+async function adoptCandidate(i){
+  const c = candidateState[i];
+  if(!c) return;
+  const el = document.querySelector(`.cand-name[data-i="${i}"]`);
+  const siteName = (el ? el.value : "").trim();
+  if(!siteName){ toast("請先填工地名稱"); return; }
+  if(MASTER.sites.includes(siteName)
+     && !confirm(`工地「${siteName}」已存在。\n\n繼續會把專案代碼 ${c.projectCode} 寫到這個既有工地，並把該專案的工程師併入它的人員池。\n\n確定嗎？`)) return;
+  try{
+    const r = await api("POST", { op:"adoptSite", projectCode: c.projectCode, site: siteName });
+    /* 納管會改動工地清單與名單池，兩者都在 scope=all 裡——重抓一次才看得到 */
+    await refreshData(true).catch(()=>{});
+    toast(`已納管「${siteName}」（專案代碼 ${c.projectCode}，帶入 ${r.peopleAdded} 位人員）`);
+    candidateState.splice(i, 1);
+    renderCandidates();
+    renderSettings();
+  }catch(err){
+    if(err && err.status === 501){ toast("⚠ 此環境無 ERP 連線，工地納管僅地端可用"); return; }
+    if(err && err.status === 409){ toast("⚠ 這個專案代碼已對映到別的工地，請先確認"); return; }
+    toast("⚠ 納管失敗，請稍後再試");
+  }
+}
+
+function initAdoptUI(){
+  const btn = document.getElementById("loadCandidatesBtn");
+  if(!btn) return;
+  btn.addEventListener("click", loadCandidates);
+  const box = document.getElementById("candidateBox");
+  box.addEventListener("input", e=>{
+    const el = e.target.closest(".cand-name");
+    if(!el) return;
+    const c = candidateState[parseInt(el.dataset.i,10)];
+    if(c) c.siteName = el.value;      // 記住使用者改過的名稱，重繪時不會被吃掉
+  });
+  box.addEventListener("click", e=>{
+    const b = e.target.closest(".cand-adopt");
+    if(b) adoptCandidate(parseInt(b.dataset.i,10));
+  });
 }
 
 function initSettings(){
@@ -5051,6 +5137,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
   initAdmin();
   initSettings();
   initRatesPanel();      // v22.8 行情通報匯入與綁定
+  initAdoptUI();         // v23.3 工地納管
   /* v23.1：計價呈現開關。用 class 收起而非把元素移出 DOM——
      多處程式會讀這些容器與 e_rateItem.value（代辦扣抵也要用），
      真的拿掉會整支壞掉。改 PRICING_UI 一個常數就整組回來。 */

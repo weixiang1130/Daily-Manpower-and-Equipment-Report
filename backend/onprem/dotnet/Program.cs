@@ -517,6 +517,15 @@ app.MapGet("/api/data", async (HttpContext ctx) =>
     // 合約 §2.3：附件下載（回二進位，不是 JSON）
     if (q.ContainsKey("attachment")) return await GetAttachment(cn, q["site"].ToString(), q["attachment"].ToString(), az);
 
+    /* 合約 §2.5：可納管的工地候選（v23.3）。限管理者——這是 ERP 的組織資料，
+       不該讓一般工地使用者列舉全公司有哪些專案。 */
+    if (q.ContainsKey("candidates"))
+    {
+        if (az is not null && !az.IsAdmin)
+            return Results.Json(new { error = "forbidden", message = "此功能限系統管理者" }, statusCode: 403);
+        return await GetCandidates(cn, erpDb, authOpt);
+    }
+
     // 合約 §2.4：費率書。**刻意不放進 scope=all**——一季 1,500 列會拖慢每個人開站
     // 費率書是全域資料（不屬於任何工地），工地使用者的報表也要用它計價，故不另做工地過濾。
     if (q.ContainsKey("rates")) return await GetRates(cn);
@@ -623,6 +632,7 @@ app.MapPost("/api/data", async (HttpContext ctx) =>
         case "deleteRateBook": return await OpDeleteRateBook(cn, body);
         case "clearSite": return await OpClear(cn, body, false);
         case "clearAll": return await OpClear(cn, body, true);
+        case "adoptSite": return await OpAdoptSite(cn, body, erpDb, authOpt);   // v23.3 工地納管
 
         default: return Results.Json(new { error = "unknown op" }, statusCode: 400);
     }
@@ -1295,6 +1305,149 @@ static async Task<IResult> OpDeleteAttachment(SqlConnection cn, JsonObject body)
     return Results.Json(new { ok = true });
 }
 
+/* ==========================================================================
+   工地納管（v23.3；合約 §2.5／§3.11／§4.11）
+
+   要解決的問題：新工地要人工做三件事（加清單、建名單池、填 project_code），
+   而第三項漏做**不會報錯**，只會讓該站除了管理員以外沒人看得到——最難察覺。
+
+   ⚠ **刻意不做全自動同步**：ERP 權限檢視表涵蓋約 317 個專案，本系統只需十餘個。
+     全自動會把大量無關專案灌進工地選單，反而製造新的整理工作。
+   ⚠ 工程師姓名取自權限檢視表的 UserName，**不需要人資 API**——
+     人資 API 只能以 AD 帳號單筆查詢，列不出整個專案的成員。
+   ========================================================================== */
+
+/* 取某專案的工地角色人員（工程師／主任）。回 (姓名清單, 工程師數, 主任數)。 */
+static async Task<(List<string> names, int engineers, int leads)> ErpProjectPeople(
+    SqlConnection erp, AuthOptions opt, string projectCode)
+{
+    var eng = opt.SiteUserRoles.Concat(opt.SiteLeadRoles).ToArray();
+    var ps = string.Join(",", eng.Select((_, i) => "@r" + i));
+    await using var cmd = new SqlCommand(
+        $@"SELECT DISTINCT LTRIM(RTRIM(UserName)) AS nm, LTRIM(RTRIM(RoleName)) AS rn
+           FROM BI.dbo.vw_Acumatica_Permission
+           WHERE LTRIM(RTRIM(ProjectID)) = @p AND LTRIM(RTRIM(RoleName)) IN ({ps})", erp);
+    cmd.Parameters.AddWithValue("@p", projectCode);
+    for (var i = 0; i < eng.Length; i++) cmd.Parameters.AddWithValue("@r" + i, eng[i]);
+
+    var names = new List<string>();
+    int e = 0, l = 0;
+    var lead = new HashSet<string>(opt.SiteLeadRoles, StringComparer.OrdinalIgnoreCase);
+    await using var rd = await cmd.ExecuteReaderAsync();
+    while (await rd.ReadAsync())
+    {
+        var nm = rd.IsDBNull(0) ? "" : rd.GetString(0);
+        if (!string.IsNullOrWhiteSpace(nm) && !names.Contains(nm, StringComparer.Ordinal)) names.Add(nm);
+        if (lead.Contains(rd.GetString(1))) l++; else e++;
+    }
+    return (names, e, l);
+}
+
+static async Task<IResult> GetCandidates(SqlConnection cn, Func<SqlConnection>? erpDb, AuthOptions opt)
+{
+    if (erpDb is null)
+        // 不是錯誤：雲端本來就沒有 ERP 連線。回空清單＋原因，讓畫面能說明而不是顯示失敗
+        return Results.Json(new { candidates = Array.Empty<object>(),
+            reason = "此環境未設定 ERP 權限檢視表連線（KGAUDIT_ERP_CONNECTION），無法列出候選工地" });
+
+    // 已被使用的專案代碼——在應用程式端相減，因為兩者在不同連線／資料庫
+    var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var r in await Query(cn, "SELECT project_code FROM dbo.sites WHERE project_code IS NOT NULL"))
+        if (Str(r["project_code"]) is string pc && pc.Trim().Length > 0) used.Add(pc.Trim());
+
+    var roles = opt.SiteUserRoles.Concat(opt.SiteLeadRoles).ToArray();
+    var ps = string.Join(",", roles.Select((_, i) => "@r" + i));
+    var list = new JsonArray();
+    await using (var erp = erpDb())
+    {
+        await erp.OpenAsync();
+        await using var cmd = new SqlCommand(
+            $@"SELECT LTRIM(RTRIM(ProjectID)) AS pid,
+                      MAX(LTRIM(RTRIM(ProjectName))) AS pname,
+                      SUM(CASE WHEN LTRIM(RTRIM(RoleName)) IN ({ps}) THEN 1 ELSE 0 END) AS n
+               FROM BI.dbo.vw_Acumatica_Permission
+               WHERE LTRIM(RTRIM(RoleName)) IN ({ps})
+               GROUP BY LTRIM(RTRIM(ProjectID))
+               ORDER BY n DESC", erp);
+        for (var i = 0; i < roles.Length; i++) cmd.Parameters.AddWithValue("@r" + i, roles[i]);
+
+        var rows = new List<(string pid, string pname)>();
+        await using (var rd = await cmd.ExecuteReaderAsync())
+            while (await rd.ReadAsync())
+            {
+                var pid = rd.GetString(0);
+                if (used.Contains(pid)) continue;          // 已納管的不再列出
+                rows.Add((pid, rd.IsDBNull(1) ? "" : rd.GetString(1)));
+            }
+
+        foreach (var (pid, pname) in rows)
+        {
+            var (_, e, l) = await ErpProjectPeople(erp, opt, pid);
+            if (e + l == 0) continue;                      // 沒有工地角色的人就不是候選
+            list.Add(new JsonObject
+            {
+                ["projectCode"] = pid, ["projectName"] = pname,
+                ["engineers"] = e, ["leads"] = l
+            });
+        }
+    }
+    return Results.Content(new JsonObject { ["candidates"] = list }.ToJsonString(Wr.JsonOpts),
+        "application/json; charset=utf-8");
+}
+
+/* ---------- §3.11 op:adoptSite ---------- */
+static async Task<IResult> OpAdoptSite(SqlConnection cn, JsonObject body, Func<SqlConnection>? erpDb, AuthOptions opt)
+{
+    if (erpDb is null)
+        /* ⚠ 這是寫入操作，**必須回 501 而不是 200**——前端的 await-first 紀律
+           會把 200 當成寫入成功而清掉畫面狀態。 */
+        return Results.Json(new { error = "not implemented",
+            message = "此環境未設定 ERP 連線，無法納管工地" }, statusCode: 501);
+
+    var code = Sx(body, "projectCode");
+    var site = Sx(body, "site");
+    if (code is null || site is null)
+        return Results.Json(new { error = "projectCode/site required" }, statusCode: 400);
+
+    // 一個專案代碼只能對應一個工地——重複對映會讓權限判定把兩站混在一起
+    var dup = await Scalar(cn, null,
+        "SELECT name FROM dbo.sites WHERE project_code = @c AND name <> @n", ("@c", code), ("@n", site));
+    if (dup is not null)
+        return Results.Json(new { error = "conflict",
+            message = $"專案代碼 {code} 已對映到工地「{dup}」" }, statusCode: 409);
+
+    List<string> names;
+    await using (var erp = erpDb())
+    {
+        await erp.OpenAsync();
+        (names, _, _) = await ErpProjectPeople(erp, opt, code);
+    }
+
+    /* 三件事在同一交易：建站、填 project_code、併入人員池。
+       分開做就會出現「建了站但 project_code 沒填」——正是這個功能要根除的狀況。 */
+    await using var tx = (SqlTransaction)await cn.BeginTransactionAsync();
+    var sid = await SiteId(cn, tx, site);
+    await Exec(cn, tx, "UPDATE dbo.sites SET project_code = @c, is_active = 1 WHERE site_id = @s",
+        ("@c", code), ("@s", sid));
+
+    // 人員池**併入不覆蓋**：既有名單保留，只補尚未存在的（大小寫視為同值，比照 op:addOption）
+    var have = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    await using (var read = Cmd(cn, tx, "SELECT value FROM dbo.site_options WHERE site_id=@s AND pool='people'", ("@s", sid)))
+    await using (var rd = await read.ExecuteReaderAsync())
+        while (await rd.ReadAsync()) have.Add(rd.GetString(0));
+
+    var added = 0;
+    foreach (var nm in names)
+    {
+        if (!have.Add(nm)) continue;
+        await Exec(cn, tx, "INSERT INTO dbo.site_options (site_id, pool, value) VALUES (@s,'people',@v)",
+            ("@s", sid), ("@v", Trunc(nm, 100)));
+        added++;
+    }
+    await tx.CommitAsync();
+    return Results.Json(new { ok = true, site, projectCode = code, peopleAdded = added });
+}
+
 /* ---------- §2.4 GET ?rates=1 ---------- */
 static async Task<IResult> GetRates(SqlConnection cn)
 {
@@ -1533,7 +1686,8 @@ static class Wr
             ["addOption"] = OpScope.Site,
             ["deleteRecord"] = OpScope.Site,
             ["uploadAttachment"] = OpScope.Site,
-            ["deleteAttachment"] = OpScope.Site
+            ["deleteAttachment"] = OpScope.Site,
+            ["adoptSite"] = OpScope.Admin      // v23.3：建站＋填 project_code，限管理者
         };
 
     /* 簽單繳回日的期限天數（合約 §4.7，與前端常數 SIGN_RETURN_MAX_DAYS 同值） */

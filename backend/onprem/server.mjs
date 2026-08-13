@@ -219,6 +219,11 @@ async function handleApi(req, res, body, query){
         return sendJson(res, { ok: true });
       }
 
+      // v23.3 工地納管（合約 §3.11）：需 ERP 連線，Node 版不支援；回 501 不可靜默成功
+      case "adoptSite":
+        return sendJson(res, { error: "not implemented",
+          message: "工地納管需要 ERP 連線，請使用 .NET 8 版" }, 501);
+
       case "config":
         if(!data.site || !data.config) return sendJson(res, { error: "site/config required" }, 400);
         await kvSet(cfgKey(data.site), data.config);

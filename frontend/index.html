@@ -572,6 +572,27 @@
       </div>
     </div>
 
+    <!-- ============ 工地納管（v23.3；地端限定，合約 §4.11） ============ -->
+    <div class="panel" id="adoptPanel">
+      <div class="panel-head">
+        <h2>可納管的工地<span class="admin-only-badge">管理員</span></h2>
+        <p class="hint">系統比對 ERP，列出「<strong>有本公司人員掛工程師／主任角色、但本系統還沒建立</strong>」的專案。
+          勾選納管會一次做完三件事：建立工地、<strong>自動填入專案代碼</strong>、把該專案的工程師帶進人員池。
+          <br>其餘名單（分包商／工種／工作地點／機具類型）ERP 沒有，仍由該工地自行建立。</p>
+      </div>
+      <div class="form-grid">
+        <div class="field field-wide">
+          <div class="field-head">
+            <label>候選清單</label>
+            <button type="button" id="loadCandidatesBtn" class="ghost-btn">↻ 重新比對 ERP</button>
+          </div>
+          <div id="candidateBox" class="attendance-box">
+            <div class="empty-row">按「重新比對 ERP」載入候選工地</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ============ 管理員部門（v23.2；地端權限用） ============ -->
     <div class="panel">
       <div class="panel-head">

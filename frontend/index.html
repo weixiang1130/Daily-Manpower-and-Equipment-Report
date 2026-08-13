@@ -129,13 +129,13 @@
             <input type="number" id="l_required" min="0" step="0.5" value="0" required>
           </div>
 
-          <div class="field field-wide">
+          <div class="field field-wide field-half">
             <label>工作地點</label>
             <div class="combobox" id="cb_l_locations"></div>
             <div class="tag-list" id="l_locations_tags"></div>
           </div>
 
-          <div class="field field-wide">
+          <div class="field field-wide field-half">
             <label>工作內容類別</label>
             <select id="l_categories_picker"></select>
             <div class="tag-list" id="l_categories_tags"></div>
@@ -220,20 +220,21 @@
 
           <!-- v23：代辦改逐筆列（一張單可代辦多家）。舊的三欄（工數／時數／備註）
                自 v23 起不再填寫，既有值原樣承繼並在報表保留顯示（合約 §4.10）。 -->
+          <!-- v23.1：標籤與加入控制併成一行、冗長說明收進 title——
+               這一區原本 258px，是整張表單最高的元素 -->
           <div class="field field-wide">
-            <label>代辦（選填：這批工有一部分是幫其他廠商叫的）</label>
-            <div id="l_agentRows" class="attendance-box"></div>
-            <div class="agent-add">
-              <select id="l_agentVendor" class="agent-pick"><option value="">責任歸屬廠商⋯</option></select>
-              <select id="l_agentType" class="agent-pick"><option value="">工種⋯</option></select>
-              <button type="button" id="l_agentAddBtn" class="ghost-btn">＋ 加入代辦列</button>
+            <div class="field-head">
+              <label title="代辦＝向本單廠商叫的工，但成本要歸給另一家廠商，計價時從該廠商扣回。工種限本單已填的工種（代扣要用本單廠商的該工種費率查價）；代辦量不可超過該工種的回報量。代扣金額由系統自動計算，不需人工填。">代辦<span class="opt">選填・幫其他廠商叫的工</span></label>
+              <div class="agent-add">
+                <select id="l_agentVendor" class="agent-pick"><option value="">責任歸屬廠商⋯</option></select>
+                <select id="l_agentType" class="agent-pick"><option value="">工種⋯</option></select>
+                <button type="button" id="l_agentAddBtn" class="ghost-btn">＋ 加入</button>
+              </div>
             </div>
-            <p class="hint">代辦＝向<strong>本單廠商</strong>叫的工，但成本要歸給另一家廠商，計價時從該廠商扣回。
-              工種限本單已填的工種（代扣要用本單廠商的該工種費率查價）；代辦量不可超過該工種的回報量。
-              <strong>代扣金額由系統依本單廠商的當季費率自動計算</strong>，不需人工填。</p>
+            <div id="l_agentRows" class="attendance-box"></div>
           </div>
 
-          <div class="field field-wide">
+          <div class="field field-wide field-half">
             <label>現場查核回饋</label>
             <textarea id="l_conclusion" rows="3" placeholder="例：現場人員到齊，工作內容相符
 多件事情可以用 1. 起頭列點，按 Enter 會自動接 2.、3."></textarea>
@@ -297,7 +298,7 @@
             <input type="text" id="e_model" placeholder="例：120T">
           </div>
 
-          <div class="field field-wide">
+          <div class="field field-wide field-half">
             <label>機具類型</label>
             <select id="e_type_picker"></select>
             <div class="tag-list" id="e_type_tags"></div>
@@ -325,7 +326,7 @@
             </div>
           </div>
 
-          <div class="field field-wide">
+          <div class="field field-wide field-half">
             <label>工作地點</label>
             <div class="combobox" id="cb_e_locations"></div>
             <div class="tag-list" id="e_locations_tags"></div>
@@ -335,7 +336,7 @@
             <input type="text" id="e_content" class="note-input" placeholder="例：吊掛物料、開挖等，簡短即可">
           </div>
           <!-- v22.6：申請備註。包月機具等計價前提寫在這裡 -->
-          <div class="field field-wide">
+          <div class="field field-wide field-half">
             <label>申請備註</label>
             <textarea id="e_applyNote" rows="2" placeholder="選填：例：本台為包月機具，不逐日計費（可用 1. 起頭列點）"></textarea>
           </div>
@@ -414,30 +415,32 @@
           <!-- v23：代辦改逐筆列（合約 §4.10）。機具只綁到廠商層級，
                所以代辦列不需選品項——數量的單位跟著主品項的計價方式走。 -->
           <div class="field field-wide">
-            <label>代辦（選填：這台機具有一部分是幫其他廠商叫的）</label>
-            <div id="e_agentRows" class="attendance-box"></div>
-            <div class="agent-add">
-              <select id="e_agentVendor" class="agent-pick"><option value="">責任歸屬廠商⋯</option></select>
-              <button type="button" id="e_agentAddBtn" class="ghost-btn">＋ 加入代辦列</button>
+            <div class="field-head">
+              <label title="代辦＝向本單廠商叫的機具，但成本要歸給另一家廠商，計價時從該廠商扣回。數量的單位跟著主計價品項走（全天→天數、時租→小時）。代扣金額由系統自動計算。">代辦<span class="opt">選填・幫其他廠商叫的機具</span></label>
+              <div class="agent-add">
+                <select id="e_agentVendor" class="agent-pick"><option value="">責任歸屬廠商⋯</option></select>
+                <button type="button" id="e_agentAddBtn" class="ghost-btn">＋ 加入</button>
+              </div>
             </div>
-            <p class="hint" id="e_agentHint">代辦＝向<strong>本單廠商</strong>叫的機具，但成本要歸給另一家廠商，計價時從該廠商扣回。
-              數量的單位跟著主計價品項走（全天→天數、時租→小時），<strong>代扣金額由系統依本單廠商的當季費率自動計算</strong>。</p>
+            <div id="e_agentRows" class="attendance-box"></div>
           </div>
 
           <!-- v22.8：行情通報計價。選完廠商後列出該廠商的品項；
-               加班費在行情通報裡是獨立的一列，所以主品項與加班費率各挑一項 -->
-          <div class="field field-wide">
+               加班費在行情通報裡是獨立的一列，所以主品項與加班費率各挑一項。
+               v23.1：整組由 PRICING_UI 控制顯示；**元素本身必須留在 DOM 裡**——
+               程式多處讀 e_rateItem.value（代辦扣抵也要用），拿掉會整支壞掉。 -->
+          <div class="field field-wide pricing-ui" id="e_rateItemField">
             <label title="依行情通報計價；選了才算得出金額">計價品項（行情通報）</label>
             <select id="e_rateItem" class="report-select"></select>
             <p class="hint" id="e_rateHint" style="margin:4px 0 0;"></p>
           </div>
-          <div class="field field-wide">
+          <div class="field field-wide pricing-ui" id="e_rateOtItemField">
             <label title="有填加班時數才需要選">加班費率品項（行情通報）</label>
             <select id="e_rateOtItem" class="report-select"></select>
           </div>
 
           <!-- v22.6：申請時填的是「預計」內容，這裡記現場實際做了什麼 -->
-          <div class="field field-wide">
+          <div class="field field-wide field-half">
             <label>實際工作內容</label>
             <textarea id="e_workContent" rows="2" placeholder="例：吊掛鋼構、開挖土方
 多件事情可以用 1. 起頭列點，按 Enter 會自動接 2.、3."></textarea>
@@ -583,11 +586,11 @@
           <label>工作地點清單</label>
           <textarea id="cfg_locations" rows="4"></textarea>
         </div>
-        <div class="field field-wide">
+        <div class="field field-wide field-half">
           <label>工作內容類別清單</label>
           <textarea id="cfg_categories" rows="4"></textarea>
         </div>
-        <div class="field field-wide">
+        <div class="field field-wide field-half">
           <label>機具類型清單</label>
           <textarea id="cfg_equipTypes" rows="4"></textarea>
         </div>
@@ -610,8 +613,11 @@
       </div>
     </div>
 
-    <!-- ============ 行情通報（v22.8；管理員限定） ============ -->
-    <div class="panel" id="ratesPanel">
+    <!-- ============ 行情通報（v22.8；管理員限定） ============
+         v23.1：整個區塊由 PRICING_UI 控制顯示。**元素留在 DOM**——
+         initRatesUI() 會綁事件、renderRateBooks() 會寫入這裡的容器。
+         換季要匯入新費率時把 PRICING_UI 改回 true 即可。 -->
+    <div class="panel pricing-ui" id="ratesPanel">
       <div class="panel-head">
         <h2>行情通報單價<span class="admin-only-badge">管理員</span></h2>
         <p class="hint">匯入公司按季發布的「租工／機具行情通報（匯入檔）」xlsx，計價時自動帶入單價。

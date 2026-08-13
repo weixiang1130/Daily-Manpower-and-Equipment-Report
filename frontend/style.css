@@ -158,20 +158,84 @@ body{
 .card.warn .num{color:var(--amber-600);}
 .card.bad .num{color:var(--red-500);}
 
-/* ---------- Forms ---------- */
+/* ---------- 計價呈現開關（v23.1） ----------
+   元素留在 DOM、只是不顯示——程式仍會讀這些容器與 e_rateItem.value
+   （代辦扣抵要用）。開回來只需把 app.js 的 PRICING_UI 改成 true。 */
+.no-pricing .pricing-ui{display:none !important;}
+
+/* ---------- 橫向長條圖（v23.1；零依賴） ----------
+   排名的重點是比例感，長度負責這件事；精確數字仍由下方表格負責。
+   ⚠ 顏色不是唯一的資訊來源——每條都直接標數值，色盲或黑白列印一樣讀得懂。 */
+.hbar{display:flex;flex-direction:column;gap:5px;margin:2px 0 12px;}
+.hbar-row{display:flex;align-items:center;gap:9px;}
+.hbar-rank{
+  flex:0 0 20px;text-align:right;
+  font-size:12px;font-weight:800;color:var(--ink-500,var(--fg-tertiary));
+  font-variant-numeric:tabular-nums;
+}
+.hbar-name{
+  flex:0 0 132px;font-size:13px;font-weight:700;color:var(--ink-800,var(--fg-primary));
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.hbar-track{flex:1 1 auto;height:20px;background:var(--bg-surface-1,#EFEDE9);border-radius:2px;overflow:hidden;}
+.hbar-fill{display:block;height:100%;background:var(--teal-600);border-radius:2px;}
+.hbar-val{
+  flex:0 0 118px;font-size:13px;font-weight:700;color:var(--ink-800,var(--fg-primary));
+  font-variant-numeric:tabular-nums;   /* 等寬數字：數值變動時欄位不會左右跳動 */
+}
+.hbar-val small{font-weight:600;color:var(--ink-500,var(--fg-tertiary));margin-left:5px;}
+/* 手機：名稱／數值與長條擠在同一行，扣掉固定寬度後長條只剩幾個 px，
+   等於沒有比例可看。改成兩行——上排放名稱與數值、下排讓長條吃滿整寬。
+   （這裡用 flex 簡寫而非只寫 flex-basis：上方基準規則是 `flex:0 0 132px`
+     的簡寫，只覆寫 flex-basis 會被簡寫的其餘值一起帶回去。） */
+@media (max-width:720px){
+  .hbar-row{flex-wrap:wrap;row-gap:3px;}
+  .hbar-name{flex:1 1 auto;}
+  .hbar-val{flex:0 0 auto;font-size:12px;text-align:right;}
+  .hbar-track{flex:0 0 100%;order:3;height:16px;}
+}
+
+/* ---------- Forms ----------
+   v23.1 版面收斂。**實測後才決定怎麼改**：四張表單有 73～86% 的高度來自
+   「滿版欄位」（標籤挑選器、附件框、textarea、動態列表），把一般欄位從
+   1/3 改成 1/4 只省下個位數像素——所以一般欄位維持原寬，力氣放在滿版區塊：
+     ① 中等高度的滿版欄位改成一排兩個（.field-half）
+     ② 動態列表區塊把「標籤＋加入控制」併成同一行（.field-head）
+     ③ 冗長說明收進 label 的 title，不再各佔三行 */
 .form-grid{
   display:grid;
-  grid-template-columns:repeat(12,1fr);   /* v16.2：細格線＋更緊湊的欄寬與間距 */
-  gap:10px 14px;
+  grid-template-columns:repeat(12,1fr);
+  gap:8px 12px;
 }
 .field{grid-column:span 4;}               /* 一般欄位＝1/3 版面（人名、廠商等短內容足夠） */
-.field{display:flex;flex-direction:column;gap:4px;}
+.field{display:flex;flex-direction:column;gap:3px;}
 .field-wide{grid-column:1 / -1;}
-/* 純數字／日期欄位：佔 1/4 版面且輸入框限寬，避免大框留白（大框留給說明類欄位） */
+/* 中等高度的滿版區塊改成一排兩個——附件框、標籤挑選器、備註 textarea 這類 */
+.field-half{grid-column:span 6;}
+/* 純數字／日期欄位：佔 1/6 版面且輸入框限寬，避免大框留白（大框留給說明類欄位） */
 .field-num{grid-column:span 2;}
-.field-num input{max-width:130px;}
+.field-num input{max-width:120px;}
 .field-num label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.field label{font-size:12.5px;font-weight:700;color:var(--ink-700,var(--fg-secondary));}
+.field label{font-size:12px;font-weight:700;color:var(--ink-700,var(--fg-secondary));}
+
+/* 標籤與其控制項併排：動態列表區塊原本「標籤 / 空狀態框 / 加入控制 / 說明」
+   各佔一行，光是代辦一區就 258px——併行後省掉兩行 */
+.field-head{
+  display:flex;align-items:center;justify-content:space-between;
+  gap:10px;flex-wrap:wrap;
+}
+.field-head label{margin:0;}
+.field-head .opt{
+  margin-left:5px;font-weight:600;font-size:11px;
+  color:var(--ink-500,var(--fg-tertiary));
+}
+/* 併行後加入控制列不再需要上方間距 */
+.field-head .agent-add{margin-top:0;}
+
+@media (max-width:900px){
+  .field-half{grid-column:1 / -1;}
+  .field-head{align-items:flex-start;flex-direction:column;}
+}
 
 input[type=text],input[type=number],input[type=date],input[type=time],
 input[type=datetime-local],select,textarea{

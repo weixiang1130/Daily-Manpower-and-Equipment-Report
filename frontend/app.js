@@ -18,6 +18,30 @@
    變數 LOCAL_CONFIG_JS 於建置時產生），不進入程式碼庫。
    ========================================================== */
 
+/* ==========================================================
+   計價呈現開關（v23.1）
+
+   ⚠ 這是**畫面層**的開關，不是功能移除。費率書、費率綁定、金額計算、
+     SQL 的費率三張表、地端 .NET 的對應實作**全部原樣保留**——
+     把這個常數改成 true，整組計價就完整回來，不需要重寫。
+
+   關掉時隱藏：設定頁的行情通報匯入與綁定、機具回報的計價品項下拉、
+     明細報表與計價彙總的「計價金額／計價組成／未能計價單數」欄、
+     兩張廠商排行榜的金額欄。
+
+   **刻意保留：代辦扣抵金額**（合約 §4.10）。代付代扣是會議點名要
+     「由系統自動統計、排除人工作業」的項目，把它一起關掉等於白做。
+     它靠的是已匯入的費率書——費率書存在後端（rates: 鍵），不因為
+     匯入入口隱藏而消失，所以照算。
+
+   ⚠ **換季要匯入新費率時，必須先把這個開關打開**——匯入入口也在這組裡面。
+
+   ⚠ **宣告必須留在檔案最前面**：REPORTS 的欄位陣列是 top-level 物件字面值，
+     載入當下就會讀這個常數。放到後面會踩 const 的暫時性死區（TDZ），
+     整支 app.js 在載入階段就中斷——2026-08-13 就是這樣壞過一次。
+   ========================================================== */
+const PRICING_UI = false;
+
 const ADD_NEW = "__ADD_NEW__";
 
 const GENERIC_CONFIG = {
@@ -1233,7 +1257,7 @@ function renderAgentRows(){
   const zero = document.getElementById("l_zeroWork").checked;
   box.classList.toggle("disabled", zero);
   if(!agentState.length){
-    box.innerHTML = '<div class="empty-row">未填代辦＝這批工<strong>全數自辦</strong>。若有一部分是幫其他廠商叫的，在下方選「責任歸屬廠商＋工種」加入一列</div>';
+    box.innerHTML = '<div class="empty-row">未填＝<strong>全數自辦</strong></div>';
     return;
   }
   box.innerHTML = agentState.map((a,i)=>`
@@ -1947,7 +1971,7 @@ function renderEquipAgentRows(){
   box.classList.toggle("disabled", zero);
   const unit = equipFormChargeCtx().unit || "數量";
   if(!equipAgentState.length){
-    box.innerHTML = '<div class="empty-row">未填代辦＝這台機具<strong>全數自辦</strong>。若有一部分是幫其他廠商叫的，在下方選責任歸屬廠商加入一列</div>';
+    box.innerHTML = '<div class="empty-row">未填＝<strong>全數自辦</strong></div>';
     return;
   }
   box.innerHTML = equipAgentState.map((a,i)=>`
@@ -2340,7 +2364,9 @@ function doneCols(rep){
 const REPORT_DEFS = {
   labor: {
     title:"點工紀錄",
-    headers:["出工日期","廠商","需求工數","工作內容","工作地點","申請人","狀態","人臉紀錄","白卡紀錄","工具箱紀錄","簽單繳回日","簽單實際出工數","差異","0工確認","簽單責任工程師","加班時數(前2小時)","加班時數(第3小時起)","加班總時數","出工明細(工種)","計價金額","計價組成","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註","現場查核回饋"],
+    headers:["出工日期","廠商","需求工數","工作內容","工作地點","申請人","狀態","人臉紀錄","白卡紀錄","工具箱紀錄","簽單繳回日","簽單實際出工數","差異","0工確認","簽單責任工程師","加班時數(前2小時)","加班時數(第3小時起)","加班總時數","出工明細(工種)",
+      ...(PRICING_UI ? ["計價金額","計價組成"] : []),
+      "根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註","現場查核回饋"],
     records: ()=>cur().labor.filter(r=>inReportRange(r.date) && matchReportVendor(r) && matchReportCat(r,"labor") && matchReportEngineer(r,"labor")),
     rows(recs){ return (recs || this.records()).map(r=>{
       const rep = r.report || {};
@@ -2360,7 +2386,8 @@ const REPORT_DEFS = {
         reported ? fmt(seg.otOver) : "",
         reported ? fmt(rep.totalOT) : "",
         laborDetail(rep),
-        ...(reported ? amountCells(laborAmount(r)) : ["", ""])   // v22.8 金額＋組成
+        // v22.8 金額＋組成（v23.1：畫面層開關關閉時整組不輸出，見 PRICING_UI）
+        ...(PRICING_UI ? (reported ? amountCells(laborAmount(r)) : ["", ""]) : [])
       ].concat(doneCols(rep), [rep.conclusion||""]);
     }); }
   },
@@ -2370,7 +2397,9 @@ const REPORT_DEFS = {
        - 「機具廠商」＝有效廠商（回報優先，見 recVendor）；移除重複的「責任廠商」欄
        - 「預計使用時數(需求數量)」正名為「需求數量(台)」——它一直是台數，欄名寫錯
        - 新增：預定使用時數／申請備註／出工天數／加班時數／實際工作內容 */
-    headers:["出工日期","機具廠商","機具類型","型號","工作內容","工作地點","需求數量(台)","預定使用時數","申請備註","申請人","狀態","簽單繳回日","機具實際工作使用時數","差異","出工天數","加班時數","實際工作內容","計價品項","加班費率品項","計價金額","計價組成","0使用確認","機具使用明細","簽單責任工程師","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註"],
+    headers:["出工日期","機具廠商","機具類型","型號","工作內容","工作地點","需求數量(台)","預定使用時數","申請備註","申請人","狀態","簽單繳回日","機具實際工作使用時數","差異","出工天數","加班時數","實際工作內容",
+      ...(PRICING_UI ? ["計價品項","加班費率品項","計價金額","計價組成"] : []),
+      "0使用確認","機具使用明細","簽單責任工程師","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註"],
     records: ()=>cur().equipment.filter(x=>inReportRange(x.date) && matchReportVendor(x) && matchReportCat(x,"equipment") && matchReportEngineer(x,"equipment")),
     rows(recs){ return (recs || this.records()).map(x=>{
       const rep = x.report || {};
@@ -2387,8 +2416,10 @@ const REPORT_DEFS = {
         // 差異可能是 null（申請單沒填預定時數）——不可 fmt(null) 印出 0，那會被當成「相符」
         reported && rep.diff != null ? fmt(rep.diff) : "",
         reported?fmt(rep.days||0):"", reported?fmt(rep.otHours||0):"", rep.workContent||"",
-        rep.rateItem||"", rep.rateOtItem||"",
-        ...(reported ? amountCells(equipAmount(x)) : ["", ""]),  // v22.8 金額＋組成
+        // v22.8 品項＋金額＋組成（v23.1：畫面層開關關閉時整組不輸出，見 PRICING_UI）
+        ...(PRICING_UI
+            ? [rep.rateItem||"", rep.rateOtItem||"", ...(reported ? amountCells(equipAmount(x)) : ["", ""])]
+            : []),
         rep.zeroUse?"V":"", usageDetail,
         rep.checker||""
       ].concat(doneCols(rep));
@@ -2444,15 +2475,23 @@ function pricingSummaryTable(kind){
   const period = reportPeriodLabel();
   if(kind === "labor"){
     return {
-      headers:["期間","廠商","已回報單數","0工單數","總出工數","加班時數(前2小時)","加班時數(第3小時起)","計價金額","未能計價單數","根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","工作內容"],
-      rows: gs.map(g=>[period, g.vendor, g.count, g.zero, fmt(g.work), fmt(g.ot2), fmt(g.otOver), g.amount, g.noRate, fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、")])
+      headers:["期間","廠商","已回報單數","0工單數","總出工數","加班時數(前2小時)","加班時數(第3小時起)",
+        ...(PRICING_UI ? ["計價金額","未能計價單數"] : []),
+        "根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","工作內容"],
+      rows: gs.map(g=>[period, g.vendor, g.count, g.zero, fmt(g.work), fmt(g.ot2), fmt(g.otOver),
+        ...(PRICING_UI ? [g.amount, g.noRate] : []),
+        fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、")])
     };
   }
   /* v22.6：機具計價的組成是「出工天數＋加班時數」，兩者都要看得見
      （計價紅線 4：報表不能只給一個算完的數字）。實際使用時數保留供對帳。 */
   return {
-    headers:["期間","機具廠商","已回報單數","0使用單數","總出工天數","總加班時數","總實際使用時數","計價金額","未能計價單數","根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","機具類型"],
-    rows: gs.map(g=>[period, g.vendor, g.count, g.zero, fmt(g.days), fmt(g.ot), fmt(g.hours), g.amount, g.noRate, fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、")])
+    headers:["期間","機具廠商","已回報單數","0使用單數","總出工天數","總加班時數","總實際使用時數",
+      ...(PRICING_UI ? ["計價金額","未能計價單數"] : []),
+      "根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","機具類型"],
+    rows: gs.map(g=>[period, g.vendor, g.count, g.zero, fmt(g.days), fmt(g.ot), fmt(g.hours),
+      ...(PRICING_UI ? [g.amount, g.noRate] : []),
+      fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、")])
   };
 }
 
@@ -3390,15 +3429,56 @@ function buildAgentDeductionSummary(){
   return [...g.values()].sort((a,b)=> b.amount - a.amount);
 }
 
-const VRANK_LABOR_COLS = ["排名","廠商","已回報單數","本工","加班前2h","加班2h後","總工數","計價金額","未能計價單數"];
-const VRANK_EQUIP_COLS = ["排名","廠商","已回報單數","出工天數","加班時數","計價金額","未能計價單數"];
+/* 兩張排行榜的金額欄跟著 PRICING_UI 走；代辦扣抵那張**刻意保留金額**（見 PRICING_UI 說明） */
+const VRANK_LABOR_COLS = ["排名","廠商","已回報單數","本工","加班前2h","加班2h後","總工數",
+  ...(PRICING_UI ? ["計價金額","未能計價單數"] : [])];
+const VRANK_EQUIP_COLS = ["排名","廠商","已回報單數","出工天數","加班時數",
+  ...(PRICING_UI ? ["計價金額","未能計價單數"] : [])];
 const VRANK_DED_COLS   = ["責任歸屬廠商","代辦列數","代扣金額","未能計價列數","未能計價原因"];
 
 const vrankLaborRow = (e,i) => [i+1, e.vendor, e.count, fmtRank(e.work),
-  e.ot2 ? fmtRank(e.ot2) : "", e.otOver ? fmtRank(e.otOver) : "", fmtRank(e.units), e.amount, e.noRate || ""];
+  e.ot2 ? fmtRank(e.ot2) : "", e.otOver ? fmtRank(e.otOver) : "", fmtRank(e.units),
+  ...(PRICING_UI ? [e.amount, e.noRate || ""] : [])];
 const vrankEquipRow = (e,i) => [i+1, e.vendor, e.count, fmtRank(e.days),
-  e.ot ? fmtRank(e.ot) : "", e.amount, e.noRate || ""];
+  e.ot ? fmtRank(e.ot) : "",
+  ...(PRICING_UI ? [e.amount, e.noRate || ""] : [])];
 const vrankDedRow = e => [e.vendor, e.rows, e.amount, e.noRate || "", [...e.whys].join("；")];
+
+/* ==========================================================
+   橫向長條圖（v23.1；零依賴 inline SVG）
+
+   為什麼是橫條而不是直條：類別是廠商／工程師名稱（中文長字串），
+   直條圖的 X 軸標籤會被迫旋轉或截斷；橫條讓名稱正常水平排列。
+
+   無障礙與可讀性（依 UI 準則 §10）：
+   - **圖表不取代表格**：下方一律保留原本的數值表，圖只是先給一眼的比例感
+   - 每條直接標數值（direct labeling），不必對照座標軸
+   - 顏色不是唯一資訊來源——長度＋數值文字本身就足以判讀
+   - role="img" ＋ aria-label 給讀屏軟體一句話摘要
+   - 只畫前 N 名，其餘在圖下明講「另有 N 家未列出」（不做無聲截斷）
+   ========================================================== */
+function hBarChart(rows, opts){
+  const o = Object.assign({ max: 10, unit: "", title: "" }, opts || {});
+  if(!rows.length) return '<div class="empty-row">此期間無資料可繪製</div>';
+  const shown = rows.slice(0, o.max);
+  const rest = rows.length - shown.length;
+  const peak = Math.max(...shown.map(r => r.value), 0) || 1;
+  /* 用 HTML/CSS 長條而不是 SVG：長度只要一個百分比寬度就成立，
+     天生隨容器縮放；SVG 要靠 viewBox 換算，中文標籤與數值還得自己排版。 */
+  const bars = shown.map((r, i) => {
+    const pct = r.value > 0 ? Math.max((r.value / peak) * 100, 1.5) : 0;   // 極小值仍留一絲寬度，才看得出「有但很少」
+    return `<div class="hbar-row">
+      <span class="hbar-rank">${i + 1}</span>
+      <span class="hbar-name" title="${esc(String(r.label))}">${esc(String(r.label))}</span>
+      <span class="hbar-track"><span class="hbar-fill" style="width:${pct}%"></span></span>
+      <span class="hbar-val">${esc(fmtRank(r.value))}${esc(o.unit)}${r.sub ? `<small>${esc(r.sub)}</small>` : ""}</span>
+    </div>`;
+  }).join("");
+  const first = shown[0];
+  const summary = `${o.title}：共 ${rows.length} 項，第一名 ${first.label} ${fmtRank(first.value)}${o.unit}`;
+  return `<div class="hbar" role="img" aria-label="${esc(summary)}">${bars}</div>`
+    + (rest > 0 ? `<p class="hint">圖只列前 ${o.max} 名，另有 ${rest} 項未列出——完整資料見下方表格。</p>` : "");
+}
 
 function vrankTableHTML(title, cols, rows, note){
   const body = rows.length
@@ -3424,10 +3504,17 @@ function renderVendorRankReport(){
   if(cnt) cnt.textContent = `${period}・點工 ${lab.length} 家・機具 ${eq.length} 家`
     + (ded.length ? `・代辦扣抵 ${ded.length} 家` : "");
 
+  /* v23.1：先給圖再給表。排名的重點是「誰多誰少、差多少」，
+     長條的長度一眼就答得出來；精確數字仍由下方表格負責（§10 圖不取代表） */
+  const chartOf = (rows, unit, title) => hBarChart(
+    rows.map(e=>({ label: e.vendor, value: e.units, sub: `${e.count} 單` })), { unit, title });
+
   el.innerHTML =
-    vrankTableHTML(`點工廠商排名（${period}・依總工數）`, VRANK_LABOR_COLS, lab.map(vrankLaborRow),
+    chartOf(lab, " 工", "點工廠商排名")
+    + vrankTableHTML(`點工廠商排名（${period}・依總工數）`, VRANK_LABOR_COLS, lab.map(vrankLaborRow),
       "<strong>總工數＝本工＋(加班前2h＋加班2h後)÷8</strong>（工數以 8 小時換算），與叫工排名同一口徑。"
-      + "「未能計價單數」為查無費率的單——那些單的金額<strong>不含</strong>在計價金額裡，不是 0 元。")
+      + (PRICING_UI ? "「未能計價單數」為查無費率的單——那些單的金額<strong>不含</strong>在計價金額裡，不是 0 元。" : ""))
+    + chartOf(eq, " 天", "機具廠商排名")
     + vrankTableHTML(`機具廠商排名（${period}・依出工天數）`, VRANK_EQUIP_COLS, eq.map(vrankEquipRow),
       "機具不與點工併榜——出工天數與工數是不同單位，相加沒有意義。")
     + vrankTableHTML(`代辦扣抵彙總（${period}・依責任歸屬廠商）`, VRANK_DED_COLS, ded.map(vrankDedRow),
@@ -3536,6 +3623,21 @@ function renderRankingReport(){
     el.innerHTML = '<div class="empty-row">此條件內尚無已回報的點工資料可排名</div>';
     return;
   }
+  /* v23.1：先給一張「各工程師總工數」的長條圖。
+     原本的表是逐工種分組（每個工種一區、各自排名），要回答「整體誰叫工最多」
+     得自己心算跨工種加總——那正是總經理要看的數字，所以先畫出來。
+     逐工種的細節仍由下方原表負責。 */
+  const engTotals = new Map();
+  rows.forEach(r => r.ranked.forEach(e => {
+    const t = engTotals.get(e.name) || { work:0, ot2:0, otOver:0 };
+    t.work += e.work; t.ot2 += e.ot2; t.otOver += e.otOver;
+    engTotals.set(e.name, t);
+  }));
+  const engRows = [...engTotals.entries()]
+    .map(([name, t]) => ({ label: name, value: totalUnits(t) }))
+    .sort((a, b) => b.value - a.value);
+  const chartHTML = hBarChart(engRows, { unit: " 工", title: "各工程師叫工總量" });
+
   // 分頁以「工種」為單位（非以列），小計列才不會與所屬資料列被拆到不同頁；
   // 匯出仍取 buildRankingData() 全量，不受分頁影響（計價紅線 3）
   const { shown, pagerHTML } = paginate("ranking", rows, "個工種");
@@ -3556,7 +3658,9 @@ function renderRankingReport(){
       + '<td class="num"><strong>' + (r.sum.otOver ? fmtRank(r.sum.otOver) : "") + "</strong></td>"
       + '<td class="num"><strong>' + fmtRank(r.units) + "</strong></td></tr>";
   }).join("");
-  el.innerHTML = '<table class="rank-table">'
+  el.innerHTML = chartHTML
+    + '<div class="summary-title">逐工種明細</div>'
+    + '<table class="rank-table">'
     + "<colgroup>" + RANK_COLS_VIEW.map(() => "<col>").join("") + "</colgroup>"
     + "<thead><tr>" + RANK_COLS_VIEW.map(c => "<th" + (c.num ? ' class="num"' : "") + ">" + esc(c.t) + "</th>").join("") + "</tr></thead>"
     + "<tbody>" + body + "</tbody></table>" + pagerHTML
@@ -4927,6 +5031,10 @@ document.addEventListener("DOMContentLoaded", ()=>{
   initAdmin();
   initSettings();
   initRatesPanel();      // v22.8 行情通報匯入與綁定
+  /* v23.1：計價呈現開關。用 class 收起而非把元素移出 DOM——
+     多處程式會讀這些容器與 e_rateItem.value（代辦扣抵也要用），
+     真的拿掉會整支壞掉。改 PRICING_UI 一個常數就整組回來。 */
+  if(!PRICING_UI) document.documentElement.classList.add("no-pricing");
   document.getElementById("refreshBtn").addEventListener("click", ()=>refreshData(false));
   /* v22.5：說明文字欄位的自動列點。稽核的「現場狀況說明」與「不符原因」是動態
      產生，各自在 renderAuditForm／renderAuditItems 內掛；設定頁名單池與

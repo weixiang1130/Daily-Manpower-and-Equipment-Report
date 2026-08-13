@@ -3,29 +3,54 @@
 本文件供 IT／基礎架構人員將本系統從 Netlify 遷移至自有伺服器。
 系統技術背景請先讀 [`CLAUDE.md`](../CLAUDE.md)；演進脈絡見 [`docs/milestones/`](milestones/README.md)。
 
-## 1. 系統組成（兩種部署形態）
+## 1. 系統組成（三種部署形態）
 
-本系統＝**純靜態前端 ＋ 一支資料 API ＋ 整站 Basic Auth**。repo 內含兩套等價的執行環境，擇一使用：
+本系統＝**純靜態前端 ＋ 一支資料 API ＋ 整站 Basic Auth**。
+repo 內含三套等價的執行環境，皆實作同一份 [`API-CONTRACT.md`](API-CONTRACT.md)：
 
-| | Netlify 版（現行） | 可攜式版（地端用） |
-|---|---|---|
-| 靜態檔案 | Netlify CDN | `backend/onprem/server.mjs` 內建靜態服務 |
-| 資料 API `/api/data` | `backend/cloud/functions/api.mjs` | `backend/onprem/server.mjs`（同一 API 合約） |
-| Basic Auth | `backend/cloud/edge-functions/auth.ts` | `backend/onprem/server.mjs`（同一邏輯） |
-| 資料儲存 | Netlify Blobs（一筆一 blob） | 檔案系統 `DATA_DIR`（紀錄＝一筆一 JSON 檔；附件本體在 `attachments/` 子目錄） |
+| | Netlify 版（現行，過渡期） | **.NET 8 版（地端正式方案）** | Node 可攜式版（備援／對照） |
+|---|---|---|---|
+| 程式位置 | `backend/cloud/` | **`backend/onprem/dotnet/`** | `backend/onprem/server.mjs` |
+| 執行環境 | Netlify | **.NET 8 Runtime ＋ SQL Server** | Node.js 18+（零 npm 依賴） |
+| 靜態檔案 | Netlify CDN | 同服務供應（`STATIC_DIR`） | 內建靜態服務 |
+| 資料儲存 | Netlify Blobs | **SQL Server（17 表 5 VIEW）** | 檔案系統 `DATA_DIR` |
+| 附件本體 | Blobs | 檔案系統（`ATTACH_DIR`） | `DATA_DIR/attachments/` |
+| 個人身分與權限 | ✕（單一共用帳密） | **✓ Windows 驗證＋ERP 角色（§4.5）** | ✕ |
 
-前端 `app.js` 對兩種形態**完全無感**——只呼叫 `/api/data`。
+前端 `app.js` 對三種形態**完全無感**——只呼叫 `/api/data`。
 
-> **重要**：`backend/cloud/` 與 `netlify.toml` 是 Netlify 專用，地端部署**不需要、也無法使用**；地端只需要 `backend/onprem/` ＋ `frontend/` 靜態檔案。
+> **給資訊處**：正式方案請採 **.NET 8 版**（§3.5），它是唯一支援個人身分與權限隔離的形態，
+> 且已與雲端逐欄比對過真實資料。`server.mjs` 保留作為行為對照與緊急備援，**不是最終方案**。
+
+> **重要**：`backend/cloud/` 與 `netlify.toml` 是 Netlify 專用，地端部署**不需要、也無法使用**。
 
 ## 2. 地端環境需求
 
-- **Node.js 18 以上**（僅此一項；**零 npm 依賴**，不需 `npm install`）
-- 任一作業系統（Windows Server / Linux 皆可）
-- 建議前置一層反向代理（IIS ARR / nginx / Apache）處理 **HTTPS**——本伺服器只講 HTTP，帳密以 Basic Auth 傳輸，**正式環境必須走 HTTPS**
-- 磁碟空間：資料量極小（每筆紀錄約 1–2 KB，一年約數十 MB），10 GB 綽綽有餘
+**.NET 8 版（正式方案）**
 
-## 3. 部署步驟
+- **.NET 8 Runtime**（ASP.NET Core Runtime；只跑不編譯的話不需要 SDK）
+- **SQL Server 2017 以上**——DDL 用到 `STRING_AGG` 與 `OPENJSON`，2016 以下不支援
+- Windows Server（若要用 Windows 整合驗證；見 §4.5）
+- ⚠ **`InvariantGlobalization` 不可設為 true**：`Microsoft.Data.SqlClient` 一開連線就會丟例外；
+  中文定序與日期格式也需要完整 globalization。**部署到 Linux 容器須另裝 ICU**
+- 相依套件只有一個：`Microsoft.Data.SqlClient`
+  （**刻意不引** `Microsoft.AspNetCore.Authentication.Negotiate`——8.0 線帶高嚴重性弱點，
+  Windows 驗證改由主機層提供，見 §4.5）
+
+**Node 可攜式版（備援）**
+
+- Node.js 18 以上（**零 npm 依賴**，不需 `npm install`）
+
+**共通**
+
+- 建議前置反向代理（IIS ARR / nginx）處理 **HTTPS**——服務本身只講 HTTP，
+  Basic Auth 帳密是明文傳輸，**正式環境必須走 HTTPS**
+- 磁碟空間：單據資料極小（每筆約 1–2 KB）；**附件是主要成長來源**（單檔上限 4MB），
+  依實際上傳量估算，建議先給 50 GB 並納入監控
+
+## 3. 部署步驟（Node 可攜式版／備援）
+
+> 正式方案請看 **§3.5（.NET 8 版）**。本節保留給備援與行為對照用途。
 
 ```bash
 # 1) 取得程式碼
@@ -58,20 +83,96 @@ node backend/onprem/server.mjs
 - **Linux**：systemd unit，`ExecStart=/usr/bin/node /opt/kg-audit/backend/onprem/server.mjs`，`Restart=always`，環境變數寫在 unit 的 `Environment=` 或 `EnvironmentFile=`
 - **Windows**：以 [NSSM](https://nssm.cc/) 或工作排程器包成服務；環境變數設在服務層級
 
+## 3.5 部署步驟（.NET 8 版，**正式方案**）
+
+程式在 `backend/onprem/dotnet/`：`Program.cs`（端點）＋`Auth.cs`（身分與權限）
+＋`KgAudit.Api.csproj`＋`appsettings.json`。
+
+### ① 建立資料庫
+
+```bash
+sqlcmd -S <伺服器> -x -b -C -Q "CREATE DATABASE KG_AUDIT;"
+sqlcmd -S <伺服器> -d KG_AUDIT -f 65001 -x -b -C -i backend/sql/DB-SCHEMA.sql
+```
+
+**旗標缺一不可**：`-f 65001`＝UTF-8（少了它中文全亂碼、DDL 解析失敗）；`-x`＝停用 `$()`
+變數替換；`-b`＝遇錯即停；`-C`＝信任伺服器憑證（ODBC 18 預設強制加密）。
+資料遷移見 [`backend/sql/README.md`](../backend/sql/README.md) §5。
+
+### ② 發行
+
+```bash
+dotnet publish backend/onprem/dotnet/KgAudit.Api.csproj -c Release -o /opt/kg-audit
+```
+
+### ③ 環境變數
+
+| 變數 | 必填 | 說明 |
+|---|---|---|
+| `KGAUDIT_CONNECTION` | **是** | 本系統資料庫連線字串。未設定且 `appsettings` 也沒有 → **啟動即失敗**（刻意的） |
+| `ATTACH_DIR` | **是** | 附件本體根目錄。預設值是相對於執行檔往上數層的開發用路徑，**發行後幾乎必然要顯式指定** |
+| `STATIC_DIR` | **是** | 前端靜態根，指向 `frontend/`。同上，預設值是為 `bin/Debug` 佈局設計的；發行後層級不同 |
+| `ASPNETCORE_URLS` | 建議 | 監聽位址。`appsettings` 預設 `http://localhost:8080` **只接受本機連線**——要讓其他電腦連得到須設 `http://*:8080`（走 IIS 反向代理則不受影響） |
+| `SITE_AUTH_USER` / `SITE_AUTH_PASS` | **是** | 整站 Basic Auth。⚠ **`SITE_AUTH_PASS` 未設定＝完全不啟用驗證且不會有任何警告** |
+
+> **⚠ `STATIC_DIR` 設錯的症狀**：服務照樣起得來、API 也正常，但使用者看到**空白頁**——
+> 程式只會在日誌記一行 Warning 就繼續只跑 API。部署後請先用瀏覽器開首頁確認，不要只測 API。
+
+啟用權限（§4.5）時另需 `Auth__Mode`、`Auth__Directory`、`Auth__HrApi__*`、`KGAUDIT_ERP_CONNECTION`。
+
+> **⚠ `appsettings.json` 裡的 `_KgAuditErp` 是註解、不是設定。** 底線前綴的鍵不會被讀取。
+> ERP 連線請填 `ConnectionStrings:KgAuditErp`（無底線）或設環境變數 `KGAUDIT_ERP_CONNECTION`。
+> 填錯位置不會有錯誤訊息，會在啟用權限後變成全員 503。
+
+### ④ 啟動與常駐
+
+```bash
+/opt/kg-audit/KgAudit.Api          # 前景試跑，確認日誌無誤
+```
+
+- **IIS**：以 ASP.NET Core Module 託管（同時也是啟用 Windows 驗證的建議方式，見 §4.5）
+- **Windows 服務**：`sc create` 或 NSSM 包裝；環境變數設在服務層級
+- **Linux**：systemd unit，`Restart=always`，環境變數寫在 `Environment=` 或 `EnvironmentFile=`
+
+### ⑤ 上線前檢查
+
+- [ ] 瀏覽器開首頁**看得到畫面**（不是只有 API 通）→ 驗證 `STATIC_DIR`
+- [ ] 上傳一張附件並重新下載 → 驗證 `ATTACH_DIR` 與權限
+- [ ] `GET /health` 回 `{"ok":true,"sites":N}`，N 與預期工地數相符
+- [ ] 未帶帳密存取會跳出登入視窗 → 驗證 `SITE_AUTH_PASS` 確實生效
+- [ ] 日誌裡有一行「管理員部門」清單 → 與人資系統的部門名稱**逐字**核對（見 §4.5）
+
+### ⑥ 前端的計價功能開關（v23.1）
+
+前端目前把**計價與行情通報匯入從畫面下架**（`frontend/app.js` 的 `PRICING_UI = false`）。
+程式、資料、SQL 費率三表、本 API 的對應端點**全部保留**，只是不顯示。
+
+> **換季要匯入新費率時，必須先把 `PRICING_UI` 改成 `true` 並重新部署前端**——
+> 匯入入口也在這個開關裡面。代辦扣抵金額不受開關影響，仍會依已匯入的費率計算。
+
 ## 4. 資料遷移（Netlify → 地端）切換流程
 
 1. 公告停機時段（避免切換期間有人寫入舊站）
 2. 舊站：管理員「下載完整備份（JSON）」
 3. **附件搬運（v14 起必做）**：JSON 備份只含附件描述資料、**不含檔案本體**——依備份中各單據/稽核的 `attachments[].id`，以 `GET ?site=<工地>&attachment=<id>`（帶 Basic Auth）逐一下載存入地端附件目錄。**server.mjs 形態注意**：檔名須為 `<b64url(工地)>_<附件id>`（無副檔名），並須同步建立 `attmeta:` 中繼資料（名稱/型別），否則下載會退化為 octet-stream 與亂檔名；SQL 形態則回填 `file_path`（詳見 backend/sql/README.md 附件搬運節）
-4. 地端：`node backend/onprem/import-backup.mjs <備份檔>` → 啟動服務
-5. 驗證清單（缺一不可）：
+4. **費率書搬運（v22.8 起必做）**：完整備份 JSON 就是 `GET ?scope=all` 的回應，
+   而**行情通報費率書刻意不在 `scope=all` 裡**（走獨立端點 `GET ?rates=1`）。
+   只轉備份會讓費率書整個不見，計價金額與代辦扣抵全部變成「查無費率」。
+   請另行 `GET ?rates=1` 匯出後以 `op:rateBook` 匯入，或請管理員重跑一次當季匯入。
+   （各站的費率綁定在 config 裡，有隨備份帶走，不必另外處理。）
+5. 地端匯入資料 → 啟動服務
+   - **.NET 8 版**：見 §3.5 ①（`DB-SCHEMA.sql` ＋ `backend/sql/README.md` §5 的轉換與匯入）
+   - Node 版：`node backend/onprem/import-backup.mjs <備份檔>`
+6. 驗證清單（缺一不可）：
    - 開站出現 Basic Auth 登入 → 選工地攔截頁 → 各工地資料筆數與舊站一致
    - 建立一筆點工申請 → 回報覆核（逐工種＋分段加班）→ 差異正確
    - 歷程報表期間/條件篩選 → 匯出明細與計價彙總 CSV
    - 附件抽查：任選數筆含附件單據，縮圖可開啟、稽核 PDF 照片正常
+   - **代辦扣抵**：任選一筆有代辦的單，確認「廠商排名」頁籤的代辦扣抵金額算得出來
+     （算不出來多半是費率書沒搬，見步驟 4）
    - 管理員登入 → 設定頁名單維護 → 下載完整備份
-6. DNS／內網入口改指地端；通知使用者新網址
-7. **退場舊站**：更換或停用 Netlify 站台密碼、（建議）刪除 Netlify 站台與環境變數，避免兩份資料並存造成誤填
+7. DNS／內網入口改指地端；通知使用者新網址
+8. **退場舊站**：更換或停用 Netlify 站台密碼、（建議）刪除 Netlify 站台與環境變數，避免兩份資料並存造成誤填
 
 ## 4.5 Windows 驗證與權限（.NET 8 API，選用）
 
@@ -126,6 +227,18 @@ GHSA-8prm-248r-h957），改由主機提供身分，本程式只讀取已驗證�
 `dbo.sites.project_code` 對應 ERP 專案代碼；未填的工地**只有管理員看得到**。
 判定規則與角色對照見 [`AUTH-PLAN.md`](AUTH-PLAN.md) §2.4。
 
+**③-2 確認管理員部門。**
+`Auth:AdminDepartments` 裡的部門，其人員一登入即為系統管理者。預設三個部門，
+**但成控可在系統設定頁自行增減**（存進 `app_settings` 資料表，優先於本設定檔；
+資料表為空時才回退到這裡）。
+
+> ⚠ **部門名稱是逐字元完全相符**人資 API 回傳的 `deptName`（含全半形與空白）。
+> 寫錯**不會有錯誤訊息**，只會讓該部門的人拿不到管理員權限。因此：
+> - 服務**啟動時會在日誌印出設定的管理員部門清單**——請與人資系統的名稱逐字核對
+> - **授權失敗時會記下該使用者實際的部門字串**——設定寫「採購部」而人資回「採購處」
+>   這類情況，比對兩行日誌即可查出
+> 上線後請各部門實際找一位同仁登入確認。
+
 **④ 驗收。** 跑 `AUTH-PLAN.md` §6 的 11 個情境。其中情境 7 與 Windows 驗證本身
 **未在網域環境實測過**（開發機無網域），請務必在正式環境複驗。
 
@@ -135,7 +248,8 @@ GHSA-8prm-248r-h957），改由主機提供身分，本程式只讀取已驗證�
 
 | 項目 | 建議 |
 |---|---|
-| 備份 | 每日排程壓縮整個 `DATA_DIR`（含 JSON 檔與 `attachments/` 子目錄的附件二進位——**備份規則勿只挑 .json**）；另保留管理員手動 JSON 備份於月結時點 |
+| 備份（.NET 版） | **兩份都要**：① SQL Server 資料庫的例行備份 ② **`ATTACH_DIR` 的附件檔案**——附件本體**不在資料庫裡**（刻意的：幾百 MB 的照片塞進 DB 會讓備份與還原又慢又大）。只備份資料庫＝所有簽單照片與稽核照片都沒被備份到 |
+| 備份（Node 版） | 每日排程壓縮整個 `DATA_DIR`（含 JSON 檔與 `attachments/` 子目錄的附件二進位——**備份規則勿只挑 .json**）；另保留管理員手動 JSON 備份於月結時點 |
 | 監控 | 服務存活（HTTP 200 於 `/`）＋磁碟空間 |
 | 密碼輪替 | 人員異動時更換 `SITE_AUTH_PASS` 並重啟服務 |
 | 日誌 | stdout（systemd journal / NSSM 日誌檔）；本系統不記錄操作者身分（見下） |
@@ -163,4 +277,19 @@ GHSA-8prm-248r-h957），改由主機提供身分，本程式只讀取已驗證�
 
 ## 8. 測試狀態聲明
 
-`backend/onprem/server.mjs` 與 `import-backup.mjs` 撰寫當下開發機無 Node 環境，**僅通過語法驗證與對照 `backend/cloud/functions/api.mjs` 的逐行合約比對，未經實機執行測試**。部署前請務必在測試機完整跑過第 4 節的驗證清單；如有問題請回報系統管理者。
+三種形態的驗證程度**不同**，請分別看待：
+
+| 形態 | 狀態 |
+|---|---|
+| **`backend/onprem/dotnet/`（正式方案）** | ✅ **已實機測試**：以正式資料快照在 LocalDB 起服務，與雲端逐欄比對 996 筆單據**差異 0 處**；409 樂觀並發以 12 執行緒實測恰好 1 人成功；各階段功能測試累計 200 項以上全過（含跨工地隔離、日期防呆、代辦逐筆往返、管理員部門） |
+| `backend/onprem/server.mjs`／`import-backup.mjs` | ⚠ **未經實機執行測試**——撰寫當下開發機無 Node 環境，僅通過語法驗證與對照 `backend/cloud/functions/api.mjs` 的逐行合約比對 |
+| `backend/sql/`（DDL＋轉換器） | ✅ LocalDB 實建、以正式資料匯入對帳一致 |
+
+**兩項本機無法驗證、部署時務必複驗**（§4.5 亦有說明）：
+
+1. **Windows 整合驗證本身**——開發機沒有網域，`Auth:Mode=Windows` 這條路徑無法測試。
+   請以實際網域帳號登入確認，並特別驗證「未登入者不會以匿名身分進來」
+2. **管理員部門是否對得上**——部門名稱是逐字元比對人資 API 的回傳值。
+   請各部門實際找一位同仁登入確認取得管理員權限；比對不上時服務日誌會記下該員的實際部門字串
+
+不論採哪一種形態，部署前都請完整跑過 §4 的驗證清單；如有問題請回報系統管理者。

@@ -48,11 +48,12 @@ STATUSES = ("待回報", "已回報")
 
 out = []
 skipped = {"id": 0, "date": 0, "status": 0, "type": 0, "option_dup": 0, "audit": 0,
-           "attachment": 0}
+           "attachment": 0, "agent": 0}
 counts = {"sites": 0, "site_options": 0, "labor_records": 0, "labor_reports": 0,
           "labor_report_worktypes": 0, "equip_records": 0, "equip_reports": 0,
           "equip_report_usage": 0, "labor_audits": 0, "equip_audits": 0,
-          "attachments": 0, "site_rate_bindings": 0}
+          "attachments": 0, "site_rate_bindings": 0,
+          "labor_agent_items": 0, "equip_agent_items": 0}
 
 
 def q(s):
@@ -285,6 +286,19 @@ for site, store in (data["stores"] or {}).items():
                     f"{num(wt.get('ot2'), '0')}, {num(wt.get('otOver'), '0')});"
                 )
                 counts["labor_report_worktypes"] += 1
+            # v23 代辦逐筆（合約 §4.10）。責任歸屬廠商與工種都是必填——
+            # 缺任一就無從歸戶／無從查費率，跳過並計數而不是塞空字串進去
+            for a in rep.get("agentItems") or []:
+                if not a or not a.get("vendor") or not a.get("type"):
+                    skipped["agent"] += 1
+                    continue
+                out.append(
+                    "INSERT INTO dbo.labor_agent_items (record_id, vendor, work_type, work, ot2, ot_over, note) "
+                    f"VALUES ({q(r['id'])}, {q(a['vendor'])}, {q(a['type'])}, "
+                    f"{num(a.get('work'), '0')}, {num(a.get('ot2'), '0')}, "
+                    f"{num(a.get('otOver'), '0')}, {q(a.get('note') or None)});"
+                )
+                counts["labor_agent_items"] += 1
         emit_attachments(site, "labor", r["id"], r.get("attachments"))
         emit_audits("labor_audits", r, "labor_audits", site)
 
@@ -336,6 +350,17 @@ for site, store in (data["stores"] or {}).items():
                     f"{num(u.get('hours'), '0')});"
                 )
                 counts["equip_report_usage"] += 1
+            # v23 代辦逐筆（合約 §4.10）；機具只綁到廠商層級，故無工種欄
+            for a in rep.get("agentItems") or []:
+                if not a or not a.get("vendor"):
+                    skipped["agent"] += 1
+                    continue
+                out.append(
+                    "INSERT INTO dbo.equip_agent_items (record_id, vendor, qty, note) "
+                    f"VALUES ({q(r['id'])}, {q(a['vendor'])}, {num(a.get('qty'), '0')}, "
+                    f"{q(a.get('note') or None)});"
+                )
+                counts["equip_agent_items"] += 1
         emit_attachments(site, "equipment", r["id"], r.get("attachments"))
         emit_audits("equip_audits", r, "equip_audits", site)
 

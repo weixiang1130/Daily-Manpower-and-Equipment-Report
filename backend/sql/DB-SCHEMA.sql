@@ -292,6 +292,40 @@ CREATE TABLE dbo.site_rate_bindings (
 );
 GO
 
+/* ---------- 15～16. 代辦逐筆（v23；合約 §4.10） ----------
+   代辦＝向**本單廠商**叫的工／機具，但成本歸屬另一家廠商，計價時從該廠商扣回。
+   v22 以前只有回報上的「代辦工數／時數／備註」三欄，責任歸屬廠商寫在自由文字
+   備註裡（例「○○公司扣 2 工，扣款 4200」）——無法自動統計代付代扣。
+   舊三欄仍保留在 labor_reports／equip_reports（既有資料承繼），**新舊不相加**。
+
+   ⚠ 金額不落庫，與 §4.9 計價一致：依出工日回查當季費率算。費率會換季，
+     金額要能回算；存死了就再也對不回去。
+   ⚠ 費率取「本單廠商」的，不是這裡的 vendor——vendor 只是歸屬對象。 */
+CREATE TABLE dbo.labor_agent_items (
+    agent_row_id INT IDENTITY(1,1) CONSTRAINT PK_labor_agent PRIMARY KEY,
+    record_id    VARCHAR(64) NOT NULL CONSTRAINT FK_labor_agent
+                 REFERENCES dbo.labor_reports(record_id) ON DELETE CASCADE,
+    vendor       NVARCHAR(200) NOT NULL,           -- 責任歸屬廠商
+    work_type    NVARCHAR(100) NOT NULL,           -- 必須是本單 workTypes 出現過的工種
+    work         DECIMAL(6,2) NOT NULL CONSTRAINT DF_lagent_work DEFAULT 0,
+    ot2          DECIMAL(6,2) NOT NULL CONSTRAINT DF_lagent_ot2  DEFAULT 0,
+    ot_over      DECIMAL(6,2) NOT NULL CONSTRAINT DF_lagent_oto  DEFAULT 0,
+    note         NVARCHAR(MAX) NULL
+);
+CREATE INDEX IX_labor_agent_vendor ON dbo.labor_agent_items(vendor);
+
+CREATE TABLE dbo.equip_agent_items (
+    agent_row_id INT IDENTITY(1,1) CONSTRAINT PK_equip_agent PRIMARY KEY,
+    record_id    VARCHAR(64) NOT NULL CONSTRAINT FK_equip_agent
+                 REFERENCES dbo.equip_reports(record_id) ON DELETE CASCADE,
+    vendor       NVARCHAR(200) NOT NULL,
+    -- 數量。**單位由主計價品項的 charge_type 決定**（全天→天、時租→小時），與 §4.9 同源
+    qty          DECIMAL(8,2) NOT NULL CONSTRAINT DF_eagent_qty DEFAULT 0,
+    note         NVARCHAR(MAX) NULL
+);
+CREATE INDEX IX_equip_agent_vendor ON dbo.equip_agent_items(vendor);
+GO
+
 /* ==========================================================================
    VIEW：對應系統現有兩張報表（期間/廠商由查詢端 WHERE 篩選）
    ========================================================================== */

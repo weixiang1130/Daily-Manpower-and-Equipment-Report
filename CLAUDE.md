@@ -69,7 +69,7 @@ backend/
   cloud/edge-functions/auth.ts 整站 Basic Auth
   onprem/server.mjs            可攜式伺服器（零依賴 Node 18+；同一 API 合約＋靜態服務＋Basic Auth）
   onprem/import-backup.mjs     資料遷移（備份 JSON → 地端資料目錄；**不含附件本體**）
-  sql/                         SQL 交付包：DB-SCHEMA.sql 11表5VIEW＋backup-json-to-sql.py＋README
+  sql/                         SQL 交付包：DB-SCHEMA.sql 16表5VIEW＋backup-json-to-sql.py＋README
                                （已於 LocalDB 以正式資料實測對帳）
 
 docs/

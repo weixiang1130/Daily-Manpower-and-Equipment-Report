@@ -218,18 +218,19 @@
             <div class="combobox" id="cb_l_engineer"></div>
           </div>
 
-          <div class="field field-num">
-            <label title="廠商代辦工數（選填；未填代辦＝全數自辦）">代辦工數</label>
-            <input type="number" id="l_vendorWork" min="0" step="0.5" placeholder="選填；未填代辦＝全數自辦">
-          </div>
-          <div class="field field-num">
-            <label title="廠商代辦時數（小時）">代辦時數</label>
-            <input type="number" id="l_vendorHours" min="0" step="0.5" placeholder="選填">
-          </div>
+          <!-- v23：代辦改逐筆列（一張單可代辦多家）。舊的三欄（工數／時數／備註）
+               自 v23 起不再填寫，既有值原樣承繼並在報表保留顯示（合約 §4.10）。 -->
           <div class="field field-wide">
-            <label>廠商代辦備註</label>
-            <!-- v22.5：改 textarea 以支援自動列點（可寫多筆代辦事項） -->
-            <textarea id="l_vendorNote" rows="2" placeholder="選填：例：○○公司扣2工，扣款4200（可用 1. 起頭列點）"></textarea>
+            <label>代辦（選填：這批工有一部分是幫其他廠商叫的）</label>
+            <div id="l_agentRows" class="attendance-box"></div>
+            <div class="agent-add">
+              <select id="l_agentVendor" class="agent-pick"><option value="">責任歸屬廠商⋯</option></select>
+              <select id="l_agentType" class="agent-pick"><option value="">工種⋯</option></select>
+              <button type="button" id="l_agentAddBtn" class="ghost-btn">＋ 加入代辦列</button>
+            </div>
+            <p class="hint">代辦＝向<strong>本單廠商</strong>叫的工，但成本要歸給另一家廠商，計價時從該廠商扣回。
+              工種限本單已填的工種（代扣要用本單廠商的該工種費率查價）；代辦量不可超過該工種的回報量。
+              <strong>代扣金額由系統依本單廠商的當季費率自動計算</strong>，不需人工填。</p>
           </div>
 
           <div class="field field-wide">
@@ -410,18 +411,17 @@
             <div class="combobox" id="cb_e_checker"></div>
           </div>
 
-          <div class="field field-num">
-            <label title="廠商代辦工數（選填；未填代辦＝全數自辦）">代辦工數</label>
-            <input type="number" id="e_vendorWork" min="0" step="0.5" placeholder="選填；未填代辦＝全數自辦">
-          </div>
-          <div class="field field-num">
-            <label title="廠商代辦時數（小時）">代辦時數</label>
-            <input type="number" id="e_vendorHours" min="0" step="0.5" placeholder="選填">
-          </div>
+          <!-- v23：代辦改逐筆列（合約 §4.10）。機具只綁到廠商層級，
+               所以代辦列不需選品項——數量的單位跟著主品項的計價方式走。 -->
           <div class="field field-wide">
-            <label>廠商代辦備註</label>
-            <!-- v22.5：改 textarea 以支援自動列點（可寫多筆代辦事項） -->
-            <textarea id="e_vendorNote" rows="2" placeholder="選填：例：扣款、代辦事項說明（可用 1. 起頭列點）"></textarea>
+            <label>代辦（選填：這台機具有一部分是幫其他廠商叫的）</label>
+            <div id="e_agentRows" class="attendance-box"></div>
+            <div class="agent-add">
+              <select id="e_agentVendor" class="agent-pick"><option value="">責任歸屬廠商⋯</option></select>
+              <button type="button" id="e_agentAddBtn" class="ghost-btn">＋ 加入代辦列</button>
+            </div>
+            <p class="hint" id="e_agentHint">代辦＝向<strong>本單廠商</strong>叫的機具，但成本要歸給另一家廠商，計價時從該廠商扣回。
+              數量的單位跟著主計價品項走（全天→天數、時租→小時），<strong>代扣金額由系統依本單廠商的當季費率自動計算</strong>。</p>
           </div>
 
           <!-- v22.8：行情通報計價。選完廠商後列出該廠商的品項；
@@ -475,6 +475,7 @@
         <button class="rtab active" data-r="labor">點工紀錄</button>
         <button class="rtab" data-r="equipment">機具紀錄</button>
         <button class="rtab" data-r="ranking">叫工排名</button>
+        <button class="rtab" data-r="vendorRank">廠商排名</button>
       </div>
       <div class="report-filter">
         <label>期間篩選</label>

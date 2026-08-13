@@ -223,11 +223,14 @@ static async Task<JsonObject> ReadStores(SqlConnection cn, string? onlySite)
     var labRep = await Query(cn, $"SELECT rp.* FROM dbo.labor_reports rp JOIN dbo.labor_records r ON r.id=rp.record_id JOIN dbo.sites s ON s.site_id=r.site_id{siteFilter}", p);
     var labWt = await Query(cn, $"SELECT w.* FROM dbo.labor_report_worktypes w JOIN dbo.labor_records r ON r.id=w.record_id JOIN dbo.sites s ON s.site_id=r.site_id{siteFilter} ORDER BY w.worktype_row_id", p);
     var labAud = await Query(cn, $"SELECT a.* FROM dbo.labor_audits a JOIN dbo.labor_records r ON r.id=a.record_id JOIN dbo.sites s ON s.site_id=r.site_id{siteFilter} ORDER BY a.audited_at", p);
+    // v23 代辦逐筆（合約 §4.10）
+    var labAgent = await Query(cn, $"SELECT g.* FROM dbo.labor_agent_items g JOIN dbo.labor_records r ON r.id=g.record_id JOIN dbo.sites s ON s.site_id=r.site_id{siteFilter} ORDER BY g.agent_row_id", p);
 
     var eq = await Query(cn, $"SELECT r.* FROM dbo.equip_records r JOIN dbo.sites s ON s.site_id=r.site_id{siteFilter}", p);
     var eqRep = await Query(cn, $"SELECT rp.* FROM dbo.equip_reports rp JOIN dbo.equip_records r ON r.id=rp.record_id JOIN dbo.sites s ON s.site_id=r.site_id{siteFilter}", p);
     var eqUse = await Query(cn, $"SELECT u.* FROM dbo.equip_report_usage u JOIN dbo.equip_records r ON r.id=u.record_id JOIN dbo.sites s ON s.site_id=r.site_id{siteFilter} ORDER BY u.usage_row_id", p);
     var eqAud = await Query(cn, $"SELECT a.* FROM dbo.equip_audits a JOIN dbo.equip_records r ON r.id=a.record_id JOIN dbo.sites s ON s.site_id=r.site_id{siteFilter} ORDER BY a.audited_at", p);
+    var eqAgent = await Query(cn, $"SELECT g.* FROM dbo.equip_agent_items g JOIN dbo.equip_records r ON r.id=g.record_id JOIN dbo.sites s ON s.site_id=r.site_id{siteFilter} ORDER BY g.agent_row_id", p);
 
     var atts = await Query(cn, $"SELECT a.* FROM dbo.attachments a JOIN dbo.sites s ON s.site_id=a.site_id{siteFilter}", p);
     var attsByParent = atts.ToLookup(a => (string)a["parent_id"]!);
@@ -235,9 +238,11 @@ static async Task<JsonObject> ReadStores(SqlConnection cn, string? onlySite)
     var repById = labRep.ToDictionary(r => (string)r["record_id"]!);
     var wtBy = labWt.ToLookup(w => (string)w["record_id"]!);
     var labAudBy = labAud.ToLookup(a => (string)a["record_id"]!);
+    var labAgentBy = labAgent.ToLookup(g => (string)g["record_id"]!);
     var eqRepById = eqRep.ToDictionary(r => (string)r["record_id"]!);
     var useBy = eqUse.ToLookup(u => (string)u["record_id"]!);
     var eqAudBy = eqAud.ToLookup(a => (string)a["record_id"]!);
+    var eqAgentBy = eqAgent.ToLookup(g => (string)g["record_id"]!);
 
     var stores = new JsonObject();
     foreach (var s in sites)
@@ -294,7 +299,17 @@ static async Task<JsonObject> ReadStores(SqlConnection cn, string? onlySite)
                     ["diff"] = Num(rp["diff"]),
                     ["zeroWork"] = Bit(rp["zero_work"]),
                     ["signReturnDate"] = DateStr(rp["sign_return_date"]) ?? "",
-                    ["conclusion"] = Str(rp["conclusion"]) ?? ""
+                    ["conclusion"] = Str(rp["conclusion"]) ?? "",
+                    // v23 代辦逐筆（合約 §4.10）
+                    ["agentItems"] = new JsonArray(labAgentBy[id].Select(g => (JsonNode)new JsonObject
+                    {
+                        ["vendor"] = Str(g["vendor"]),
+                        ["type"] = Str(g["work_type"]),
+                        ["work"] = Num(g["work"]),
+                        ["ot2"] = Num(g["ot2"]),
+                        ["otOver"] = Num(g["ot_over"]),
+                        ["note"] = Str(g["note"]) ?? ""
+                    }).ToArray())
                 };
                 AddDoneCols(o, rp);
                 report = o;
@@ -345,7 +360,14 @@ static async Task<JsonObject> ReadStores(SqlConnection cn, string? onlySite)
                     ["rateItem"] = Str(rp["rate_item"]) ?? "",     // v22.8
                     ["rateOtItem"] = Str(rp["rate_ot_item"]) ?? "",
                     ["zeroUse"] = Bit(rp["zero_use"]),
-                    ["signReturnDate"] = DateStr(rp["sign_return_date"]) ?? ""
+                    ["signReturnDate"] = DateStr(rp["sign_return_date"]) ?? "",
+                    // v23 代辦逐筆（合約 §4.10）；機具綁廠商層級，故無工種欄
+                    ["agentItems"] = new JsonArray(eqAgentBy[id].Select(g => (JsonNode)new JsonObject
+                    {
+                        ["vendor"] = Str(g["vendor"]),
+                        ["qty"] = Num(g["qty"]),
+                        ["note"] = Str(g["note"]) ?? ""
+                    }).ToArray())
                 };
                 AddDoneCols(o, rp);
                 report = o;
@@ -793,9 +815,9 @@ static async Task<IResult> OpDeleteRecord(SqlConnection cn, JsonObject body)
      不可依賴這裡的 metadata 列還在。 */
 static async Task DeleteRecordRows(SqlConnection cn, SqlTransaction tx, int sid, string kind, string id)
 {
-    var (recT, repT, childT, childCol, audT, attKind) = kind == "labor"
-        ? ("labor_records", "labor_reports", "labor_report_worktypes", "record_id", "labor_audits", "labor_audit")
-        : ("equip_records", "equip_reports", "equip_report_usage", "record_id", "equip_audits", "equip_audit");
+    var (recT, repT, childT, childCol, audT, attKind, agentT) = kind == "labor"
+        ? ("labor_records", "labor_reports", "labor_report_worktypes", "record_id", "labor_audits", "labor_audit", "labor_agent_items")
+        : ("equip_records", "equip_reports", "equip_report_usage", "record_id", "equip_audits", "equip_audit", "equip_agent_items");
 
     /* ⚠ 跨工地守衛，不可省略。
        單據 id 是**全域主鍵**（DB-SCHEMA.sql：PK_labor / PK_equip 只有 id），
@@ -815,6 +837,9 @@ static async Task DeleteRecordRows(SqlConnection cn, SqlTransaction tx, int sid,
         ("@s", sid), ("@pk", kind), ("@id", id), ("@ak", attKind));
     await Exec(cn, tx, $"DELETE FROM dbo.{audT} WHERE record_id=@id", ("@id", id));
     await Exec(cn, tx, $"DELETE FROM dbo.{childT} WHERE {childCol}=@id", ("@id", id));
+    // v23 代辦列：FK 掛在 *_reports 上、有 ON DELETE CASCADE，刪 repT 本來就會連動，
+    // 這裡仍明寫一行與其他子表對齊——日後有人改動 FK 時不會靜默留下孤兒列
+    await Exec(cn, tx, $"DELETE FROM dbo.{agentT} WHERE record_id=@id", ("@id", id));
     await Exec(cn, tx, $"DELETE FROM dbo.{repT} WHERE record_id=@id", ("@id", id));
     await Exec(cn, tx, $"DELETE FROM dbo.{recT} WHERE id=@id AND site_id=@s", ("@id", id), ("@s", sid));
 }
@@ -980,6 +1005,18 @@ static async Task InsertLabor(SqlConnection cn, SqlTransaction tx, int sid, Json
             "INSERT INTO dbo.labor_report_worktypes (record_id, work_type, work, ot2, ot_over) VALUES (@id,@t,@w,@a,@b)",
             ("@id", id), ("@t", type), ("@w", D0(w, "work")), ("@a", D0(w, "ot2")), ("@b", D0(w, "otOver")));
     }
+
+    // v23 代辦逐筆（合約 §4.10）。廠商與工種缺任一就無從歸戶／無從查費率，跳過
+    foreach (var a in (rep["agentItems"] as JsonArray) ?? new JsonArray())
+    {
+        var av = Sx(a, "vendor");
+        var at = Sx(a, "type");
+        if (av is null || at is null) continue;
+        await Exec(cn, tx,
+            "INSERT INTO dbo.labor_agent_items (record_id, vendor, work_type, work, ot2, ot_over, note) VALUES (@id,@v,@t,@w,@a2,@b,@n)",
+            ("@id", id), ("@v", Trunc(av, 200)), ("@t", Trunc(at, 100)),
+            ("@w", D0(a, "work")), ("@a2", D0(a, "ot2")), ("@b", D0(a, "otOver")), ("@n", Sx(a, "note")));
+    }
 }
 
 static async Task InsertEquip(SqlConnection cn, SqlTransaction tx, int sid, JsonObject r, string id, int v, DateTime now)
@@ -1023,6 +1060,16 @@ static async Task InsertEquip(SqlConnection cn, SqlTransaction tx, int sid, Json
         await Exec(cn, tx,
             "INSERT INTO dbo.equip_report_usage (record_id, equip_type, present, hours) VALUES (@id,@t,@p,@h)",
             ("@id", id), ("@t", type), ("@p", Bx(u, "present")), ("@h", D0(u, "hours")));
+    }
+
+    // v23 代辦逐筆（合約 §4.10）
+    foreach (var a in (rep["agentItems"] as JsonArray) ?? new JsonArray())
+    {
+        var av = Sx(a, "vendor");
+        if (av is null) continue;
+        await Exec(cn, tx,
+            "INSERT INTO dbo.equip_agent_items (record_id, vendor, qty, note) VALUES (@id,@v,@q,@n)",
+            ("@id", id), ("@v", Trunc(av, 200)), ("@q", D0(a, "qty")), ("@n", Sx(a, "note")));
     }
 }
 
@@ -1373,13 +1420,13 @@ static async Task<IResult> OpClear(SqlConnection cn, JsonObject body, bool all)
         while (await rd.ReadAsync()) files.Add(rd.GetString(0));
 
     var deleted = 0;
-    foreach (var (recT, repT, childT, audT) in new[]
+    foreach (var (recT, repT, childT, audT, agentT) in new[]
              {
-                 ("labor_records", "labor_reports", "labor_report_worktypes", "labor_audits"),
-                 ("equip_records", "equip_reports", "equip_report_usage", "equip_audits")
+                 ("labor_records", "labor_reports", "labor_report_worktypes", "labor_audits", "labor_agent_items"),
+                 ("equip_records", "equip_reports", "equip_report_usage", "equip_audits", "equip_agent_items")
              })
     {
-        foreach (var t in new[] { audT, childT, repT })
+        foreach (var t in new[] { audT, childT, agentT, repT })
             await Exec(cn, tx, $"DELETE FROM dbo.{t} WHERE record_id IN (SELECT r.id FROM dbo.{recT} r{where})", p);
         deleted += await Exec(cn, tx, $"DELETE FROM r FROM dbo.{recT} r{where}", p);
     }

@@ -1004,6 +1004,17 @@ let editingLaborReportId = null;
 let editingLaborReportBaseV = 0;
 let typeState = [];   // v11：逐工種覆核列 [{type, work, ot2, otOver}]
 
+/* ==========================================================
+   代辦（v23，合約 §4.10）：一張單可代辦多家廠商。
+   代辦＝向**本單廠商**叫的工／機具，但成本歸屬另一家廠商，計價時扣回。
+   v22 以前只有「代辦工數／時數／備註」三欄，責任歸屬廠商埋在自由文字備註裡
+   （例「○○公司扣2工，扣款4200」）——無法自動統計，正是要消除的人工作業。
+   ⚠ 點工的代辦列限本單已填的工種：代扣要用「本單廠商＋該工種」查費率，
+     工種對不上就沒有費率依據。
+   ========================================================== */
+let agentState = [];        // 點工代辦列 [{vendor, type, work, ot2, otOver, note}]
+let equipAgentState = [];   // 機具代辦列 [{vendor, qty, note}]
+
 /* 數字欄位取值：空白回 null（與 0 區分），其餘轉數字 */
 function numFieldVal(id){
   const v = document.getElementById(id).value.trim();
@@ -1038,6 +1049,25 @@ function initLaborReportForm(){
     renderTypeRows();
     syncTotalsFromTypes();
   });
+
+  /* 代辦列（v23）。與逐工種列同一套事件委派寫法 */
+  const agentBox = document.getElementById("l_agentRows");
+  agentBox.addEventListener("input", e=>{
+    const el = e.target;
+    const i = parseInt(el.dataset.i,10);
+    if(Number.isNaN(i) || !agentState[i]) return;
+    if(el.classList.contains("ag-work")) agentState[i].work = parseFloat(el.value)||0;
+    if(el.classList.contains("ag-ot2")) agentState[i].ot2 = parseFloat(el.value)||0;
+    if(el.classList.contains("ag-otover")) agentState[i].otOver = parseFloat(el.value)||0;
+    if(el.classList.contains("ag-note-in")) agentState[i].note = el.value;
+  });
+  agentBox.addEventListener("click", e=>{
+    const btn = e.target.closest(".att-remove");
+    if(!btn) return;
+    agentState.splice(parseInt(btn.dataset.i,10), 1);
+    renderAgentRows();
+  });
+  document.getElementById("l_agentAddBtn").addEventListener("click", addAgentRow);
 
   document.getElementById("laborReportForm").addEventListener("submit", async e=>{
     e.preventDefault();
@@ -1078,6 +1108,13 @@ function initLaborReportForm(){
     const signErr = signReturnError(document.getElementById("l_signReturnDate").value, rec.date);
     if(signErr){ toast(signErr); return; }
 
+    /* v23：代辦列的檢查是**硬性擋下**（不是可確認的警告）——代辦超量會讓代扣金額
+       大於我們實際付出去的錢，那是直接算錯帳，不能讓人按確認繞過去 */
+    if(!zeroWork){
+      const agentErrs = collectAgentErrors(typeState, agentState);
+      if(agentErrs.length){ toast("代辦資料有誤，未送出：\n- " + agentErrs.join("\n- ")); return; }
+    }
+
     const warnings = collectLaborWarnings(typeState, actual, ot2Total, otOverTotal, zeroWork);
     if(warnings.length){
       const ok = confirm("⚠ 系統偵測到以下數據配置異常，請確認是否輸入錯誤：\n\n- " + warnings.join("\n- ") + "\n\n確認無誤仍要送出嗎？");
@@ -1103,9 +1140,15 @@ function initLaborReportForm(){
         selfDoneWork: (rec.report && rec.report.selfDoneWork != null) ? rec.report.selfDoneWork : null,
         selfDoneHours: (rec.report && rec.report.selfDoneHours != null) ? rec.report.selfDoneHours : null,
         selfDoneNote: (rec.report && (rec.report.selfDoneNote || rec.report.selfDone)) || "",
-        vendorDoneWork: numFieldVal("l_vendorWork"),
-        vendorDoneHours: numFieldVal("l_vendorHours"),
-        vendorDoneNote: document.getElementById("l_vendorNote").value.trim(),
+        /* v23：表單移除「代辦三欄」，改逐筆 agentItems（合約 §4.10）。
+           舊值與自辦同樣原樣承繼——新舊**不相加**，報表分兩欄呈現避免重複計算 */
+        vendorDoneWork: (rec.report && rec.report.vendorDoneWork != null) ? rec.report.vendorDoneWork : null,
+        vendorDoneHours: (rec.report && rec.report.vendorDoneHours != null) ? rec.report.vendorDoneHours : null,
+        vendorDoneNote: (rec.report && (rec.report.vendorDoneNote || rec.report.vendorDone)) || "",
+        agentItems: zeroWork ? [] : agentState.map(a=>({
+          vendor: a.vendor, type: a.type,
+          work: a.work || 0, ot2: a.ot2 || 0, otOver: a.otOver || 0, note: (a.note || "").trim()
+        })),
         conclusion: document.getElementById("l_conclusion").value.trim()
       }
     });
@@ -1164,6 +1207,7 @@ function renderTypeRows(){
     el.readOnly = lock;
     el.classList.toggle("readonly-field", lock);
   });
+  fillAgentSelects();   // 代辦的工種下拉只列本單已填的工種，工種一變就要跟著重填
   if(!typeState.length){
     box.innerHTML = '<div class="empty-row">尚未加入工種——請在下方選擇工種（粗工／技術工／打石工⋯）逐工種記錄；若當日完全無人出工，勾選「0 工確認」</div>';
     return;
@@ -1179,6 +1223,89 @@ function renderTypeRows(){
       </div>
       <button type="button" class="att-remove" data-i="${i}" title="移除此工種">×</button>
     </div>`).join("");
+}
+
+/* ---- 代辦列（點工；v23，合約 §4.10） ---- */
+
+function renderAgentRows(){
+  const box = document.getElementById("l_agentRows");
+  if(!box) return;
+  const zero = document.getElementById("l_zeroWork").checked;
+  box.classList.toggle("disabled", zero);
+  if(!agentState.length){
+    box.innerHTML = '<div class="empty-row">未填代辦＝這批工<strong>全數自辦</strong>。若有一部分是幫其他廠商叫的，在下方選「責任歸屬廠商＋工種」加入一列</div>';
+    return;
+  }
+  box.innerHTML = agentState.map((a,i)=>`
+    <div class="att-row present">
+      <span class="tr-name">${esc(a.vendor)}<br><small>${esc(a.type)}</small></span>
+      <div class="att-fields">
+        <label>代辦工數<input type="number" class="ag-work" data-i="${i}" step="0.5" min="0" value="${a.work}" ${zero?"disabled":""}></label>
+        <label>加班·前2小時<input type="number" class="ag-ot2" data-i="${i}" step="0.5" min="0" value="${a.ot2}" ${zero?"disabled":""}></label>
+        <label>加班·第3小時起<input type="number" class="ag-otover" data-i="${i}" step="0.5" min="0" value="${a.otOver}" ${zero?"disabled":""}></label>
+        <label class="ag-note">備註<input type="text" class="ag-note-in" data-i="${i}" value="${esc(a.note||"")}" placeholder="選填" ${zero?"disabled":""}></label>
+      </div>
+      <button type="button" class="att-remove" data-i="${i}" title="移除此代辦列">×</button>
+    </div>`).join("");
+}
+
+/* 兩個下拉：廠商取自名單池；工種**只列本單已填的工種**（合約 §4.10 的約束）。
+   每次工種列變動都要重填，否則會選到已被移除的工種。 */
+function fillAgentSelects(){
+  const vs = document.getElementById("l_agentVendor");
+  const ts = document.getElementById("l_agentType");
+  if(!vs || !ts) return;
+  const keepV = vs.value, keepT = ts.value;
+  const vendors = (cur() && cur().config && cur().config.vendors) || [];
+  vs.innerHTML = '<option value="">責任歸屬廠商⋯</option>'
+    + vendors.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join("");
+  ts.innerHTML = '<option value="">工種⋯</option>'
+    + typeState.map(t=>`<option value="${esc(t.type)}">${esc(t.type)}</option>`).join("");
+  vs.value = keepV;
+  ts.value = typeState.some(t=>t.type===keepT) ? keepT : "";
+}
+
+function addAgentRow(){
+  if(!editingLaborReportId){ toast("請先從清單選擇要回報的紀錄"); return; }
+  if(document.getElementById("l_zeroWork").checked){ toast("已勾選 0 工確認，無代辦可填"); return; }
+  const vendor = document.getElementById("l_agentVendor").value;
+  const type = document.getElementById("l_agentType").value;
+  if(!vendor){ toast("請先選責任歸屬廠商"); return; }
+  if(!type){
+    toast(typeState.length ? "請選工種" : "請先在上方加入出工工種——代辦要歸屬到工種才查得到費率");
+    return;
+  }
+  if(agentState.some(a=>a.vendor===vendor && a.type===type)){
+    toast(`「${vendor}／${type}」已在代辦清單中，請直接修改該列數字`); return;
+  }
+  agentState.push({ vendor, type, work:0, ot2:0, otOver:0, note:"" });
+  renderAgentRows();
+}
+
+/* 代辦量不可超過該工種的回報量——代辦是回報量的**一部分**，不是額外量（合約 §4.10）。
+   回傳擋下的訊息陣列（空陣列＝通過）。這是硬性擋下，不是可確認的警告：
+   代辦超量會讓代扣金額大於實際付出的錢，直接算錯帳。 */
+function collectAgentErrors(types, agents){
+  const errs = [];
+  const byType = new Map(types.map(t=>[t.type, t]));
+  const sums = new Map();
+  agents.forEach(a=>{
+    const s = sums.get(a.type) || { work:0, ot2:0, otOver:0 };
+    s.work += a.work||0; s.ot2 += a.ot2||0; s.otOver += a.otOver||0;
+    sums.set(a.type, s);
+  });
+  sums.forEach((s, type)=>{
+    const t = byType.get(type);
+    if(!t){ errs.push(`代辦的工種「${type}」不在本單的出工工種中——請先加入該工種，或移除該代辦列`); return; }
+    if(s.work > (t.work||0)) errs.push(`「${type}」代辦工數合計 ${fmt(s.work)} 工，超過回報的 ${fmt(t.work)} 工`);
+    if(s.ot2 > (t.ot2||0)) errs.push(`「${type}」代辦加班(前2h)合計 ${fmt(s.ot2)} 小時，超過回報的 ${fmt(t.ot2)} 小時`);
+    if(s.otOver > (t.otOver||0)) errs.push(`「${type}」代辦加班(3h起)合計 ${fmt(s.otOver)} 小時，超過回報的 ${fmt(t.otOver)} 小時`);
+  });
+  agents.forEach(a=>{
+    if(!(a.work>0 || a.ot2>0 || a.otOver>0))
+      errs.push(`代辦列「${a.vendor}／${a.type}」的工數與加班時數都是 0——請填數字或移除該列`);
+  });
+  return errs;
 }
 
 /* v11 回報改逐工種：選工種加入一列（工程師不需知道點工姓名） */
@@ -1224,9 +1351,11 @@ function resetLaborReportForm(){
   editingLaborReportId = null;
   editingLaborReportBaseV = 0;
   typeState = [];
+  agentState = [];
   document.getElementById("laborReportForm").reset();
   setCombo("cb_l_engineer", "");
   document.getElementById("l_typeRows").innerHTML = "";
+  renderAgentRows();
   document.getElementById("l_diff").value = "";
   document.getElementById("laborReportContext").innerHTML = '<div class="empty-row">請從下方清單點選「填寫回報」開始</div>';
   lockSignReturnRange("l_signReturnDate", null);                 // 清掉上一張單留下的範圍
@@ -1272,9 +1401,12 @@ async function loadLaborReportRecord(id){
   document.getElementById("l_signReturnDate").value = rep.signReturnDate || "";
   lockSignReturnRange("l_signReturnDate", rec.date);   // v22.7：選擇器直接限制在可採計範圍內
   setCombo("cb_l_engineer", rep.engineer || "");
-  setNumField("l_vendorWork", rep.vendorDoneWork);
-  setNumField("l_vendorHours", rep.vendorDoneHours);
-  document.getElementById("l_vendorNote").value = rep.vendorDoneNote || rep.vendorDone || "";
+  // v23：代辦逐筆（舊單的代辦三欄不進表單，原樣承繼並在報表另欄顯示）
+  agentState = ((rep.agentItems || [])).map(a=>({
+    vendor: a.vendor || "", type: a.type || "",
+    work: a.work||0, ot2: a.ot2||0, otOver: a.otOver||0, note: a.note||""
+  }));
+  renderAgentRows();
   document.getElementById("l_conclusion").value = rep.conclusion || "";
   document.getElementById("laborReportSubmitBtn").disabled = false;
 
@@ -1572,6 +1704,25 @@ function initEquipReportForm(){
     syncTotalsFromUsage();
   });
 
+  /* 代辦列（v23） */
+  const eAgentBox = document.getElementById("e_agentRows");
+  eAgentBox.addEventListener("input", e=>{
+    const el = e.target;
+    const i = parseInt(el.dataset.i,10);
+    if(Number.isNaN(i) || !equipAgentState[i]) return;
+    if(el.classList.contains("eag-qty")) equipAgentState[i].qty = parseFloat(el.value)||0;
+    if(el.classList.contains("eag-note")) equipAgentState[i].note = el.value;
+  });
+  eAgentBox.addEventListener("click", e=>{
+    const btn = e.target.closest(".att-remove");
+    if(!btn) return;
+    equipAgentState.splice(parseInt(btn.dataset.i,10), 1);
+    renderEquipAgentRows();
+  });
+  document.getElementById("e_agentAddBtn").addEventListener("click", addEquipAgentRow);
+  // 換品項會改變計價單位（全天→天／時租→小時），代辦列的欄位標籤要跟著變
+  document.getElementById("e_rateItem").addEventListener("change", renderEquipAgentRows);
+
   document.getElementById("equipReportForm").addEventListener("submit", async e=>{
     e.preventDefault();
     if(!editingEquipReportId){ toast("請先從清單選擇要回報的紀錄"); return; }
@@ -1635,6 +1786,12 @@ function initEquipReportForm(){
     const signErr = signReturnError(document.getElementById("e_signReturnDate").value, rec.date);
     if(signErr){ toast(signErr); return; }
 
+    /* v23：代辦超量是硬性擋下——代扣金額大於實際付出去的錢就是算錯帳 */
+    if(!zeroUse){
+      const agentErrs = collectEquipAgentErrors(equipAgentState, equipFormChargeCtx());
+      if(agentErrs.length){ toast("代辦資料有誤，未送出：\n- " + agentErrs.join("\n- ")); return; }
+    }
+
     const warnings = collectEquipWarnings(usageState, actualHours, zeroUse, days, otHours);
     if(warnings.length){
       const ok = confirm("⚠ 系統偵測到以下數據配置異常，請確認是否輸入錯誤：\n\n- " + warnings.join("\n- ") + "\n\n確認無誤仍要送出嗎？");
@@ -1664,9 +1821,14 @@ function initEquipReportForm(){
         selfDoneWork: (rec.report && rec.report.selfDoneWork != null) ? rec.report.selfDoneWork : null,
         selfDoneHours: (rec.report && rec.report.selfDoneHours != null) ? rec.report.selfDoneHours : null,
         selfDoneNote: (rec.report && (rec.report.selfDoneNote || rec.report.selfDone)) || "",
-        vendorDoneWork: numFieldVal("e_vendorWork"),
-        vendorDoneHours: numFieldVal("e_vendorHours"),
-        vendorDoneNote: document.getElementById("e_vendorNote").value.trim()
+        /* v23：表單移除「代辦三欄」，改逐筆 agentItems（合約 §4.10）。
+           舊值原樣承繼；新舊**不相加**，報表分兩欄呈現 */
+        vendorDoneWork: (rec.report && rec.report.vendorDoneWork != null) ? rec.report.vendorDoneWork : null,
+        vendorDoneHours: (rec.report && rec.report.vendorDoneHours != null) ? rec.report.vendorDoneHours : null,
+        vendorDoneNote: (rec.report && (rec.report.vendorDoneNote || rec.report.vendorDone)) || "",
+        agentItems: zeroUse ? [] : equipAgentState.map(a=>({
+          vendor: a.vendor, qty: a.qty || 0, note: (a.note || "").trim()
+        }))
       }
     });
 
@@ -1774,15 +1936,95 @@ function updateEquipDiff(){
   el.value = diff===0 ? "0（相符）" : fmt(diff);
 }
 
+/* ---- 代辦列（機具；v23，合約 §4.10） ----
+   機具的費率只綁到廠商層級，所以代辦列不需選品項；數量的單位跟著
+   主計價品項的 chargeType 走（全天→天、時租→小時）。 */
+
+function renderEquipAgentRows(){
+  const box = document.getElementById("e_agentRows");
+  if(!box) return;
+  const zero = document.getElementById("e_zeroUse").checked;
+  box.classList.toggle("disabled", zero);
+  const unit = equipFormChargeCtx().unit || "數量";
+  if(!equipAgentState.length){
+    box.innerHTML = '<div class="empty-row">未填代辦＝這台機具<strong>全數自辦</strong>。若有一部分是幫其他廠商叫的，在下方選責任歸屬廠商加入一列</div>';
+    return;
+  }
+  box.innerHTML = equipAgentState.map((a,i)=>`
+    <div class="att-row present">
+      <span class="tr-name">${esc(a.vendor)}</span>
+      <div class="att-fields">
+        <label>代辦${esc(unit)}<input type="number" class="eag-qty" data-i="${i}" step="0.5" min="0" value="${a.qty}" ${zero?"disabled":""}></label>
+        <label class="ag-note">備註<input type="text" class="eag-note" data-i="${i}" value="${esc(a.note||"")}" placeholder="選填" ${zero?"disabled":""}></label>
+      </div>
+      <button type="button" class="att-remove" data-i="${i}" title="移除此代辦列">×</button>
+    </div>`).join("");
+}
+
+function fillEquipAgentSelect(){
+  const vs = document.getElementById("e_agentVendor");
+  if(!vs) return;
+  const keep = vs.value;
+  const vendors = (cur() && cur().config && cur().config.vendors) || [];
+  vs.innerHTML = '<option value="">責任歸屬廠商⋯</option>'
+    + vendors.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join("");
+  vs.value = keep;
+}
+
+function addEquipAgentRow(){
+  if(!editingEquipReportId){ toast("請先從清單選擇要回報的紀錄"); return; }
+  if(document.getElementById("e_zeroUse").checked){ toast("已勾選 0 使用確認，無代辦可填"); return; }
+  const vendor = document.getElementById("e_agentVendor").value;
+  if(!vendor){ toast("請先選責任歸屬廠商"); return; }
+  if(equipAgentState.some(a=>a.vendor===vendor)){
+    toast(`「${vendor}」已在代辦清單中，請直接修改該列數量`); return;
+  }
+  equipAgentState.push({ vendor, qty:0, note:"" });
+  renderEquipAgentRows();
+}
+
+/* 表單當下的計價數量與單位：用來標示欄位單位、並檢查代辦不得超量。
+   品項未選或查無費率時回 {qty:null}——此時不做上限檢查，因為代扣金額
+   本來就會顯示「無法計價」的原因，不會靜默變成 0。 */
+function equipFormChargeCtx(){
+  const rec = editingEquipReportId ? cur().equipment.find(r=>r.id===editingEquipReportId) : null;
+  if(!rec) return { qty: null, unit: "" };
+  const vendor = getCombo("cb_e_vendor").trim();
+  const book = bookFor("equipment", rec.date);
+  const code = rateBindings().equipment[vendor];
+  const item = (document.getElementById("e_rateItem") || {}).value || "";
+  if(!book || !code || !item) return { qty: null, unit: "" };
+  const main = book.rows.find(r=>r.vendorCode === code && r.item === item);
+  if(!main) return { qty: null, unit: "" };
+  const days = parseFloat((document.getElementById("e_days")||{}).value) || 0;
+  const hours = parseFloat((document.getElementById("e_actualHours")||{}).value) || 0;
+  return equipQtyFor(main, { days, actualHours: hours });
+}
+
+function collectEquipAgentErrors(agents, ctx){
+  const errs = [];
+  agents.forEach(a=>{
+    if(!(a.qty > 0)) errs.push(`代辦列「${a.vendor}」的數量是 0——請填數字或移除該列`);
+  });
+  if(ctx && ctx.qty != null){
+    const sum = agents.reduce((s,a)=>s+(a.qty||0), 0);
+    if(sum > ctx.qty)
+      errs.push(`代辦數量合計 ${fmt(sum)} ${ctx.unit}，超過本單的計價數量 ${fmt(ctx.qty)} ${ctx.unit}——代辦是計價量的一部分，不是額外量`);
+  }
+  return errs;
+}
+
 function resetEquipReportForm(){
   editingEquipReportId = null;
   editingEquipReportBaseV = 0;
   usageState = [];
+  equipAgentState = [];
   document.getElementById("equipReportForm").reset();
   setCombo("cb_e_checker", "");
   setCombo("cb_e_vendor", "");
   fillEquipRateSelects(null, "", "");     // v22.8：清掉上一張單的品項清單
   document.getElementById("e_usage").innerHTML = "";
+  renderEquipAgentRows();
   document.getElementById("e_diff").value = "";
   document.getElementById("equipReportContext").innerHTML = '<div class="empty-row">請從下方清單點選「填寫回報」開始</div>';
   lockSignReturnRange("e_signReturnDate", null);                 // 清掉上一張單留下的範圍
@@ -1832,11 +2074,15 @@ async function loadEquipReportRecord(id){
   document.getElementById("e_otHours").value = rep.otHours != null ? rep.otHours : "";
   document.getElementById("e_workContent").value = rep.workContent || "";
   /* v22.8：費率書不在 scope=all，開表單時才抓；抓到後填品項下拉並帶回原選擇 */
-  loadRates().then(()=>fillEquipRateSelects(rec.date, rep.rateItem, rep.rateOtItem))
-    .catch(()=>fillEquipRateSelects(rec.date, rep.rateItem, rep.rateOtItem));
-  setNumField("e_vendorWork", rep.vendorDoneWork);
-  setNumField("e_vendorHours", rep.vendorDoneHours);
-  document.getElementById("e_vendorNote").value = rep.vendorDoneNote || rep.vendorDone || "";
+  /* 代辦列要在費率書載入後重繪一次——欄位單位（天／小時）取自主品項的計價方式 */
+  loadRates().then(()=>{ fillEquipRateSelects(rec.date, rep.rateItem, rep.rateOtItem); renderEquipAgentRows(); })
+    .catch(()=>{ fillEquipRateSelects(rec.date, rep.rateItem, rep.rateOtItem); renderEquipAgentRows(); });
+  // v23：代辦逐筆（舊單的代辦三欄不進表單，原樣承繼並在報表另欄顯示）
+  fillEquipAgentSelect();
+  equipAgentState = ((rep.agentItems || [])).map(a=>({
+    vendor: a.vendor || "", qty: a.qty || 0, note: a.note || ""
+  }));
+  renderEquipAgentRows();
   document.getElementById("equipReportSubmitBtn").disabled = false;
 
   expandPanel("equipReportPanel");
@@ -2225,6 +2471,7 @@ function initReportTabs(){
     });
   });
   document.getElementById("exportBtn").addEventListener("click", ()=>{
+    if(currentReport === "vendorRank") return exportVendorRankXls();
     if(currentReport === "ranking") return exportRankingXls();
     if(currentReport === "labor") return exportLaborXlsx();     // v21.1：點工改帶格式 xlsx
     exportCSV(currentReport);
@@ -2311,13 +2558,19 @@ function renderReport(key){
       .catch(()=>{ RATES = null; toast("⚠ 無法載入行情通報費率，重新整理報表可再試一次"); })
       .finally(()=>{ ratesLoading = false; });
   }
-  // v19：叫工排名走專用渲染；內容/工程師篩選對排名無意義，一併隱藏
+  /* v19：叫工排名、v23：廠商排名——兩者都是統計榜，內容/工程師篩選對它們沒有意義。
+     廠商排名同時涵蓋點工與機具，連「廠商」篩選都不該有（篩了就只剩一列，榜就沒意義） */
   const isRank = key === "ranking";
-  document.getElementById("reportCat").style.display = isRank ? "none" : "";
-  document.getElementById("reportEngineer").style.display = isRank ? "none" : "";
-  document.getElementById("exportSummaryBtn").style.display = isRank ? "none" : "";
-  document.getElementById("exportBtn").textContent = isRank ? "匯出排名 Excel" : (key === "labor" ? "匯出明細 Excel" : "匯出明細 CSV");
+  const isVendorRank = key === "vendorRank";
+  const anyRank = isRank || isVendorRank;
+  document.getElementById("reportCat").style.display = anyRank ? "none" : "";
+  document.getElementById("reportEngineer").style.display = anyRank ? "none" : "";
+  document.getElementById("reportVendor").style.display = isVendorRank ? "none" : "";
+  document.getElementById("exportSummaryBtn").style.display = anyRank ? "none" : "";
+  document.getElementById("exportBtn").textContent = isVendorRank ? "匯出廠商排名 Excel"
+    : (isRank ? "匯出排名 Excel" : (key === "labor" ? "匯出明細 Excel" : "匯出明細 CSV"));
   document.getElementById("exportSummaryBtn").textContent = key === "labor" ? "匯出計價彙總 Excel" : "匯出計價彙總 CSV";
+  if(isVendorRank){ renderVendorRankReport(); return; }
   if(isRank){ renderRankingReport(); return; }
   populateReportFilters(key);
   const def = REPORT_DEFS[key];
@@ -2368,19 +2621,36 @@ function downloadBlob(blob, filename, msg){
   toast(msg);
 }
 
+/* CSV 單格跳脫。**表頭與資料列共用**——動態表頭（如工種欄名）含逗號時才不會使欄位錯位。
+   防 CSV 公式注入：非純數字卻以 = + - @ 開頭的儲存格，前置 ' 讓 Excel 視為文字（節點 14） */
+const csvCell = c=>{
+  let v = (c===undefined||c===null?"":String(c));
+  if(/^[=+\-@]/.test(v) && !/^[+-]?\d+(\.\d+)?$/.test(v)) v = "'" + v;
+  v = v.replace(/"/g,'""');
+  return /[,\n"]/.test(v) ? `"${v}"` : v;
+};
+
 function downloadCSV(headers, rows, filename){
-  const cell = c=>{
-    let v = (c===undefined||c===null?"":String(c));
-    // 防 CSV 公式注入：非純數字卻以 = + - @ 開頭的儲存格，前置 ' 讓 Excel 視為文字
-    if(/^[=+\-@]/.test(v) && !/^[+-]?\d+(\.\d+)?$/.test(v)) v = "'" + v;
-    v = v.replace(/"/g,'""');
-    return /[,\n"]/.test(v) ? `"${v}"` : v;
-  };
-  // 表頭與資料列走同一套跳脫——動態表頭（如工種欄名）含逗號時才不會使欄位錯位
-  const csvLines = [headers.map(cell).join(",")].concat(
-    rows.map(r=>r.map(cell).join(","))
+  const csvLines = [headers.map(csvCell).join(",")].concat(
+    rows.map(r=>r.map(csvCell).join(","))
   );
   downloadBlob(new Blob(["﻿" + csvLines.join("\n")], {type:"text/csv;charset=utf-8;"}),
+    filename, "CSV 已匯出");
+}
+
+/* 多區塊 CSV（v23 廠商排名用）：一個檔案裡放數張表，各自帶標題與表頭、空行分隔。
+   點工榜與機具榜的欄位本來就不同（工數 vs 出工天數），硬併成一張表會逼出
+   一堆空欄；分區塊反而是 Excel 開起來最好讀的形式。 */
+function downloadCSVBlocks(blocks, filename){
+  const lines = [];
+  blocks.forEach((b, i)=>{
+    if(i) lines.push("");
+    if(b.title) lines.push(csvCell(b.title));
+    lines.push(b.headers.map(csvCell).join(","));
+    if(!b.rows.length) lines.push(csvCell("（此期間無資料）"));
+    else b.rows.forEach(r=>lines.push(r.map(csvCell).join(",")));
+  });
+  downloadBlob(new Blob(["﻿" + lines.join("\n")], {type:"text/csv;charset=utf-8;"}),
     filename, "CSV 已匯出");
 }
 
@@ -2745,6 +3015,17 @@ const laborBindKey = (vendor, type) => `${vendor}|${type}`;
    **絕不可把查不到的費率當成 0** —— 0 在計價表上會被讀成「免費」。 */
 const NO_RATE = why => ({ amount: null, why });
 
+/* 點工費率查找：本單廠商＋工種 → 費率列。回 {rate} 或 {why}。
+   ⚠ laborAmount 與代辦扣抵（laborAgentDeductions）**共用這一份**——
+     同一套查找只准有一處，v19.4 就是因為副本分歧算錯過。 */
+function laborRateRow(book, binds, vendor, type){
+  const bind = binds[laborBindKey(vendor, type)];
+  if(!bind) return { why: `未綁定費率：${type}` };
+  const rate = book.rows.find(x => x.vendorCode === bind.vendorCode && x.note === bind.note);
+  if(!rate) return { why: `本季查無綁定的費率列：${type}` };
+  return { rate };
+}
+
 function laborAmount(r){
   const rep = r.report;
   if(!(r.status === "已回報" && rep)) return NO_RATE("未回報");
@@ -2757,10 +3038,9 @@ function laborAmount(r){
   const rows = reportTypeRows(r);            // 逐工種展開的唯一權威（計價紅線 1）
   if(!rows.length) return NO_RATE("無工種明細");
   for(const row of rows){
-    const bind = binds[laborBindKey(vendor, row.type)];
-    if(!bind) return NO_RATE(`未綁定費率：${row.type}`);
-    const rate = book.rows.find(x => x.vendorCode === bind.vendorCode && x.note === bind.note);
-    if(!rate) return NO_RATE(`本季查無綁定的費率列：${row.type}`);
+    const got = laborRateRow(book, binds, vendor, row.type);
+    if(got.why) return NO_RATE(got.why);
+    const rate = got.rate;
     /* 品項沒寫加班費率、這張單卻有加班時數 → 不可用 0 元帶過去而還算成功 */
     if((row.ot2 || row.otOver) && !rate.otParsed)
       return NO_RATE(`有加班時數但行情通報未載明加班費率：${row.type}`);
@@ -2771,6 +3051,16 @@ function laborAmount(r){
       + (row.otOver ? `＋3h起 ${fmt(row.otOver)}×${rate.otOver}` : ""));
   }
   return { amount: Math.round(total), why: "", detail: parts.join("；") };
+}
+
+/* 機具計價的「數量與單位」——依主品項的 chargeType 決定用天數還是時數（合約 §4.9）。
+   ⚠ equipAmount、代辦扣抵、以及表單上代辦欄位的單位標籤**共用這一份**，
+     三處各自詮釋就會出現「畫面標小時、計價算天數」這種對不起來的狀況。 */
+function equipQtyFor(main, rep){
+  if(main.chargeType === "全天") return { qty: rep.days || 0, unit: "天" };
+  if(main.chargeType === "時租") return { qty: rep.actualHours || 0, unit: "小時" };
+  return { qty: null, unit: "",
+           why: `所選品項為「${main.chargeType}」計價，系統無對應數量欄位——請改選全天或時租品項` };
 }
 
 function equipAmount(x){
@@ -2784,17 +3074,15 @@ function equipAmount(x){
   const main = pick(rep.rateItem);
   if(rep.rateItem && !main) return NO_RATE("本季查無所選品項");
   if(!main) return NO_RATE("未選計價品項");
-  const days = rep.days || 0;
   const ot = rep.otHours || 0;
   /* ⚠ 主品項的計價單位決定要乘哪個數量，不是一律乘天數。
      行情通報同一台機具會拆成 全天／半天／時租／月租／趟次 多列，
      全部當成「天數×單價」會把時租單算成 1/8、把月租單算成 22 倍。
      只有數量依據明確的兩種能自動計價，其餘擋下並說明——
      半天/月租/趟次 的數量（幾個半天、幾個月、幾趟）系統目前沒有欄位可填。 */
-  let qty, unitLabel;
-  if(main.chargeType === "全天"){ qty = days; unitLabel = "天"; }
-  else if(main.chargeType === "時租"){ qty = rep.actualHours || 0; unitLabel = "小時"; }
-  else return NO_RATE(`所選品項為「${main.chargeType}」計價，系統無對應數量欄位——請改選全天或時租品項`);
+  const q = equipQtyFor(main, rep);
+  if(q.qty == null) return NO_RATE(q.why);
+  const qty = q.qty, unitLabel = q.unit;
   if(!(qty > 0)) return NO_RATE(`所選品項為「${main.chargeType}」計價，但${unitLabel}數為 0`);
 
   let total = qty * main.price;
@@ -2807,6 +3095,57 @@ function equipAmount(x){
   }
   return { amount: Math.round(total), why: "", detail: parts.join("＋") };
 }
+
+/* ==========================================================
+   代辦扣抵（v23，合約 §4.10）
+   回傳 [{ vendor, amount, why, detail }]——一列一個責任歸屬廠商。
+   ⚠ 費率一律取「**本單廠商**」的，不是責任歸屬廠商的：
+     扣的是我們實際付出去的錢；拿對方的費率算會得出一個從未發生過的金額。
+   查無費率時該列 amount=null 並記原因，與 §4.9 一致——**絕不可退化成 0**。
+   ========================================================== */
+function laborAgentDeductions(r){
+  const rep = r.report;
+  const items = (rep && rep.agentItems) || [];
+  if(!items.length) return [];
+  const book = bookFor("labor", r.date);
+  const binds = rateBindings().labor;
+  const vendor = recVendor(r);            // 本單廠商＝費率來源
+  return items.map(a=>{
+    if(!book) return { vendor: a.vendor, amount: null, why: "該出工日無適用季別" };
+    const got = laborRateRow(book, binds, vendor, a.type);
+    if(got.why) return { vendor: a.vendor, amount: null, why: got.why };
+    const rate = got.rate;
+    const ot2 = a.ot2 || 0, otOver = a.otOver || 0;
+    if((ot2 || otOver) && !rate.otParsed)
+      return { vendor: a.vendor, amount: null, why: `有加班時數但行情通報未載明加班費率：${a.type}` };
+    const amt = (a.work||0) * rate.work + ot2 * rate.ot2 + otOver * rate.otOver;
+    return { vendor: a.vendor, amount: Math.round(amt), why: "",
+             detail: `${a.type} ${fmt(a.work||0)}工×${rate.work}`
+                   + (ot2 ? `＋前2h ${fmt(ot2)}×${rate.ot2}` : "")
+                   + (otOver ? `＋3h起 ${fmt(otOver)}×${rate.otOver}` : "") };
+  });
+}
+
+function equipAgentDeductions(x){
+  const rep = x.report;
+  const items = (rep && rep.agentItems) || [];
+  if(!items.length) return [];
+  const book = bookFor("equipment", x.date);
+  const code = rateBindings().equipment[recVendor(x)];
+  const main = (book && code && rep.rateItem)
+    ? book.rows.find(r => r.vendorCode === code && r.item === rep.rateItem) : null;
+  return items.map(a=>{
+    if(!book) return { vendor: a.vendor, amount: null, why: "該出工日無適用季別" };
+    if(!code) return { vendor: a.vendor, amount: null, why: "廠商未綁定行情通報" };
+    if(!main) return { vendor: a.vendor, amount: null, why: "未選（或本季查無）計價品項" };
+    const q = equipQtyFor(main, rep);
+    if(q.qty == null) return { vendor: a.vendor, amount: null, why: q.why };
+    return { vendor: a.vendor, amount: Math.round((a.qty||0) * main.price), why: "",
+             detail: `${fmt(a.qty||0)}${q.unit}×${main.price}` };
+  });
+}
+
+const agentDeductions = (rec, kind) => kind === "labor" ? laborAgentDeductions(rec) : equipAgentDeductions(rec);
 
 /* 報表用：有金額印金額，沒有就印原因（外面加括號以示區別） */
 const amountCell = a => a.amount == null ? `（${a.why}）` : String(a.amount);
@@ -2997,6 +3336,116 @@ function initRatesPanel(){
 function renderRatesPanel(){
   if(!READY || !cur()) return;
   loadRates().then(()=>{ renderRateBooks(); renderRateBindings(); }).catch(()=>{});
+}
+
+/* ==========================================================
+   廠商排名（v23）：2026-08-05 會議「建立廠商使用數量與費用排行榜」。
+
+   **點工與機具分成兩張榜**（會議裁示）——單位不同（工數 vs 出工天數），
+   混在一張榜排名等於把不可比的東西相加。排名依「使用數量」降冪，
+   費用同列呈現；未能計價的單獨立成一欄，不併進金額裡靜靜地少算
+   （計價紅線 4：報表要讓人看見組成）。
+
+   第三張表＝**代辦扣抵彙總**，依責任歸屬廠商歸戶——這就是會議要的
+   「代付代扣由系統自動統計，排除人工作業」。
+   ========================================================== */
+function buildVendorRanking(kind){
+  const recs = cur()[kind].filter(r => inReportRange(r.date) && r.status === "已回報" && r.report);
+  const g = new Map();
+  recs.forEach(r=>{
+    const v = recVendor(r) || "（未填廠商）";
+    const e = g.get(v) || { vendor: v, count: 0, work: 0, ot2: 0, otOver: 0, days: 0, ot: 0, amount: 0, noRate: 0 };
+    e.count++;
+    if(kind === "labor"){
+      // 逐工種展開與加班歸段一律走 reportTypeRows（口徑唯一權威，v21.3）
+      reportTypeRows(r).forEach(t=>{ e.work += t.work; e.ot2 += t.ot2; e.otOver += t.otOver; });
+    }else{
+      e.days += r.report.days || 0;
+      e.ot += r.report.otHours || 0;
+    }
+    const amt = kind === "labor" ? laborAmount(r) : equipAmount(r);
+    if(amt.amount == null) e.noRate++; else e.amount += amt.amount;
+    g.set(v, e);
+  });
+  const rows = [...g.values()];
+  // 點工的「使用數量」沿用叫工排名的總工數口徑（本工＋加班÷8）；機具用出工天數
+  rows.forEach(e=>{ e.units = kind === "labor" ? totalUnits(e) : e.days; });
+  rows.sort((a,b)=> b.units - a.units || b.amount - a.amount);
+  return rows;
+}
+
+function buildAgentDeductionSummary(){
+  const g = new Map();
+  ["labor","equipment"].forEach(kind=>{
+    cur()[kind].filter(r => inReportRange(r.date) && r.status === "已回報" && r.report)
+      .forEach(r=>{
+        agentDeductions(r, kind).forEach(d=>{
+          const e = g.get(d.vendor) || { vendor: d.vendor, rows: 0, amount: 0, noRate: 0, whys: new Set() };
+          e.rows++;
+          if(d.amount == null){ e.noRate++; e.whys.add(d.why); } else e.amount += d.amount;
+          g.set(d.vendor, e);
+        });
+      });
+  });
+  return [...g.values()].sort((a,b)=> b.amount - a.amount);
+}
+
+const VRANK_LABOR_COLS = ["排名","廠商","已回報單數","本工","加班前2h","加班2h後","總工數","計價金額","未能計價單數"];
+const VRANK_EQUIP_COLS = ["排名","廠商","已回報單數","出工天數","加班時數","計價金額","未能計價單數"];
+const VRANK_DED_COLS   = ["責任歸屬廠商","代辦列數","代扣金額","未能計價列數","未能計價原因"];
+
+const vrankLaborRow = (e,i) => [i+1, e.vendor, e.count, fmtRank(e.work),
+  e.ot2 ? fmtRank(e.ot2) : "", e.otOver ? fmtRank(e.otOver) : "", fmtRank(e.units), e.amount, e.noRate || ""];
+const vrankEquipRow = (e,i) => [i+1, e.vendor, e.count, fmtRank(e.days),
+  e.ot ? fmtRank(e.ot) : "", e.amount, e.noRate || ""];
+const vrankDedRow = e => [e.vendor, e.rows, e.amount, e.noRate || "", [...e.whys].join("；")];
+
+function vrankTableHTML(title, cols, rows, note){
+  const body = rows.length
+    ? rows.map(r=>"<tr>" + r.map((c,i)=>`<td${i===0||i>=2 ? ' class="num"' : ""}>${esc(String(c))}</td>`).join("") + "</tr>").join("")
+    : `<tr><td colspan="${cols.length}" class="empty-row">此期間無資料</td></tr>`;
+  return `<div class="summary-title">${esc(title)}</div>
+    <div class="table-wrap"><table class="rank-table">
+    <thead><tr>${cols.map(c=>`<th class="num">${esc(c)}</th>`).join("")}</tr></thead>
+    <tbody>${body}</tbody></table></div>`
+    + (note ? `<p class="hint">${note}</p>` : "");
+}
+
+function renderVendorRankReport(){
+  const el = document.getElementById("reportTable");
+  const sumEl = document.getElementById("reportSummary");
+  const cnt = document.getElementById("reportCount");
+  if(!el) return;
+  if(sumEl) sumEl.innerHTML = "";
+  const lab = buildVendorRanking("labor");
+  const eq = buildVendorRanking("equipment");
+  const ded = buildAgentDeductionSummary();
+  const period = reportPeriodLabel();
+  if(cnt) cnt.textContent = `${period}・點工 ${lab.length} 家・機具 ${eq.length} 家`
+    + (ded.length ? `・代辦扣抵 ${ded.length} 家` : "");
+
+  el.innerHTML =
+    vrankTableHTML(`點工廠商排名（${period}・依總工數）`, VRANK_LABOR_COLS, lab.map(vrankLaborRow),
+      "<strong>總工數＝本工＋(加班前2h＋加班2h後)÷8</strong>（工數以 8 小時換算），與叫工排名同一口徑。"
+      + "「未能計價單數」為查無費率的單——那些單的金額<strong>不含</strong>在計價金額裡，不是 0 元。")
+    + vrankTableHTML(`機具廠商排名（${period}・依出工天數）`, VRANK_EQUIP_COLS, eq.map(vrankEquipRow),
+      "機具不與點工併榜——出工天數與工數是不同單位，相加沒有意義。")
+    + vrankTableHTML(`代辦扣抵彙總（${period}・依責任歸屬廠商）`, VRANK_DED_COLS, ded.map(vrankDedRow),
+      "代辦＝向本單廠商叫的工／機具但成本歸屬另一家，計價時從該廠商扣回。"
+      + "金額依<strong>本單廠商</strong>的當季費率自動計算（合約 §4.10）。");
+}
+
+function exportVendorRankXls(){
+  const lab = buildVendorRanking("labor");
+  const eq = buildVendorRanking("equipment");
+  const ded = buildAgentDeductionSummary();
+  if(!lab.length && !eq.length && !ded.length){ toast("此期間內尚無已回報資料可排名"); return; }
+  const period = reportPeriodLabel();
+  downloadCSVBlocks([
+    { title: `點工廠商排名（${period}・依總工數＝本工＋加班÷8）`, headers: VRANK_LABOR_COLS, rows: lab.map(vrankLaborRow) },
+    { title: `機具廠商排名（${period}・依出工天數）`, headers: VRANK_EQUIP_COLS, rows: eq.map(vrankEquipRow) },
+    { title: `代辦扣抵彙總（${period}・依責任歸屬廠商）`, headers: VRANK_DED_COLS, rows: ded.map(vrankDedRow) }
+  ], `廠商排名_${MASTER.currentSite}${exportFilterTag()}.csv`);
 }
 
 /* ==========================================================
@@ -4405,7 +4854,8 @@ function hasUnsavedInput(){
     // 逐工種列／逐台列／標籤是 DOM 產生的，不在 input 掃描範圍內
     if(root.querySelector(".att-row, .tag-chip, .att-cell")) return true;
   }
-  return typeState.length > 0 || usageState.length > 0;
+  return typeState.length > 0 || usageState.length > 0
+      || agentState.length > 0 || equipAgentState.length > 0;   // v23 代辦列
 }
 
 function idleCheck(){
@@ -4481,7 +4931,8 @@ document.addEventListener("DOMContentLoaded", ()=>{
   /* v22.5：說明文字欄位的自動列點。稽核的「現場狀況說明」與「不符原因」是動態
      產生，各自在 renderAuditForm／renderAuditItems 內掛；設定頁名單池與
      工作內容補充刻意不納入（見 initAutoNumber 上方說明）。 */
-  ["l_conclusion", "l_vendorNote", "e_vendorNote", "e_applyNote", "e_workContent"]
+  // v23：代辦備註改為逐列的單行輸入（不需要列點），故從清單移除
+  ["l_conclusion", "e_applyNote", "e_workContent"]
     .forEach(id=>initAutoNumber(document.getElementById(id)));
   initIdleLogout();
 

@@ -199,8 +199,9 @@
 | zeroWork | boolean | 0 工確認（true 時 workTypes 為空、actual=0） |
 | signReturnDate | string\|"" | 簽單繳回日。**v22.7 起強制 `date ≤ signReturnDate ≤ date + 20 天`**（見 §4.7 日期防呆） |
 | selfDoneWork / selfDoneHours / selfDoneNote | number\|null, number\|null, string | 根基自辦 工數/時數/備註（v10 新增；**v12 起表單移除**——未填代辦即為自辦。前端寫入時將舊值原樣承繼，僅舊資料非空；報表欄位保留顯示） |
-| vendorDoneWork / vendorDoneHours / vendorDoneNote | 同上 | 廠商代辦 |
+| vendorDoneWork / vendorDoneHours / vendorDoneNote | 同上 | 廠商代辦（**v23 起表單移除**，改用 `agentItems`；舊值原樣承繼並在報表保留顯示，見 §4.10） |
 | selfDone / vendorDone | string | v10 前的單一文字欄（僅舊單存在；顯示時 fallback 至備註） |
+| agentItems | {vendor,type,work,ot2,otOver,note}[] | **v23 代辦逐筆**：一張單可代辦多家。`vendor`＝責任歸屬廠商、`type`＝工種（**必須是本單 `workTypes` 出現過的工種**）、`work`／`ot2`／`otOver`＝歸屬該廠商的工數與分段加班時數。空陣列＝全數自辦。詳見 §4.10 |
 | conclusion | string | 現場查核回饋（v12 起不限字數；後端請勿設過短的欄位長度上限，建議 TEXT/NVARCHAR(MAX) 級） |
 
 ### 4.4 機具紀錄（kind=equipment）
@@ -234,6 +235,7 @@
 | zeroUse | boolean | 0 使用確認 |
 | signReturnDate | string\|"" | 簽單繳回日。**v22.7 起強制 `date ≤ signReturnDate ≤ date + 20 天`**（見 §4.7 日期防呆） |
 | 自辦/代辦六欄 | 同 4.3 | |
+| agentItems | {vendor,qty,note}[] | **v23 代辦逐筆**：一張單可代辦多家。`vendor`＝責任歸屬廠商、`qty`＝歸屬該廠商的數量。**`qty` 的單位由主品項的 `chargeType` 決定**（全天→天、時租→小時），與 §4.9 的計價數量同源。空陣列＝全數自辦。詳見 §4.10 |
 
 > **有效廠商（計價與報表分組依據）＝ `report.vendor || vendor`**。
 > 回報填了就以回報為準，沒填才回頭用申請單上的（僅舊單會有）。
@@ -328,6 +330,34 @@
   加班另計：`加班時數×加班品項單價`
 - 匯入時即濾掉單價 ≤ 0 的列：`rateNum` 會把空白與文字收斂成 0，放行等於在計價表上印「免費」
 - 未綁定、綁定失效（該季查無該供應商／該說明）、或工程師未挑品項時，同樣顯示「—」並在報表標示原因
+
+### 4.10 代辦與代扣（v23；點工/機具回報通用）
+
+「代辦」＝根基向本單廠商叫了工／機具，但這筆成本**應歸屬給另一家廠商**（例：幫某分包商叫吊卡），
+計價時要從該廠商的款項中扣回。v22 以前只有「代辦工數／時數／備註」三欄，責任歸屬廠商寫在
+自由文字備註裡（例「○○公司扣 2 工，扣款 4200」）——**無法自動統計**，正是要消除的人工作業。
+
+**資料**：`report.agentItems[]`，一張單可列多家（§4.3／§4.4 的欄位表）。空陣列＝全數自辦。
+
+**代扣金額的算法（唯一權威）**：
+
+- **費率一律取「本單廠商」的費率，不是責任歸屬廠商的**。
+  理由：代扣的是我們**實際付出去的錢**——那是付給本單廠商的價；責任歸屬廠商只是歸屬對象，
+  拿它的費率算會得出一個從未發生過的金額。
+- 點工：`Σ 各代辦列( work×rate.work ＋ ot2×rate.ot2 ＋ otOver×rate.otOver )`，
+  `rate` 的查找與 §4.9 完全相同（本單廠商＋該工種的綁定）。
+- 機具：`qty × 主品項單價`，單位同 §4.9（全天→天、時租→小時）。
+- 查無費率時**該列金額為 null 並記原因**，與 §4.9 一致，**不可退化為 0**。
+
+**約束**（前端強制，後端建議比照）：
+
+- 代辦列的 `type` 必須是本單 `workTypes` 出現過的工種——否則費率查找沒有依據
+- 同一工種的代辦工數合計 **不得超過**該工種的回報工數（代辦是回報量的一部分，不是額外量）；
+  加班時數同理
+- `vendor`（責任歸屬廠商）取自該工地的 `vendors` 名單池
+
+**與舊欄位的關係**：`vendorDoneWork`／`vendorDoneHours`／`vendorDoneNote` 自 v23 起表單不再填寫，
+既有值原樣承繼並在報表保留顯示。**新舊不相加**——報表分開兩欄呈現，避免重複計算。
 
 ### 4.7 日期防呆（v22.7；點工/機具回報通用）
 

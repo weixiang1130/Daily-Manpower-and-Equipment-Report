@@ -572,6 +572,25 @@
       </div>
     </div>
 
+    <!-- ============ 管理員部門（v23.2；地端權限用） ============ -->
+    <div class="panel">
+      <div class="panel-head">
+        <h2>管理員部門<span class="admin-only-badge">管理員</span></h2>
+        <p class="hint">每行一個部門。<strong>地端上線後</strong>，這些部門的同仁一登入即自動取得系統管理者權限
+          （全部工地＋設定／備份／清空）；其餘人員依 ERP 的專案角色判定。
+          過渡期（雲端）不影響現行行為，但<strong>現在就可以先維護好</strong>，切換日不必重設。</p>
+      </div>
+      <div class="form-grid">
+        <div class="field field-wide">
+          <label>管理員部門清單</label>
+          <textarea id="cfg_adminDepts" rows="4" placeholder="例：&#10;成本管理部&#10;採購處&#10;總經理室"></textarea>
+          <p class="hint">⚠ 必須與人資系統的部門名稱<strong>逐字完全相同</strong>（含全半形與空白）。
+            寫錯不會有錯誤訊息，只會讓該部門的人拿不到管理員權限。
+            <strong>留空＝回退到系統預設</strong>，不會變成「沒有任何管理員」。</p>
+        </div>
+      </div>
+    </div>
+
     <div class="panel">
       <div class="panel-head">
         <h2 id="siteConfigTitle">目前工地基礎資料<span class="admin-only-badge">管理員</span></h2>

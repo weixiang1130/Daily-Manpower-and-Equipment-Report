@@ -326,6 +326,24 @@ CREATE TABLE dbo.equip_agent_items (
 CREATE INDEX IX_equip_agent_vendor ON dbo.equip_agent_items(vendor);
 GO
 
+/* ---------- 17. 全域設定（v23.2；合約 §4.1 master.adminDepartments） ----------
+   目前只放「管理員部門白名單」——讓成控自己在系統後台增減管理員部門，
+   不必每次請資訊處改 appsettings 並重啟服務。
+
+   做成通用鍵值表而不是專用欄位，是因為日後還會有別的全域設定（例如角色白名單），
+   每次加一張表並不划算。
+
+   ⚠ 值一律存 **JSON 字串**（與合約的陣列形狀一致），不可用逗號分隔——
+     部門名稱本身可能含逗號或全形標點，切字串會切錯。
+   ⚠ 這張表為空時，權限模組回退到 appsettings 的 Auth:AdminDepartments。
+     這是刻意的保險：避免有人在後台清空後把所有管理者一起鎖在門外。 */
+CREATE TABLE dbo.app_settings (
+    setting_key VARCHAR(64) NOT NULL CONSTRAINT PK_app_settings PRIMARY KEY,
+    value_json  NVARCHAR(MAX) NULL,
+    updated_at  DATETIME2(0) NOT NULL CONSTRAINT DF_app_settings_upd DEFAULT SYSDATETIME()
+);
+GO
+
 /* ==========================================================================
    VIEW：對應系統現有兩張報表（期間/廠商由查詢端 WHERE 篩選）
    ========================================================================== */

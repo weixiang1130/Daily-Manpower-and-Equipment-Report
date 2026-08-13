@@ -36,6 +36,12 @@ using Microsoft.Data.SqlClient;
 
 var builder = WebApplication.CreateBuilder(args);
 
+/* Results.Json(...) 走的是框架的序列化設定（本檔有 50 多處），
+   一併改成不逃脫非 ASCII——理由與 Wr.JsonOpts 相同：
+   錯誤訊息是中文，逃脫後既難讀、又與雲端 api.mjs 的輸出格式不一致。 */
+builder.Services.ConfigureHttpJsonOptions(o =>
+    o.SerializerOptions.Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping);
+
 /* ---------- 權限設定（階段 D，見 Auth.cs 與 docs/AUTH-PLAN.md） ----------
    預設 Mode=Off：**不設定就完全維持現行行為**，部署新版不會突然把人擋在外面。 */
 var authOpt = builder.Configuration.GetSection("Auth").Get<AuthOptions>() ?? new AuthOptions();
@@ -67,7 +73,7 @@ app.UseExceptionHandler(b => b.Run(async ctx =>
     app.Logger.LogError(ex, "未處理的例外：{Method} {Path}", ctx.Request.Method, ctx.Request.Path);
     ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
     ctx.Response.ContentType = "application/json; charset=utf-8";
-    await ctx.Response.WriteAsync(new JsonObject { ["error"] = "server error" }.ToJsonString());
+    await ctx.Response.WriteAsync(new JsonObject { ["error"] = "server error" }.ToJsonString(Wr.JsonOpts));
 }));
 
 /* ---------- Basic Auth（與 auth.ts／api.mjs 同一邏輯） ----------
@@ -479,7 +485,7 @@ static async Task Deny(HttpContext ctx, int code, string message)
 {
     ctx.Response.StatusCode = code;
     ctx.Response.ContentType = "application/json; charset=utf-8";
-    await ctx.Response.WriteAsync(new JsonObject { ["error"] = "forbidden", ["message"] = message }.ToJsonString());
+    await ctx.Response.WriteAsync(new JsonObject { ["error"] = "forbidden", ["message"] = message }.ToJsonString(Wr.JsonOpts));
 }
 
 /* ---------- 靜態檔（在 API 路由之前掛，但 /api 前綴不受影響） ---------- */
@@ -525,7 +531,7 @@ app.MapGet("/api/data", async (HttpContext ctx) =>
         if (one.Count == 0) return Results.Json(new JsonObject { ["config"] = null, ["labor"] = new JsonArray(), ["equipment"] = new JsonArray() });
         var first = one.First().Value!;
         StripAudits(first, az);
-        return Results.Content(first.ToJsonString(), "application/json; charset=utf-8");
+        return Results.Content(first.ToJsonString(Wr.JsonOpts), "application/json; charset=utf-8");
     }
 
     // 合約 §2.1：{ master, stores }。master.sites 只列 is_active=1（退場專案保留歷史但不上線）
@@ -535,6 +541,11 @@ app.MapGet("/api/data", async (HttpContext ctx) =>
     {
         ["sites"] = new JsonArray(visible.Select(n => (JsonNode)JsonValue.Create(n)!).ToArray())
     };
+    // v23.2：管理員部門白名單（合約 §4.1）。存 JSON 字串，原樣嵌回而不是變成字串值
+    var deptRow = await Query(cn, "SELECT value_json FROM dbo.app_settings WHERE setting_key = @k",
+        ("@k", Wr.AdminDeptKey));
+    if (deptRow.Count > 0 && JsonArrayOf(deptRow[0]["value_json"]) is JsonArray da && da.Count > 0)
+        master["adminDepartments"] = da;
     var stores = await ReadStores(cn, null);
     if (az is not null)
     {
@@ -544,7 +555,7 @@ app.MapGet("/api/data", async (HttpContext ctx) =>
         foreach (var kv in stores) StripAudits(kv.Value, az);
     }
     var payload = new JsonObject { ["master"] = master, ["stores"] = stores };
-    return Results.Content(payload.ToJsonString(), "application/json; charset=utf-8");
+    return Results.Content(payload.ToJsonString(Wr.JsonOpts), "application/json; charset=utf-8");
 });
 
 app.MapPost("/api/data", async (HttpContext ctx) =>
@@ -700,6 +711,22 @@ static async Task<IResult> OpMaster(SqlConnection cn, JsonObject body)
     if (sites.Count == 0) return Results.Json(new { error = "sites required" }, statusCode: 400);
 
     await using var tx = (SqlTransaction)await cn.BeginTransactionAsync();
+
+    /* v23.2：管理員部門白名單（合約 §3.1）。
+       **省略＝保留既有值，不是清空**——舊版前端只送 sites，比照 sites 的整包覆蓋
+       會把管理員設定一起洗掉。要清空請明確送空陣列。 */
+    if (body["adminDepartments"] is JsonArray depts)
+    {
+        var vals = depts.Select(d => d?.GetValueKind() == JsonValueKind.String ? d.GetValue<string>().Trim() : null)
+            .Where(s => !string.IsNullOrEmpty(s)).Distinct(StringComparer.Ordinal).ToArray();
+        await Exec(cn, tx,
+            @"MERGE dbo.app_settings AS t
+              USING (SELECT @k AS k) AS s ON t.setting_key = s.k
+              WHEN MATCHED THEN UPDATE SET value_json = @v, updated_at = SYSDATETIME()
+              WHEN NOT MATCHED THEN INSERT (setting_key, value_json) VALUES (@k, @v);",
+            ("@k", Wr.AdminDeptKey), ("@v", new JsonArray(vals.Select(v => (JsonNode)JsonValue.Create(v)!).ToArray()).ToJsonString(Wr.JsonOpts)));
+    }
+
     // 不在清單裡的工地標為 is_active=0 而**不是刪除**——歷史紀錄必須留著，
     // 退場專案的資料還要供成本部查帳（scope=all 仍會合成 stores 條目）。
     await Exec(cn, tx, "UPDATE dbo.sites SET is_active = 0", Array.Empty<(string, object?)>());
@@ -1313,7 +1340,7 @@ static async Task<IResult> GetRates(SqlConnection cn)
             ["rows"] = arr
         });
     }
-    return Results.Content(outp.ToJsonString(), "application/json; charset=utf-8");
+    return Results.Content(outp.ToJsonString(Wr.JsonOpts), "application/json; charset=utf-8");
 }
 
 /* ---------- §3.9 op:rateBook ---------- */
@@ -1511,6 +1538,23 @@ static class Wr
 
     /* 簽單繳回日的期限天數（合約 §4.7，與前端常數 SIGN_RETURN_MAX_DAYS 同值） */
     public const int SignReturnMaxDays = 20;
+
+    /* app_settings 的鍵名（v23.2）。Auth.cs 也讀同一把鍵——**改這裡就好，勿各寫一份** */
+    public const string AdminDeptKey = "admin_departments";
+
+    /* JSON 輸出設定（v23.2）。
+       .NET 的預設編碼器會把所有非 ASCII 逃脫成 \uXXXX——功能上沒錯（JSON 合法、
+       前端 JSON.parse 照樣讀得到），但有兩個實際代價：
+         ① 正式資料的 scope=all 實測 905KB → 1,077KB，**每次開站多 168KB（+19%）**
+         ② 雲端 api.mjs 用 JS 的 JSON.stringify、不逃脫，兩份實作的輸出格式因此不一致；
+            資料庫裡的中文也會存成一整片 \uXXXX，資訊處打開表根本讀不出來
+       改用 UnsafeRelaxedJsonEscaping：名稱裡的 Unsafe 指的是「不對 HTML 敏感字元
+       做額外逃脫」，本 API 一律以 application/json 回應、不把回應嵌進 HTML，
+       前端插入 DOM 前也一律走 esc()，故不適用該風險。 */
+    public static readonly System.Text.Json.JsonSerializerOptions JsonOpts = new()
+    {
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
 
     /* 附件根目錄，**程序生命期內只解析一次**。
        原本每次呼叫 AttachDir() 都做一次 Path.GetFullPath ＋ Directory.CreateDirectory

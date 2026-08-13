@@ -67,7 +67,7 @@ public sealed class AuthOptions
     /// ⚠ 比對是 <see cref="StringComparer.Ordinal"/>——**必須與人資 API 回傳的 deptName
     ///   逐字元相符**（含全半形與空白）。寫錯不會報錯，只會讓那個部門的人全部被擋在門外，
     ///   而且從畫面上看不出原因。部署後請照 DEPLOYMENT §4.5 用實際帳號各驗一位。
-    public string[] AdminDepartments { get; set; } = { "成本管理部", "採購部", "總經理室" };
+    public string[] AdminDepartments { get; set; } = { "成本管理部", "採購處", "總經理室" };
 
     /* ERP 原生角色 → 本系統角色。**寫成設定不寫死**：ERP 日後新增角色時免改版。
        ⚠ 不可用「這人在此專案有幾列」判斷權限——大多數列是公司別角色（如 K02 佔三萬多列）。
@@ -246,14 +246,50 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
         return authz;
     }
 
-    public void Invalidate() => _cache.Clear();
+    public void Invalidate(){ _cache.Clear(); _depts = null; }
+
+    /* ---- 管理員部門白名單（v23.2） ----
+       優先讀資料庫的 app_settings，讓成控自己在系統後台增減，不必請資訊處
+       改 appsettings 並重啟服務。**資料庫沒有或為空時回退到設定檔**——
+       這是刻意的保險：避免有人在後台清空後把所有管理者一起鎖在門外。
+
+       快取到下一次 Invalidate()（op:master 成功後會呼叫），否則每次授權
+       都要多打一次資料庫。 */
+    private string[]? _depts;
+
+    private async Task<string[]> AdminDeptsAsync()
+    {
+        if (_depts is not null) return _depts;
+        try
+        {
+            await using var cn = appDb();
+            await cn.OpenAsync();
+            await using var cmd = new SqlCommand(
+                "SELECT value_json FROM dbo.app_settings WHERE setting_key = 'admin_departments'", cn);
+            var raw = await cmd.ExecuteScalarAsync() as string;
+            if (!string.IsNullOrWhiteSpace(raw)
+                && JsonNode.Parse(raw) is JsonArray arr && arr.Count > 0)
+            {
+                var vals = arr.Select(x => x?.GetValue<string>()).Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Select(s => s!.Trim()).ToArray();
+                if (vals.Length > 0) return _depts = vals;
+            }
+        }
+        catch (Exception)
+        {
+            /* 讀設定失敗不能讓整個授權掛掉——退回設定檔的預設值即可。
+               這裡刻意不 fail-closed：管理員部門讀不到只是「少了一條捷徑」，
+               ERP 角色那條路仍在，不會有人因此被誤放行。 */
+        }
+        return _depts = opt.AdminDepartments;
+    }
 
     private async Task<Authz?> ComputeAsync(UserIdentity user)
     {
         var empty = (IReadOnlySet<string>)new HashSet<string>();
 
-        // 規則 1：部門名稱＝成本管理部 → 系統管理者。**先於 ERP 角色比對**
-        if (opt.AdminDepartments.Contains(user.DeptName, StringComparer.Ordinal))
+        // 規則 1：部門名稱命中管理員部門 → 系統管理者。**先於 ERP 角色比對**
+        if ((await AdminDeptsAsync()).Contains(user.DeptName, StringComparer.Ordinal))
             return new Authz(Role.Admin, empty, true);
 
         if (erpDb is null)

@@ -208,10 +208,16 @@ async function handleApi(req, res, body, query){
     try{ data = JSON.parse(body); }catch(e){ return sendJson(res, { error: "invalid json" }, 400); }
 
     switch(data.op){
-      case "master":
+      case "master": {
         if(!Array.isArray(data.sites) || !data.sites.length) return sendJson(res, { error: "sites required" }, 400);
-        await kvSet("master", { sites: data.sites });
+        // v23.2：adminDepartments 省略＝保留既有值，不是清空（合約 §3.1）
+        const prev = (await kvGet("master")) || {};
+        const next = { sites: data.sites };
+        const depts = Array.isArray(data.adminDepartments) ? data.adminDepartments : prev.adminDepartments;
+        if(Array.isArray(depts)) next.adminDepartments = depts;
+        await kvSet("master", next);
         return sendJson(res, { ok: true });
+      }
 
       case "config":
         if(!data.site || !data.config) return sendJson(res, { error: "site/config required" }, 400);

@@ -176,10 +176,18 @@ export default async (req) => {
     try{ body = await req.json(); }catch(e){ return json({ error: "invalid json" }, 400); }
 
     switch(body.op){
-      case "master":
+      case "master": {
         if(!Array.isArray(body.sites) || !body.sites.length) return json({ error: "sites required" }, 400);
-        await s.setJSON("master", { sites: body.sites });
+        /* v23.2：adminDepartments 省略＝保留既有值，**不是清空**（合約 §3.1）。
+           舊版前端與其他呼叫端只送 sites，比照 sites 的整包覆蓋會把管理員設定洗掉。
+           要清空請明確送空陣列。 */
+        const prev = (await s.getJSON("master")) || {};
+        const next = { sites: body.sites };
+        const depts = Array.isArray(body.adminDepartments) ? body.adminDepartments : prev.adminDepartments;
+        if(Array.isArray(depts)) next.adminDepartments = depts;
+        await s.setJSON("master", next);
         return json({ ok: true });
+      }
 
       case "config":
         if(!body.site || !body.config) return json({ error: "site/config required" }, 400);

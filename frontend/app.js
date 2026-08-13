@@ -113,7 +113,13 @@ async function api(method, body, query){
   return res.json();
 }
 
-const apiSaveMaster = () => api("POST", { op:"master", sites: MASTER.sites });
+/* v23.2：一併送管理員部門白名單（合約 §3.1）。
+   ⚠ 只有在本機確實載入過 master.adminDepartments 時才送——沒載到就省略，
+     讓後端保留既有值。若無條件送 `|| []`，任何一次存設定都會把它清空。 */
+const apiSaveMaster = () => api("POST", Object.assign(
+  { op:"master", sites: MASTER.sites },
+  Array.isArray(MASTER.adminDepartments) ? { adminDepartments: MASTER.adminDepartments } : {}
+));
 const apiSaveConfig = (site) => api("POST", { op:"config", site, config: SITE_CACHE[site].config });
 const apiSaveRecord = (kind, rec, baseV) => api("POST", { op:"record", site: MASTER.currentSite, kind, record: rec, baseV: baseV || 0 });
 const apiDeleteRecord = (kind, id) => api("POST", { op:"deleteRecord", site: MASTER.currentSite, kind, id });
@@ -416,6 +422,10 @@ async function boot(){
   try{
     const data = await api("GET", null, { scope: "all" });
 
+    // v23.2：管理員部門白名單。先接住，apiSaveMaster() 才知道要不要送（見該函式註解）
+    if(data.master && Array.isArray(data.master.adminDepartments))
+      MASTER.adminDepartments = data.master.adminDepartments;
+
     if(data.master && Array.isArray(data.master.sites) && data.master.sites.length){
       MASTER.sites = data.master.sites;
     }else{
@@ -491,6 +501,8 @@ async function refreshData(silent){
   try{
     const data = await api("GET", null, { scope: "all" });
     if(data.master && data.master.sites && data.master.sites.length) MASTER.sites = data.master.sites;
+    if(data.master && Array.isArray(data.master.adminDepartments))
+      MASTER.adminDepartments = data.master.adminDepartments;   // v23.2
     for(const site of MASTER.sites){
       const st = (data.stores && data.stores[site]) || {};
       SITE_CACHE[site] = {
@@ -4755,6 +4767,7 @@ function applyAdminUI(){
   document.getElementById("adminToggleBtn").textContent = admin ? "登出管理員" : "管理員登入";
 
   document.getElementById("cfg_sites").readOnly = !admin;
+  document.getElementById("cfg_adminDepts").readOnly = !admin;   // v23.2
   Object.keys(SITE_CFG_MAP).forEach(id=>{
     document.getElementById(id).readOnly = !admin;
   });
@@ -4790,6 +4803,8 @@ const SITE_CFG_MAP = {
 function renderSettings(){
   if(!READY) return;
   document.getElementById("cfg_sites").value = MASTER.sites.join("\n");
+  // v23.2：管理員部門白名單（未設定時留白，代表沿用系統預設）
+  document.getElementById("cfg_adminDepts").value = (MASTER.adminDepartments || []).join("\n");
   document.getElementById("siteConfigTitle").childNodes[0].textContent = `目前工地基礎資料：${MASTER.currentSite}`;
   const c = cur().config;
   Object.entries(SITE_CFG_MAP).forEach(([id,key])=>{
@@ -4804,6 +4819,11 @@ function initSettings(){
     if(!isAdmin()){ toast("僅限管理員操作"); return; }
     const siteLines = document.getElementById("cfg_sites").value.split("\n").map(s=>s.trim()).filter(Boolean);
     if(siteLines.length) MASTER.sites = Array.from(new Set(siteLines));
+
+    /* v23.2 管理員部門白名單。留白＝送空陣列，後端會回退到系統預設值
+       （而不是「沒有任何管理員」——那會把所有人鎖在門外，見合約 §4.1） */
+    MASTER.adminDepartments = Array.from(new Set(
+      document.getElementById("cfg_adminDepts").value.split("\n").map(s=>s.trim()).filter(Boolean)));
 
     // v15.1：人員名單批次貼上也須逐行單一人名（與「新增選項」同一規則）
     const peopleLines = document.getElementById("cfg_people").value.split("\n").map(s=>s.trim()).filter(Boolean);

@@ -53,7 +53,7 @@ counts = {"sites": 0, "site_options": 0, "labor_records": 0, "labor_reports": 0,
           "labor_report_worktypes": 0, "equip_records": 0, "equip_reports": 0,
           "equip_report_usage": 0, "labor_audits": 0, "equip_audits": 0,
           "attachments": 0, "site_rate_bindings": 0,
-          "labor_agent_items": 0, "equip_agent_items": 0}
+          "labor_agent_items": 0, "equip_agent_items": 0, "app_settings": 0}
 
 
 def q(s):
@@ -203,6 +203,15 @@ for i, site in enumerate(master_sites + orphan_sites):
     out.append(f"INSERT INTO dbo.sites (name, lock_date, sort_order, is_active) "
                f"VALUES ({q(site)}, {lock}, {i}, {active});")
     counts["sites"] += 1
+
+# ---------- app_settings：master.adminDepartments（v23.2；合約 §4.1） ----------
+# 值存 JSON 字串（與合約的陣列形狀一致）；未設定就整筆不寫，
+# 讓地端權限模組回退到 appsettings 的預設值。
+_admin_depts = [d.strip() for d in (data["master"].get("adminDepartments") or []) if str(d).strip()]
+if _admin_depts:
+    out.append("INSERT INTO dbo.app_settings (setting_key, value_json) "
+               f"VALUES ('admin_departments', {q(json.dumps(_admin_depts, ensure_ascii=False))});")
+    counts["app_settings"] = 1
 
 # ---------- site_options（大小寫/前後空白視為同值，僅取首見，避免撞 CI 定序 UNIQUE） ----------
 for site, store in (data["stores"] or {}).items():

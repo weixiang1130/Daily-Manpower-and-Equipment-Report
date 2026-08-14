@@ -29,12 +29,36 @@ using System.Data;
 using System.Globalization;
 using System.Text;
 using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Server.HttpSys;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using KgAudit.Api;
 using Microsoft.Data.SqlClient;
 
 var builder = WebApplication.CreateBuilder(args);
+
+/* ---------- Windows 整合驗證的主機層（v23.4；opt-in） ----------
+   身分一律由**主機層**提供，本程式只讀已驗證的 HttpContext.User
+   （刻意不引 Microsoft.AspNetCore.Authentication.Negotiate，見 .csproj 註解）。
+   主機有兩條路：
+     • **IIS 託管**：不需要這段程式碼——在 IIS 啟用 Windows 驗證、停用匿名即可
+     • **Windows 服務／自主控管**：需要 HTTP.sys 提供 Negotiate/NTLM ← 這段
+
+   ⚠ 先前 DEPLOYMENT §4.5 就是這樣寫給資訊處的，但程式沒有這個設定點，
+     照文件做會找不到地方設。**預設關閉**，不設環境變數則行為完全不變。
+   ⚠ HttpSys 僅 Windows 可用；非 Windows 設了也會略過，不讓服務起不來。 */
+if (OperatingSystem.IsWindows()
+    && Environment.GetEnvironmentVariable("KGAUDIT_HTTPSYS") == "1")
+{
+    builder.WebHost.UseHttpSys(o =>
+    {
+        o.Authentication.Schemes = AuthenticationSchemes.Negotiate | AuthenticationSchemes.NTLM;
+        /* **必須停用匿名**：只開驗證卻仍允許匿名，未登入者會以匿名身分進來、
+           Identity.Name 為空字串，本系統一律回 401——功能不會壞，但使用者
+           看到的是「無法辨識您的網域帳號」而不是瀏覽器的登入提示。 */
+        o.Authentication.AllowAnonymous = false;
+    });
+}
 
 /* Results.Json(...) 走的是框架的序列化設定（本檔有 50 多處），
    一併改成不逃脫非 ASCII——理由與 Wr.JsonOpts 相同：
@@ -636,6 +660,70 @@ app.MapPost("/api/data", async (HttpContext ctx) =>
 
         default: return Results.Json(new { error = "unknown op" }, statusCode: 400);
     }
+});
+
+/* ---------- /whoami：身分鏈診斷（v23.4） ----------
+   部署 Windows 驗證時最常見的問題是「不知道卡在哪一段」——主機層沒帶身分？
+   帳號取錯？工號查不到？部門字串對不上？這個端點把**四段各自的結果**攤開，
+   一眼就看得出斷在哪裡。
+
+   ⚠ 刻意放在 /api 之外：權限中介層只擋 /api，若放進去，授權失敗時會被 403
+     擋掉——而那正是最需要診斷的時候。仍受整站 Basic Auth 保護，
+     且只回報「呼叫者自己」的身分，不能查別人。 */
+app.MapGet("/whoami", async (HttpContext ctx) =>
+{
+    var o = new JsonObject { ["authMode"] = authOpt.Mode.ToString(), ["directory"] = authOpt.Directory };
+
+    // ① 主機層：Windows 驗證有沒有把身分帶進來
+    var idn = ctx.User?.Identity;
+    o["hostAuthenticated"] = idn?.IsAuthenticated ?? false;
+    o["hostIdentity"] = idn?.Name ?? "";
+    o["hostAuthType"] = idn?.AuthenticationType ?? "";
+
+    if (identitySource is null)
+    {
+        o["note"] = "Auth:Mode=Off——未啟用個人身分，全站共用 Basic Auth";
+        return Results.Content(o.ToJsonString(Wr.JsonOpts), "application/json; charset=utf-8");
+    }
+
+    // ② 取出 AD 帳號（去掉 DOMAIN\ 前綴）
+    var account = identitySource.Account(ctx);
+    o["account"] = account ?? "";
+    if (account is null)
+    {
+        o["stoppedAt"] = "① 主機層未提供已驗證的身分——請確認 IIS/HTTP.sys 已啟用 Windows 驗證且**停用匿名**";
+        return Results.Content(o.ToJsonString(Wr.JsonOpts), "application/json; charset=utf-8");
+    }
+
+    // ③ 目錄：AD 帳號 → 工號＋部門
+    UserIdentity? user = null;
+    try { user = await directory.LookupAsync(account); }
+    catch (Exception ex) { o["directoryError"] = ex.Message; }
+    if (user is null)
+    {
+        o["stoppedAt"] = $"② 查無「{account}」的員工資料"
+            + (authOpt.Directory == "config" ? "（目前用設定檔假名單，正式環境請改 Auth:Directory=hrapi）" : "（人資 API）");
+        return Results.Content(o.ToJsonString(Wr.JsonOpts), "application/json; charset=utf-8");
+    }
+    o["empId"] = user.EmpId; o["name"] = user.Name;
+    o["deptName"] = user.DeptName; o["onJob"] = user.OnJob;
+
+    // ④ 授權：角色與可見工地
+    Authz? az = null;
+    try { az = await authorizer.ResolveAsync(user); }
+    catch (Exception ex) { o["authzError"] = ex.Message; }
+    if (az is null)
+    {
+        o["stoppedAt"] = "③ 無任何權限——部門不在管理員清單，且 ERP 查無工地角色";
+        o["hint"] = "若此人應為管理員，請比對上方 deptName 與設定的管理員部門是否**逐字**相同";
+        return Results.Content(o.ToJsonString(Wr.JsonOpts), "application/json; charset=utf-8");
+    }
+    o["role"] = az.Role.ToString();
+    o["allSites"] = az.AllSites;
+    o["sites"] = new JsonArray(az.Sites.Select(s => (JsonNode)JsonValue.Create(s)!).ToArray());
+    o["canSeeAudits"] = az.CanSeeAudits;
+    o["isAdmin"] = az.IsAdmin;
+    return Results.Content(o.ToJsonString(Wr.JsonOpts), "application/json; charset=utf-8");
 });
 
 app.MapGet("/health", async () =>

@@ -184,13 +184,33 @@ dotnet publish backend/onprem/dotnet/KgAudit.Api.csproj -c Release -o /opt/kg-au
 （該套件 8.0 線含最新版仍帶兩則高嚴重性弱點告警：GHSA-2p3q-h3hg-jcqq、
 GHSA-8prm-248r-h957），改由主機提供身分，本程式只讀取已驗證的 `HttpContext.User`：
 
-| 主機 | 設定 |
-|---|---|
-| IIS | 網站 → 驗證 → **啟用「Windows 驗證」、停用「匿名驗證」** |
-| HTTP.sys（Windows 服務） | `UseHttpSys` 設 `Authentication.Schemes = Negotiate \| NTLM`、`AllowAnonymous = false` |
+| 主機 | 設定 | 程式需要做什麼 |
+|---|---|---|
+| **IIS** | 網站 → 驗證 → **啟用「Windows 驗證」、停用「匿名驗證」** | 不需要——ASP.NET Core Module 會把已驗證的身分帶進來 |
+| **HTTP.sys**（Windows 服務／自主控管） | — | 設環境變數 **`KGAUDIT_HTTPSYS=1`**，程式即以 `Negotiate\|NTLM` 監聽並停用匿名 |
+
+> `KGAUDIT_HTTPSYS` **預設關閉**，不設就完全維持原本的 Kestrel 行為。
+> 僅 Windows 有效（非 Windows 設了會略過，不會讓服務起不來）。
+> 若以 `http://+:port` 監聽，HTTP.sys 需要 URL ACL（`netsh http add urlacl`）或以系統管理員執行。
 
 > ⚠ 只開 Windows 驗證但**保留匿名**，未登入者會以匿名身分進來、`Identity.Name` 為空，
 > 本系統一律回 401——功能不會壞，但使用者會看到「無法辨識您的網域帳號」。
+
+**診斷端點 `/whoami`**：部署 Windows 驗證時最常見的問題是「不知道卡在哪一段」。
+以瀏覽器（或帶 Windows 認證的工具）開 `/whoami`，會把身分鏈四段的結果攤開：
+
+```jsonc
+{ "authMode":"Windows", "hostAuthenticated":true,
+  "hostIdentity":"DOMAIN\\account", "hostAuthType":"Negotiate",  // ① 主機層
+  "account":"account",                                            // ② 去網域前綴
+  "empId":"...", "deptName":"...", "onJob":true,                  // ③ 目錄查詢
+  "role":"Admin", "allSites":true, "isAdmin":true }               // ④ 授權結果
+```
+
+斷在哪一段就會出現 `stoppedAt` 說明原因。**部門字串對不上時，
+把回應裡的 `deptName` 與設定的管理員部門逐字比對即可查出。**
+此端點刻意放在 `/api` 之外（權限中介層只擋 `/api`，放進去會在授權失敗時被 403
+擋掉——而那正是最需要診斷的時候），仍受整站 Basic Auth 保護，且只回報呼叫者自己的身分。
 
 **② 設定檔。**
 
@@ -239,8 +259,16 @@ GHSA-8prm-248r-h957），改由主機提供身分，本程式只讀取已驗證�
 >   這類情況，比對兩行日誌即可查出
 > 上線後請各部門實際找一位同仁登入確認。
 
-**④ 驗收。** 跑 `AUTH-PLAN.md` §6 的 11 個情境。其中情境 7 與 Windows 驗證本身
-**未在網域環境實測過**（開發機無網域），請務必在正式環境複驗。
+**④ 驗收。** 跑 `AUTH-PLAN.md` §6 的 11 個情境。
+
+> **Windows 驗證本身已於網域環境實測通過（2026-08-13）**：
+> 以真實網域帳號經 HTTP.sys／Negotiate 登入，`hostIdentity` 取得 `DOMAIN\account`、
+> 正確去除網域前綴、完成目錄與授權判定；未帶身分者被主機層擋下（401）。
+> **冒名亦已驗證無效**——送 `X-Dev-User`／偽造 `Authorization` 標頭，
+> 伺服器一律只認 Kerberos 驗過的身分，從不採信標頭自稱的帳號。
+>
+> 仍需在正式環境複驗的是**貴部門主機的實際設定**（IIS 或 HTTP.sys 是否確實
+> 啟用 Windows 驗證並停用匿名）——用 `/whoami` 一次就看得出來。
 
 > `Auth:Mode=Dev` 讓身分由 `X-Dev-User` 標頭指定，僅供開發測試——**正式環境絕不可使用**。
 
@@ -285,11 +313,20 @@ GHSA-8prm-248r-h957），改由主機提供身分，本程式只讀取已驗證�
 | `backend/onprem/server.mjs`／`import-backup.mjs` | ⚠ **未經實機執行測試**——撰寫當下開發機無 Node 環境，僅通過語法驗證與對照 `backend/cloud/functions/api.mjs` 的逐行合約比對 |
 | `backend/sql/`（DDL＋轉換器） | ✅ LocalDB 實建、以正式資料匯入對帳一致 |
 
-**兩項本機無法驗證、部署時務必複驗**（§4.5 亦有說明）：
+**已於網域環境實測通過（2026-08-13，更正先前的「無法驗證」聲明）**：
 
-1. **Windows 整合驗證本身**——開發機沒有網域，`Auth:Mode=Windows` 這條路徑無法測試。
-   請以實際網域帳號登入確認，並特別驗證「未登入者不會以匿名身分進來」
-2. **管理員部門是否對得上**——部門名稱是逐字元比對人資 API 的回傳值。
-   請各部門實際找一位同仁登入確認取得管理員權限；比對不上時服務日誌會記下該員的實際部門字串
+- **Windows 整合驗證本身**：真實網域帳號經 HTTP.sys／Negotiate 完成身分鏈四段；
+  未帶身分者被擋下（401）
+- **冒名登入無效**：送 `X-Dev-User`／偽造 `Authorization` 標頭，伺服器一律只認
+  Kerberos 驗過的身分
+
+**部署時仍須複驗（屬環境設定，非程式）**：
+
+1. **貴部門主機是否確實啟用 Windows 驗證並停用匿名**——開 `/whoami` 即可確認
+2. **管理員部門字串是否對得上**——部門名稱逐字元比對人資 API 的回傳值。
+   請各部門實際找一位同仁登入，用 `/whoami` 比對回應中的 `deptName`
+   與設定的管理員部門
+3. **人資 API（`Auth:Directory=hrapi`）**：本機以規格書形狀的假 API 驗證過完整鏈路，
+   但**尚未以正式配發的 `system`／`apiKey` 對真實端點呼叫過**（憑證未配發）
 
 不論採哪一種形態，部署前都請完整跑過 §4 的驗證清單；如有問題請回報系統管理者。

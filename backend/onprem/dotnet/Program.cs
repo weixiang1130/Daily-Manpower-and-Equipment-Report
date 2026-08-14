@@ -545,6 +545,14 @@ app.MapGet("/api/data", async (HttpContext ctx) =>
        不該讓一般工地使用者列舉全公司有哪些專案。 */
     if (q.ContainsKey("candidates"))
     {
+        /* ⚠ 這個端點會列出**全公司的 ERP 專案代碼與名稱**——與系統其他端點
+           只揭露「本站自己的單據」不是同一個等級的資料。
+           Auth:Mode=Off 時伺服器端**沒有辦法**判斷誰是管理員（adminPin 只是
+           前端防誤觸），所以在權限模式關閉時一律不提供，而不是靠前端自律。 */
+        if (authOpt.Mode == AuthMode.Off)
+            return Results.Json(new { candidates = Array.Empty<object>(),
+                reason = "工地納管需啟用權限模式（Auth:Mode 不可為 Off）——此端點會列出全公司的 ERP 專案，"
+                       + "未啟用個人身分時伺服器端無從判斷操作者是否為管理者" });
         if (az is not null && !az.IsAdmin)
             return Results.Json(new { error = "forbidden", message = "此功能限系統管理者" }, statusCode: 403);
         return await GetCandidates(cn, erpDb, authOpt);
@@ -697,8 +705,15 @@ app.MapGet("/whoami", async (HttpContext ctx) =>
 
     // ③ 目錄：AD 帳號 → 工號＋部門
     UserIdentity? user = null;
+    /* ⚠ 只回固定文字，**不可把 ex.Message 回給呼叫者**——SqlException／HttpRequestException
+       的訊息通常含伺服器名、執行個體與資料庫名，而本端點是整站 Basic Auth 之後
+       人人可打的。細節寫伺服器日誌就好（與「內部識別不外洩」的原則一致）。 */
     try { user = await directory.LookupAsync(account); }
-    catch (Exception ex) { o["directoryError"] = ex.Message; }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "/whoami 目錄查詢失敗：{Account}", account);
+        o["directoryError"] = "目錄查詢失敗，詳見伺服器日誌";
+    }
     if (user is null)
     {
         o["stoppedAt"] = $"② 查無「{account}」的員工資料"
@@ -711,7 +726,11 @@ app.MapGet("/whoami", async (HttpContext ctx) =>
     // ④ 授權：角色與可見工地
     Authz? az = null;
     try { az = await authorizer.ResolveAsync(user); }
-    catch (Exception ex) { o["authzError"] = ex.Message; }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "/whoami 權限查詢失敗：{Emp}", user.EmpId);
+        o["authzError"] = "權限查詢失敗，詳見伺服器日誌（多半是 ERP 連線或權限設定問題）";
+    }
     if (az is null)
     {
         o["stoppedAt"] = "③ 無任何權限——部門不在管理員清單，且 ERP 查無工地角色";
@@ -1405,7 +1424,13 @@ static async Task<IResult> OpDeleteAttachment(SqlConnection cn, JsonObject body)
      人資 API 只能以 AD 帳號單筆查詢，列不出整個專案的成員。
    ========================================================================== */
 
-/* 取某專案的工地角色人員（工程師／主任）。回 (姓名清單, 工程師數, 主任數)。 */
+/* 取某專案的工地角色人員（工程師／主任）。回 (姓名清單, 工程師數, 主任數)。
+
+   ⚠ **人數以「人」為單位、不是以列為單位**：同一人在同一專案可能同時掛
+     工程師與主任兩個角色（實務上很常見）。若逐列累加，3 個人會顯示成 4 人次，
+     而實際帶進人員池的又是去重後的 3 人——兩個數字對不起來，
+     管理員正是看這個數字判斷「這個專案規模對不對、要不要納管」。
+     一人同時具兩種角色時**歸為主任**（較高者），確保 engineers + leads = 實際人數。 */
 static async Task<(List<string> names, int engineers, int leads)> ErpProjectPeople(
     SqlConnection erp, AuthOptions opt, string projectCode)
 {
@@ -1418,17 +1443,19 @@ static async Task<(List<string> names, int engineers, int leads)> ErpProjectPeop
     cmd.Parameters.AddWithValue("@p", projectCode);
     for (var i = 0; i < eng.Length; i++) cmd.Parameters.AddWithValue("@r" + i, eng[i]);
 
-    var names = new List<string>();
-    int e = 0, l = 0;
     var lead = new HashSet<string>(opt.SiteLeadRoles, StringComparer.OrdinalIgnoreCase);
+    var isLead = new Dictionary<string, bool>(StringComparer.Ordinal);   // 姓名 → 是否為主任
+    var names = new List<string>();
     await using var rd = await cmd.ExecuteReaderAsync();
     while (await rd.ReadAsync())
     {
         var nm = rd.IsDBNull(0) ? "" : rd.GetString(0);
-        if (!string.IsNullOrWhiteSpace(nm) && !names.Contains(nm, StringComparer.Ordinal)) names.Add(nm);
-        if (lead.Contains(rd.GetString(1))) l++; else e++;
+        if (string.IsNullOrWhiteSpace(nm)) continue;
+        if (!isLead.ContainsKey(nm)) { isLead[nm] = false; names.Add(nm); }
+        if (lead.Contains(rd.GetString(1))) isLead[nm] = true;
     }
-    return (names, e, l);
+    var l = isLead.Values.Count(x => x);
+    return (names, isLead.Count - l, l);
 }
 
 static async Task<IResult> GetCandidates(SqlConnection cn, Func<SqlConnection>? erpDb, AuthOptions opt)
@@ -1445,39 +1472,51 @@ static async Task<IResult> GetCandidates(SqlConnection cn, Func<SqlConnection>? 
 
     var roles = opt.SiteUserRoles.Concat(opt.SiteLeadRoles).ToArray();
     var ps = string.Join(",", roles.Select((_, i) => "@r" + i));
-    var list = new JsonArray();
+    var leadSet = new HashSet<string>(opt.SiteLeadRoles, StringComparer.OrdinalIgnoreCase);
+
+    /* ⚠ **一次查完，不可逐專案再查**。
+       改版前是先 GROUP BY 取得專案清單、再對每個候選專案各查一次人員——
+       ERP 權限檢視表約 10 萬列／317 個專案，等於管理員每按一次「重新比對」
+       就對**共用的正式 ERP** 連發數百次串行查詢。這裡改成一次取回
+       (專案, 姓名, 角色) 三元組，在應用程式端分組。 */
+    var byProject = new Dictionary<string, (string name, Dictionary<string, bool> people)>(StringComparer.OrdinalIgnoreCase);
     await using (var erp = erpDb())
     {
         await erp.OpenAsync();
         await using var cmd = new SqlCommand(
-            $@"SELECT LTRIM(RTRIM(ProjectID)) AS pid,
-                      MAX(LTRIM(RTRIM(ProjectName))) AS pname,
-                      SUM(CASE WHEN LTRIM(RTRIM(RoleName)) IN ({ps}) THEN 1 ELSE 0 END) AS n
+            $@"SELECT DISTINCT LTRIM(RTRIM(ProjectID))   AS pid,
+                               LTRIM(RTRIM(ProjectName)) AS pname,
+                               LTRIM(RTRIM(UserName))    AS nm,
+                               LTRIM(RTRIM(RoleName))    AS rn
                FROM BI.dbo.vw_Acumatica_Permission
-               WHERE LTRIM(RTRIM(RoleName)) IN ({ps})
-               GROUP BY LTRIM(RTRIM(ProjectID))
-               ORDER BY n DESC", erp);
+               WHERE LTRIM(RTRIM(RoleName)) IN ({ps})", erp);
         for (var i = 0; i < roles.Length; i++) cmd.Parameters.AddWithValue("@r" + i, roles[i]);
 
-        var rows = new List<(string pid, string pname)>();
-        await using (var rd = await cmd.ExecuteReaderAsync())
-            while (await rd.ReadAsync())
-            {
-                var pid = rd.GetString(0);
-                if (used.Contains(pid)) continue;          // 已納管的不再列出
-                rows.Add((pid, rd.IsDBNull(1) ? "" : rd.GetString(1)));
-            }
-
-        foreach (var (pid, pname) in rows)
+        await using var rd = await cmd.ExecuteReaderAsync();
+        while (await rd.ReadAsync())
         {
-            var (_, e, l) = await ErpProjectPeople(erp, opt, pid);
-            if (e + l == 0) continue;                      // 沒有工地角色的人就不是候選
-            list.Add(new JsonObject
-            {
-                ["projectCode"] = pid, ["projectName"] = pname,
-                ["engineers"] = e, ["leads"] = l
-            });
+            var pid = rd.GetString(0);
+            if (used.Contains(pid)) continue;              // 已納管的不再列出
+            var nm = rd.IsDBNull(2) ? "" : rd.GetString(2);
+            if (string.IsNullOrWhiteSpace(nm)) continue;
+            if (!byProject.TryGetValue(pid, out var slot))
+                byProject[pid] = slot = (rd.IsDBNull(1) ? "" : rd.GetString(1),
+                                         new Dictionary<string, bool>(StringComparer.Ordinal));
+            if (!slot.people.ContainsKey(nm)) slot.people[nm] = false;
+            if (leadSet.Contains(rd.GetString(3))) slot.people[nm] = true;   // 兼任者歸主任
         }
+    }
+
+    // 人數多的排前面——管理員通常先看規模較大的專案
+    var list = new JsonArray();
+    foreach (var kv in byProject.OrderByDescending(x => x.Value.people.Count))
+    {
+        var leads = kv.Value.people.Values.Count(x => x);
+        list.Add(new JsonObject
+        {
+            ["projectCode"] = kv.Key, ["projectName"] = kv.Value.name,
+            ["engineers"] = kv.Value.people.Count - leads, ["leads"] = leads
+        });
     }
     return Results.Content(new JsonObject { ["candidates"] = list }.ToJsonString(Wr.JsonOpts),
         "application/json; charset=utf-8");
@@ -1492,10 +1531,24 @@ static async Task<IResult> OpAdoptSite(SqlConnection cn, JsonObject body, Func<S
         return Results.Json(new { error = "not implemented",
             message = "此環境未設定 ERP 連線，無法納管工地" }, statusCode: 501);
 
+    /* 權限模式關閉時無從判斷誰是管理者——與 §2.5 候選清單同一理由，
+       不可讓「建立工地並寫入專案代碼」這種設定級操作在無身分下執行 */
+    if (opt.Mode == AuthMode.Off)
+        return Results.Json(new { error = "forbidden",
+            message = "工地納管需啟用權限模式（Auth:Mode 不可為 Off）" }, statusCode: 403);
+
     var code = Sx(body, "projectCode");
     var site = Sx(body, "site");
     if (code is null || site is null)
         return Results.Json(new { error = "projectCode/site required" }, statusCode: 400);
+    /* 長度先擋，讓使用者看到「名稱過長」而不是資料庫截斷造成的 500。
+       欄位定義：sites.name NVARCHAR(100)、sites.project_code VARCHAR(10) */
+    if (site.Length > 100)
+        return Results.Json(new { error = "site too long",
+            message = $"工地名稱最多 100 字，目前 {site.Length} 字" }, statusCode: 400);
+    if (code.Length > 10)
+        return Results.Json(new { error = "projectCode too long",
+            message = $"專案代碼最多 10 字，目前 {code.Length} 字" }, statusCode: 400);
 
     // 一個專案代碼只能對應一個工地——重複對映會讓權限判定把兩站混在一起
     var dup = await Scalar(cn, null,

@@ -1279,34 +1279,59 @@ function renderAgentRows(){
         <label>代辦工數<input type="number" class="ag-work" data-i="${i}" step="0.5" min="0" value="${a.work}" ${zero?"disabled":""}></label>
         <label>加班·前2小時<input type="number" class="ag-ot2" data-i="${i}" step="0.5" min="0" value="${a.ot2}" ${zero?"disabled":""}></label>
         <label>加班·第3小時起<input type="number" class="ag-otover" data-i="${i}" step="0.5" min="0" value="${a.otOver}" ${zero?"disabled":""}></label>
-        <label class="ag-note">備註<input type="text" class="ag-note-in" data-i="${i}" value="${esc(a.note||"")}" placeholder="選填" ${zero?"disabled":""}></label>
+        <label class="ag-note">代辦內容<input type="text" class="ag-note-in" data-i="${i}" value="${esc(a.note||"")}" placeholder="這家廠商來做了什麼（例：協助吊運鋼構）" ${zero?"disabled":""}></label>
       </div>
       <button type="button" class="att-remove" data-i="${i}" title="移除此代辦列">×</button>
     </div>`).join("");
 }
 
-/* 兩個下拉：廠商取自名單池；工種**只列本單已填的工種**（合約 §4.10 的約束）。
+/* 責任歸屬廠商的建議清單（v23.5）。
+   ⚠ **必須可自由輸入，不能限制在名單池裡**——工地回饋：名單池裡是點工與機具廠商，
+     但代扣的對象常是**施工廠商**，本來就不在那份名單。改用 datalist：
+     打字不受限，同時把「名單池 ＋ 本站已用過的代辦廠商」列成建議，
+     讓重複出現的廠商一次點選即可，避免同一家被打成好幾種寫法而拆成多列統計。 */
+function agentVendorSuggestions(){
+  const s = new Set((cur() && cur().config && cur().config.vendors) || []);
+  const st = cur();
+  if(st){
+    ["labor","equipment"].forEach(kind=>{
+      (st[kind] || []).forEach(r=>{
+        ((r.report && r.report.agentItems) || []).forEach(a=>{
+          if(a && a.vendor) s.add(a.vendor);
+        });
+      });
+    });
+  }
+  // 也含「這張表單當下已加入但還沒存檔」的廠商——同一家要再加一個工種時可直接點選
+  agentState.forEach(a=>{ if(a.vendor) s.add(a.vendor); });
+  equipAgentState.forEach(a=>{ if(a.vendor) s.add(a.vendor); });
+  return [...s].sort();
+}
+
+function fillDatalist(id, values){
+  const dl = document.getElementById(id);
+  if(dl) dl.innerHTML = values.map(v=>`<option value="${esc(v)}"></option>`).join("");
+}
+
+/* 工種**只列本單已填的工種**（合約 §4.10 的約束）——代扣要用該工種查費率。
    每次工種列變動都要重填，否則會選到已被移除的工種。 */
 function fillAgentSelects(){
-  const vs = document.getElementById("l_agentVendor");
   const ts = document.getElementById("l_agentType");
-  if(!vs || !ts) return;
-  const keepV = vs.value, keepT = ts.value;
-  const vendors = (cur() && cur().config && cur().config.vendors) || [];
-  vs.innerHTML = '<option value="">責任歸屬廠商⋯</option>'
-    + vendors.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join("");
+  if(!ts) return;
+  fillDatalist("l_agentVendorList", agentVendorSuggestions());
+  const keepT = ts.value;
   ts.innerHTML = '<option value="">工種⋯</option>'
     + typeState.map(t=>`<option value="${esc(t.type)}">${esc(t.type)}</option>`).join("");
-  vs.value = keepV;
   ts.value = typeState.some(t=>t.type===keepT) ? keepT : "";
 }
 
 function addAgentRow(){
   if(!editingLaborReportId){ toast("請先從清單選擇要回報的紀錄"); return; }
   if(document.getElementById("l_zeroWork").checked){ toast("已勾選 0 工確認，無代辦可填"); return; }
-  const vendor = document.getElementById("l_agentVendor").value;
+  const vEl = document.getElementById("l_agentVendor");
+  const vendor = vEl.value.trim();   // v23.5：自由輸入，前後空白一律去掉（否則統計會拆成兩列）
   const type = document.getElementById("l_agentType").value;
-  if(!vendor){ toast("請先選責任歸屬廠商"); return; }
+  if(!vendor){ toast("請先填責任歸屬廠商"); return; }
   if(!type){
     toast(typeState.length ? "請選工種" : "請先在上方加入出工工種——代辦要歸屬到工種才查得到費率");
     return;
@@ -1315,6 +1340,8 @@ function addAgentRow(){
     toast(`「${vendor}／${type}」已在代辦清單中，請直接修改該列數字`); return;
   }
   agentState.push({ vendor, type, work:0, ot2:0, otOver:0, note:"" });
+  vEl.value = "";                    // 清空以便連續加下一家
+  fillAgentSelects();                // 新廠商即刻進入建議清單
   renderAgentRows();
 }
 
@@ -1991,31 +2018,29 @@ function renderEquipAgentRows(){
       <span class="tr-name">${esc(a.vendor)}</span>
       <div class="att-fields">
         <label>代辦${esc(unit)}<input type="number" class="eag-qty" data-i="${i}" step="0.5" min="0" value="${a.qty}" ${zero?"disabled":""}></label>
-        <label class="ag-note">備註<input type="text" class="eag-note" data-i="${i}" value="${esc(a.note||"")}" placeholder="選填" ${zero?"disabled":""}></label>
+        <label class="ag-note">代辦內容<input type="text" class="eag-note" data-i="${i}" value="${esc(a.note||"")}" placeholder="這家廠商來做了什麼（例：代叫水車洗街）" ${zero?"disabled":""}></label>
       </div>
       <button type="button" class="att-remove" data-i="${i}" title="移除此代辦列">×</button>
     </div>`).join("");
 }
 
 function fillEquipAgentSelect(){
-  const vs = document.getElementById("e_agentVendor");
-  if(!vs) return;
-  const keep = vs.value;
-  const vendors = (cur() && cur().config && cur().config.vendors) || [];
-  vs.innerHTML = '<option value="">責任歸屬廠商⋯</option>'
-    + vendors.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join("");
-  vs.value = keep;
+  // v23.5：改自由輸入＋建議清單（理由見 agentVendorSuggestions）
+  fillDatalist("e_agentVendorList", agentVendorSuggestions());
 }
 
 function addEquipAgentRow(){
   if(!editingEquipReportId){ toast("請先從清單選擇要回報的紀錄"); return; }
   if(document.getElementById("e_zeroUse").checked){ toast("已勾選 0 使用確認，無代辦可填"); return; }
-  const vendor = document.getElementById("e_agentVendor").value;
-  if(!vendor){ toast("請先選責任歸屬廠商"); return; }
+  const vEl = document.getElementById("e_agentVendor");
+  const vendor = vEl.value.trim();   // v23.5：自由輸入
+  if(!vendor){ toast("請先填責任歸屬廠商"); return; }
   if(equipAgentState.some(a=>a.vendor===vendor)){
     toast(`「${vendor}」已在代辦清單中，請直接修改該列數量`); return;
   }
   equipAgentState.push({ vendor, qty:0, note:"" });
+  vEl.value = "";
+  fillEquipAgentSelect();
   renderEquipAgentRows();
 }
 

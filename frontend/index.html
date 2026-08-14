@@ -224,9 +224,10 @@
                這一區原本 258px，是整張表單最高的元素 -->
           <div class="field field-wide">
             <div class="field-head">
-              <label title="代辦＝向本單廠商叫的工，但成本要歸給另一家廠商，計價時從該廠商扣回。工種限本單已填的工種（代扣要用本單廠商的該工種費率查價）；代辦量不可超過該工種的回報量。代扣金額由系統自動計算，不需人工填。">代辦<span class="opt">選填・幫其他廠商叫的工</span></label>
+              <label title="代辦＝向本單廠商叫的工，但成本要歸給另一家廠商，計價時從該廠商扣回。工種限本單已填的工種（代扣要用本單廠商的該工種費率查價）；代辦量不可超過該工種的回報量。<strong>責任歸屬廠商可直接打字</strong>——代扣對象常是施工廠商，不一定在點工／機具名單裡；輸入框會列出已用過的廠商供點選，同一家請用同一種寫法以免統計被拆開。代扣金額由系統自動計算，不需人工填。">代辦<span class="opt">選填・幫其他廠商叫的工</span></label>
               <div class="agent-add">
-                <select id="l_agentVendor" class="agent-pick"><option value="">責任歸屬廠商⋯</option></select>
+                <input id="l_agentVendor" class="agent-pick" list="l_agentVendorList" placeholder="責任歸屬廠商（可直接打字）">
+                <datalist id="l_agentVendorList"></datalist>
                 <select id="l_agentType" class="agent-pick"><option value="">工種⋯</option></select>
                 <button type="button" id="l_agentAddBtn" class="ghost-btn">＋ 加入</button>
               </div>
@@ -416,9 +417,10 @@
                所以代辦列不需選品項——數量的單位跟著主品項的計價方式走。 -->
           <div class="field field-wide">
             <div class="field-head">
-              <label title="代辦＝向本單廠商叫的機具，但成本要歸給另一家廠商，計價時從該廠商扣回。數量的單位跟著主計價品項走（全天→天數、時租→小時）。代扣金額由系統自動計算。">代辦<span class="opt">選填・幫其他廠商叫的機具</span></label>
+              <label title="代辦＝向本單廠商叫的機具，但成本要歸給另一家廠商，計價時從該廠商扣回。責任歸屬廠商可直接打字——代扣對象常是施工廠商，不一定在機具廠商名單裡；輸入框會列出已用過的廠商供點選。數量的單位跟著主計價品項走（全天→天數、時租→小時）。代扣金額由系統自動計算。">代辦<span class="opt">選填・幫其他廠商叫的機具</span></label>
               <div class="agent-add">
-                <select id="e_agentVendor" class="agent-pick"><option value="">責任歸屬廠商⋯</option></select>
+                <input id="e_agentVendor" class="agent-pick" list="e_agentVendorList" placeholder="責任歸屬廠商（可直接打字）">
+                <datalist id="e_agentVendorList"></datalist>
                 <button type="button" id="e_agentAddBtn" class="ghost-btn">＋ 加入</button>
               </div>
             </div>

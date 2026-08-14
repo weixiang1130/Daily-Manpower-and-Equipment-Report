@@ -88,6 +88,37 @@ node backend/onprem/server.mjs
 程式在 `backend/onprem/dotnet/`：`Program.cs`（端點）＋`Auth.cs`（身分與權限）
 ＋`KgAudit.Api.csproj`＋`appsettings.json`。
 
+### ⓪ 帳號與權限（請先確定這一段，最容易卡住）
+
+**連線身分**：若連線字串使用 `Integrated Security=true`（內網常見做法），
+實際連資料庫的身分是 **IIS 應用程式集區帳號／Windows 服務的登入帳號**，
+**不是**登入網頁的使用者。請先決定專用服務帳號，再依它授權。
+
+```sql
+-- ① 本系統資料庫：只需資料讀寫，不需要結構變更權
+USE KG_AUDIT;
+CREATE USER [<服務帳號>] FOR LOGIN [<服務帳號>];
+ALTER ROLE db_datareader ADD MEMBER [<服務帳號>];
+ALTER ROLE db_datawriter ADD MEMBER [<服務帳號>];
+-- 不需要 db_ddladmin／db_owner：DDL 只在建置時由 DBA 執行一次
+
+-- ② ERP 權限檢視表：**不同資料庫**，必須另外授權（見 §4.5 的說明框）
+USE BI;
+CREATE USER [<服務帳號>] FOR LOGIN [<服務帳號>];
+GRANT SELECT ON dbo.vw_Acumatica_Permission TO [<服務帳號>];
+```
+
+**檔案系統權限**（服務帳號）：
+
+| 目錄 | 需要的權限 |
+|---|---|
+| `ATTACH_DIR`（附件） | **讀取＋寫入＋建立**（程式啟動時會自動建目錄） |
+| `STATIC_DIR`（前端靜態檔） | 唯讀 |
+| 日誌輸出目的地 | 寫入 |
+
+**網路**：本系統 → SQL Server（預設 1433）、→ ERP SQL 執行個體、
+→ 人資 API（HTTPS 443，僅啟用權限時）。使用者 → 本服務（HTTP，前置 HTTPS 反向代理）。
+
 ### ① 建立資料庫
 
 ```bash
@@ -228,6 +259,27 @@ GHSA-8prm-248r-h957），改由主機提供身分，本程式只讀取已驗證�
 }
 ```
 
+> ### ⚠ ERP 連線需要的是**跨資料庫**的讀取權
+>
+> 程式是以**三段式名稱** `BI.dbo.vw_Acumatica_Permission` 存取權限檢視表——
+> **與 `KGAUDIT_ERP_CONNECTION` 連到哪個資料庫無關**。
+>
+> 只在連線字串指定的資料庫上授 `db_datareader` **不夠**：服務會正常啟動、
+> Basic Auth 正常、一般讀寫全部正常，**直到有人登入觸發權限判定才失敗**
+> （`Invalid object name 'BI.dbo.vw_Acumatica_Permission'`），
+> 而 fail-closed 會讓**全員 503**。這是最容易在上線當天才爆的設定。
+>
+> 需要的授權：
+>
+> ```sql
+> -- 於 ERP 所在執行個體的 BI 資料庫
+> USE BI;
+> CREATE USER [<服務帳號>] FOR LOGIN [<服務帳號>];
+> GRANT SELECT ON dbo.vw_Acumatica_Permission TO [<服務帳號>];
+> ```
+>
+> 若 ERP 與本系統在**不同執行個體**，`KGAUDIT_ERP_CONNECTION` 要指向 ERP 那台。
+
 **機密一律走環境變數**（不寫進進版控的檔案）：
 
 | 環境變數 | 用途 |
@@ -278,7 +330,7 @@ GHSA-8prm-248r-h957），改由主機提供身分，本程式只讀取已驗證�
 |---|---|
 | 備份（.NET 版） | **兩份都要**：① SQL Server 資料庫的例行備份 ② **`ATTACH_DIR` 的附件檔案**——附件本體**不在資料庫裡**（刻意的：幾百 MB 的照片塞進 DB 會讓備份與還原又慢又大）。只備份資料庫＝所有簽單照片與稽核照片都沒被備份到 |
 | 備份（Node 版） | 每日排程壓縮整個 `DATA_DIR`（含 JSON 檔與 `attachments/` 子目錄的附件二進位——**備份規則勿只挑 .json**）；另保留管理員手動 JSON 備份於月結時點 |
-| 監控 | 服務存活（HTTP 200 於 `/`）＋磁碟空間 |
+| 監控 | 服務存活（`GET /health` 回 `{"ok":true,"sites":N}`）＋磁碟空間（**含 `ATTACH_DIR`**）。<br>⚠ **啟用 Windows 驗證後，探測也必須帶網域認證**——`AllowAnonymous=false` 是在 HTTP.sys／IIS 層生效，**整台服務每個路徑**（含 `/health` 與首頁）都要求認證。不帶認證的探測會拿到 **401**，監控會把健康的服務報成死掉、甚至觸發自動重啟。請以網域服務帳號執行探測，或在 IIS 對 `/health` 單獨放行匿名 |
 | 密碼輪替 | 人員異動時更換 `SITE_AUTH_PASS` 並重啟服務 |
 | 日誌 | stdout（systemd journal / NSSM 日誌檔）；本系統不記錄操作者身分（見下） |
 

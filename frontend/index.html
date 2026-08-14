@@ -24,7 +24,7 @@
   <div class="overlay-card">
     <div style="font-size:32px;">⚠</div>
     <div>無法連線共用資料庫，請確認網路後重試。</div>
-    <button type="button" class="btn-primary" onclick="location.reload()">重新載入</button>
+    <button type="button" class="btn-primary" id="fatalReloadBtn">重新載入</button>
   </div>
 </div>
 
@@ -703,7 +703,7 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="config.local.js" onerror="console.info('未偵測到 config.local.js，使用內建範例清單')"></script>
+<script src="config.local.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

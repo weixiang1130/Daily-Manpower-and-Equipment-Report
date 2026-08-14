@@ -45,6 +45,10 @@ repo 內含三套等價的執行環境，皆實作同一份 [`API-CONTRACT.md`](
 
 - 建議前置反向代理（IIS ARR / nginx）處理 **HTTPS**——服務本身只講 HTTP，
   Basic Auth 帳密是明文傳輸，**正式環境必須走 HTTPS**
+- **安全性回應標頭已內建**（節點 43）：服務對所有回應送出 CSP、`X-Content-Type-Options`、
+  `X-Frame-Options`、`Referrer-Policy`、`Permissions-Policy`，反向代理**不需要、也不建議重複覆寫**
+  （尤其 CSP，覆寫易與前端不相容）。**唯一應由反向代理補的是 HSTS**（`Strict-Transport-Security`），
+  因為它只在 HTTPS 上有意義、而 TLS 終結在代理層
 - 磁碟空間：單據資料極小（每筆約 1–2 KB）；**附件是主要成長來源**（單檔上限 4MB），
   依實際上傳量估算，建議先給 50 GB 並納入監控
 
@@ -209,6 +213,23 @@ dotnet publish backend/onprem/dotnet/KgAudit.Api.csproj -c Release -o /opt/kg-au
 
 權限機制**預設關閉**（`Auth:Mode=Off`）——不做任何設定就維持現行行為
 （整站 Basic Auth、所有人可見全部工地）。要啟用時：
+
+> **⚠ 上線組態守衛（會讓服務「拒絕啟動」，不是 bug）**
+> 為避免「一個字設錯就靜默門戶大開」，**非開發環境**（`ASPNETCORE_ENVIRONMENT` 不是 `Development`，
+> 亦即 `Production`／`Staging`／自訂名稱／未設定時的預設）若偵測到下列任一，服務會**拒絕啟動並回
+> 非零結束碼**，日誌以 `Critical` 印出原因與解法（這是刻意設計）：
+> - **`Auth:Mode=Off`**（未啟用授權）、**`Auth:Mode=Dev`**（X-Dev-User 可冒名）
+> - **`Auth:Mode=Windows` 但 `Auth:Directory` 非 `hrapi`**（用假名單，正式環境會全員查無資料被鎖在門外）
+>
+> 解法：
+> - **正式內網部署**：設 `Auth__Mode=Windows`、`Auth__Directory=hrapi`（見下），服務即正常啟動。
+> - **開發／測試機**要沿用 `Mode=Off`：設 `ASPNETCORE_ENVIRONMENT=Development`（`dotnet run` 已內建）。
+> - **明確承擔風險的過渡期**（例如切換日先以 Basic Auth 對帳）：設 `KGAUDIT_ALLOW_INSECURE=1`，
+>   守衛降為警告放行——但這段期間沒有物件層級授權與稽核隔離，請限時且知情。
+>
+> ⚠ 用「非 `Development`」而非「等於 `Production`」判定，是因為 `IsProduction()` 只認字面
+> `Production`——把環境命名為 `Prod`／`Staging` 會整個繞過守衛。
+> 仍設著 `SITE_AUTH_PASS`（Windows 驗證下應移除的共用帳密）只會**警告**不擋啟動（見日誌 `【上線組態警告】`）。
 
 **① 主機層開啟 Windows 驗證。**
 本程式**刻意不引** `Microsoft.AspNetCore.Authentication.Negotiate` 套件

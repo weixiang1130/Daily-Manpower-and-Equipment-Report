@@ -72,6 +72,73 @@ var authOpt = builder.Configuration.GetSection("Auth").Get<AuthOptions>() ?? new
 
 var app = builder.Build();
 
+/* ---------- 上線組態守衛（防「一個字設錯就靜默破功」） ----------
+   本系統的整層授權繫於幾個組態值，而它們設錯**都不會報錯**：
+     • Auth:Mode=Off               → 停掉物件層級授權與稽核隔離、clearAll 等破壞性操作只剩 Basic Auth 把守
+     • Auth:Mode=Dev               → 身分由 X-Dev-User 標頭指定＝任何人可冒充任何員工/管理員
+     • Auth:Mode=Windows＋非 hrapi  → 用設定檔假名單，正式環境每個帳號都查無資料＝全員（含管理員）被鎖在門外
+   設計目標：**非開發環境**（Development 以外，含 Production／Staging／自訂名稱）一旦偵測到不可上線的
+   組態就**拒絕啟動**——服務起不來、結束碼非零，服務管理員（IIS／Windows 服務）立刻看得到，遠比
+   「靜靜地門戶大開」或「看似正常卻全員被鎖」安全。
+   ⚠ 刻意以「非 Development」判定而非「IsProduction()」——後者只認字面 "Production"，
+     一個叫 "Prod"／"Staging" 的環境會整個繞過本守衛、帶著 Mode=Off 門戶大開地啟動。
+
+   開發／測試機要沿用 Mode=Off 時，用 .NET 慣例把環境設為 Development
+   （本專案已附 Properties/launchSettings.json，`dotnet run` 即為 Development）；
+   若確實要在正式環境跑過渡期組態，需**明確**設 KGAUDIT_ALLOW_INSECURE=1 承擔風險、降為警告放行。 */
+{
+    var basicPass = Environment.GetEnvironmentVariable("SITE_AUTH_PASS") ?? "";
+    var fatal = new List<string>();
+    var warn = new List<string>();
+
+    switch (authOpt.Mode)
+    {
+        case AuthMode.Dev:
+            fatal.Add("Auth:Mode=Dev —— 身分由 X-Dev-User 標頭指定，任何人可冒充任何員工/管理員");
+            break;
+        case AuthMode.Off:
+            fatal.Add("Auth:Mode=Off —— 未啟用個人身分與物件層級授權：所有人可見全部工地、"
+                    + "稽核未隔離，且 clearAll 等破壞性操作無管理者限制"
+                    + (basicPass.Length == 0 ? "；且未設 SITE_AUTH_PASS＝完全無任何認證" : ""));
+            break;
+        case AuthMode.Windows:
+            /* Windows 模式下用設定檔假名單＝沒有真實身分來源：正式環境每個 AD 帳號都會
+               查無員工資料而被 403，連管理員都進不來（目錄查詢在管理員部門判定之前）。
+               服務看似正常卻全員被鎖，故列為 fatal 而非僅警告。 */
+            if (authOpt.Directory != "hrapi")
+                fatal.Add($"Auth:Mode=Windows 但 Auth:Directory={authOpt.Directory}（設定檔假名單）"
+                        + "——正式環境應設為 hrapi 改由人資 API 查真實工號/部門；"
+                        + "否則所有人（含管理員）都會查無員工資料而被鎖在門外");
+            // 內網限定的定案：Windows 驗證應為唯一入口，共用帳密要退場
+            if (basicPass.Length > 0)
+                warn.Add("已啟用 Windows 驗證但仍設著 SITE_AUTH_PASS（共用帳密）——建議移除，"
+                       + "讓 Windows 驗證成為唯一入口（否則使用者被雙重挑戰，且弱共用密碼仍在）");
+            break;
+    }
+
+    foreach (var w in warn) app.Logger.LogWarning("【上線組態警告】{W}", w);
+
+    if (fatal.Count > 0)
+    {
+        foreach (var f in fatal) app.Logger.LogWarning("【上線組態警告】{F}", f);
+        var allowInsecure = Environment.GetEnvironmentVariable("KGAUDIT_ALLOW_INSECURE") == "1";
+        // 「非 Development」而非 IsProduction()：IsProduction() 只認字面 "Production"，
+        // "Prod"／"Staging" 等名稱會漏接而帶著不安全組態啟動（見檔首註解）。
+        if (!app.Environment.IsDevelopment() && !allowInsecure)
+        {
+            var guide =
+                "偵測到不可上線的正式環境組態（見上方警告），服務拒絕啟動。\n"
+              + "· 正式內網部署：設 Auth:Mode=Windows、Auth:Directory=hrapi，"
+              + "並在主機層（IIS／HTTP.sys）啟用 Windows 驗證且停用匿名。\n"
+              + "· 開發／測試機要沿用此組態：設環境變數 ASPNETCORE_ENVIRONMENT=Development（或用 dotnet run）。\n"
+              + "· 明確承擔風險的過渡期：設 KGAUDIT_ALLOW_INSECURE=1 降為警告放行。";
+            app.Logger.LogCritical("{Guide}", guide);
+            // 拋出而非 Environment.Exit：確保訊息確實寫出、結束碼非零，服務管理員偵測得到失敗啟動
+            throw new InvalidOperationException(guide);
+        }
+    }
+}
+
 /* ---------- 靜態前端 ----------
    與 server.mjs 同樣的部署形態：同一個服務同時供應前端與 API，
    前端因此是同源呼叫，不需要 CORS。
@@ -99,6 +166,35 @@ app.UseExceptionHandler(b => b.Run(async ctx =>
     ctx.Response.ContentType = "application/json; charset=utf-8";
     await ctx.Response.WriteAsync(new JsonObject { ["error"] = "server error" }.ToJsonString(Wr.JsonOpts));
 }));
+
+/* ---------- 安全性回應標頭（所有回應，含靜態前端與 API） ----------
+   用 OnStarting 掛在回應送出前設定，這樣連例外處理器 Clear() 後的 500、
+   Basic Auth 的 401、授權中介層的 403 也都帶得到。
+   CSP 與雲端 netlify.toml **必須一致**（同一份前端）：
+     • script-src 'self'——前端已無任何內聯事件處理器（改事件綁定）
+     • style-src 允許內聯（圖表用行內寬度）＋ Google Fonts 樣式表
+     • font-src 放行 Google Fonts 檔案；img-src 放行 data:／blob:（圖片預覽與內嵌照片）
+   ⚠ HSTS 不在此設——本服務只講 HTTP，TLS 與 HSTS 由前置反向代理負責（見 DEPLOYMENT §2）。 */
+const string csp =
+    "default-src 'self'; script-src 'self'; "
+  + "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+  + "font-src 'self' https://fonts.gstatic.com; "
+  + "img-src 'self' data: blob:; connect-src 'self'; "
+  + "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+app.Use(async (ctx, next) =>
+{
+    ctx.Response.OnStarting(() =>
+    {
+        var h = ctx.Response.Headers;
+        h["X-Content-Type-Options"] = "nosniff";
+        h["X-Frame-Options"] = "DENY";
+        h["Referrer-Policy"] = "no-referrer";
+        h["Permissions-Policy"] = "geolocation=(), camera=(), microphone=(), payment=(), usb=()";
+        h["Content-Security-Policy"] = csp;
+        return Task.CompletedTask;
+    });
+    await next();
+});
 
 /* ---------- Basic Auth（與 auth.ts／api.mjs 同一邏輯） ----------
    未設定密碼＝不啟用（僅限本機開發；正式環境務必設定）。 */
@@ -455,8 +551,7 @@ var authorizer = new Authorizer(authOpt, () => new SqlConnection(ConnStr()), erp
 
 if (authOpt.Mode != AuthMode.Off)
 {
-    if (authOpt.Mode == AuthMode.Dev)
-        app.Logger.LogWarning("Auth:Mode=Dev —— 身分由 X-Dev-User 標頭指定，**正式環境絕不可使用**");
+    /* Dev 模式的警告已由檔首「上線組態守衛」統一發出（且正式環境直接拒啟），此處不再重複。 */
 
     /* 啟動時把管理員部門印出來。部門名稱是逐字元比對人資 API 的 deptName，
        寫錯不會報錯、只會讓整個部門被擋在門外——印出來才有機會在上線前用肉眼發現。 */

@@ -2,6 +2,30 @@
 
 版本異動摘要。完整背景與設計決策請見 [`docs/milestones/`](docs/milestones/README.md)。
 
+## [節點 43] 2026-08-14 — 安全性回應標頭與 CSP（交付前資安盤點・第 2 批）
+- **問題**：三後端都沒有任何安全性回應標頭，缺少對點擊劫持、MIME 嗅探、XSS 的縱深防禦
+- **三後端統一加五個標頭**（CSP／`X-Content-Type-Options`／`X-Frame-Options`／`Referrer-Policy`／`Permissions-Policy`，**CSP 逐字一致**）：
+  - 地端 .NET `Program.cs`：`Response.OnStarting` 設定——連例外處理器 `Clear()` 後的 500、401、403 都帶得到（實測 500 回應仍具全部標頭）
+  - 雲端 `netlify.toml`：宣告式 `[[headers]] for="/*"`（零執行風險）
+  - Node `server.mjs`：進入點 `res.setHeader`（涵蓋 JSON／靜態／401／500）
+- **CSP**：`script-src 'self'`（無 `unsafe-inline`）、`style-src` 放行內聯與 Google Fonts、`img-src` 放行 `data:`/`blob:`、`frame-ancestors 'none'` 等
+- **前端配合拆除三個內聯事件處理器**（否則被 `script-src 'self'` 擋下，改事件綁定）：連線失敗「重新載入」鈕 `onclick`、`config.local.js` 的 `onerror`、稽核列印視窗 `onclick="window.print()"`（改由父視窗綁在子視窗按鈕上）
+- **無資料結構／API 合約變動**。⚠ 前端日後不可再用內聯 `onclick=` 等，一律 `addEventListener`
+- 驗證：地端建置 0/0；本機起服務以瀏覽器實載——五標頭全帶出（200 與 500 皆是）、console **零 CSP 違規**（`app.js`／`style.css`／Google Fonts 在嚴格 CSP 下全部正常載入）
+
+## [節點 42] 2026-08-14 — 地端上線組態守衛（交付前資安盤點；僅地端 .NET，線上仍 v23.5）
+- **問題**：地端 .NET 授權層品質足夠，真正風險是**部署組態設錯且都不會報錯**——`Auth:Mode=Off`（停授權＋稽核隔離、`clearAll` 只剩 Basic Auth）、`Auth:Mode=Dev`（`X-Dev-User` 可冒名）、`Auth:Mode=Windows` 但 `Directory` 非 `hrapi`（假名單，正式環境全員含管理員查無資料被鎖在門外）
+- **`Program.cs` 檔首新增啟動組態守衛**：非開發環境偵測到上述任一即 `LogCritical` 印出原因後**拋例外拒絕啟動**（非零結束碼，服務管理員判為失敗）。把「一個字設錯就靜默門戶大開」變成「設錯根本起不來」
+- **逃生口**：開發／測試機用 `ASPNETCORE_ENVIRONMENT=Development`（新增 `Properties/launchSettings.json`，`dotnet run` 即為 Development）；明確承擔風險的過渡期設 `KGAUDIT_ALLOW_INSECURE=1` 降為警告放行
+- **交付前 code review 四項修正**：
+  - **以 `!IsDevelopment()` 取代 `IsProduction()`**：後者只認字面 `Production`，把環境命名為 `Prod`／`Staging`（很常見）會整個繞過守衛、帶著 `Mode=Off` 門戶大開地啟動；改為「非開發環境一律 fail-closed」
+  - **`Windows`＋非 `hrapi` 由警告升為拒啟**：假名單會讓全員（含管理員）被鎖，服務看似正常卻全站不可用，屬「不可上線」而非風險偏好
+  - **移除 `Auth.cs` 前的舊 Dev 警告**：已由檔首守衛統一發出，避免兩處重複維護同一訊息
+  - `throw` 而非 `Environment.Exit`：確保 Critical 訊息確實寫出、結束碼非零
+- 僅警告不擋啟動：`Windows` 但仍設著 `SITE_AUTH_PASS`（共用帳密，Windows 驗證下應移除）
+- **無資料結構／API 合約變動，前端與雲端零修改**。⚠ 地端測試腳本若以 Production 跑 `Mode=Off`/`Dev` 對帳，現在需設 `ASPNETCORE_ENVIRONMENT=Development`
+- 驗證：`dotnet build` 0/0；啟動組態矩陣八情境實跑全過（含 Staging/`Prod` 拒啟、Windows+config 拒啟、三條合法/逃生路徑放行）
+
 ## [節點 41] 2026-08-13 — 代辦廠商改自由填寫＋交付前 code review 修正（v23.5）
 - **代辦的責任歸屬廠商改為自由輸入**（工地回饋）：名單池裡是點工與機具廠商，但**代扣對象常是施工廠商**，本來就不在那份名單裡，用下拉根本選不到。改用 `datalist`——打字不受限，同時把「名單池 ∪ 本站已用過的代辦廠商 ∪ 本表單已加入的」列成建議，讓同一家一鍵點選，避免被打成多種寫法而拆成多列統計。輸入自動 trim；加入後清空輸入框以便連續加第二家
 - 代辦列的「備註」正名為「**代辦內容**」，提示改為「這家廠商來做了什麼」

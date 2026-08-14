@@ -44,6 +44,8 @@
 | [38](38-admin-departments-backoffice.md) | 管理員部門改為後台可維護（v23.2） | 預設管理員擴為成本管理部／採購處／總經理室，並改存資料庫（新增 `app_settings`，16→17 表）讓成控自己在設定頁增減，不必請資訊處改設定檔重啟。兩道保險：`op:master` 省略該欄＝保留既有值（非清空）、資料庫為空＝回退設定檔預設。順手修掉地端 API 把中文全逃脫（正式資料 scope=all +19% 流量、且與雲端輸出格式不一致） |
 | [39](39-site-adoption.md) | 工地納管（v23.3） | 新工地原本要人工做三件事，其中 `project_code` 漏填**不會報錯**、只會讓該站除了管理員外沒人看得到。設定頁改為「系統比對 ERP 列出候選 → 勾選納管」，單一交易內建站＋填代碼＋帶入工程師。刻意不做全自動（ERP 有 317 個專案，只需十餘個）。工程師姓名取自權限檢視表的 `UserName`，**不需要人資 API 開新介面** |
 | [40](40-windows-auth-verified.md) | Windows 驗證網域實測通過＋HTTP.sys 支援（v23.4） | 「開發機無網域測不了」是**先前的誤判**——機器本來就是網域成員。以真實網域帳號實測身分鏈四段全通、匿名被擋、**冒名三種嘗試全部無效**。同時補上 `KGAUDIT_HTTPSYS=1`（文件教資訊處設 `UseHttpSys`，程式卻沒有這個設定點）與 `/whoami` 身分鏈診斷端點 |
+| [42](42-onprem-config-guard.md) | 地端上線組態守衛（交付前資安盤點） | 地端 .NET 授權層品質足夠，真正風險是**部署組態設錯且不會報錯**（`Mode=Off`/`Dev`、`Windows`＋非 `hrapi`）。改為**非開發環境偵測到即拒絕啟動**（把「設錯就破功」變成「設錯起不來」）。code review 抓到關鍵缺口：以 `!IsDevelopment()` 取代 `IsProduction()`——後者只認字面 `Production`，`Prod`/`Staging` 會繞過守衛。逃生口 `KGAUDIT_ALLOW_INSECURE=1`。八情境實跑驗證 |
+| [43](43-security-headers-csp.md) | 安全性回應標頭與 CSP（交付前資安盤點・第 2 批） | 三後端（雲端 `netlify.toml`／地端 .NET `OnStarting`／Node `setHeader`）統一加上 CSP＋`X-Content-Type-Options`／`X-Frame-Options`／`Referrer-Policy`／`Permissions-Policy`，CSP 逐字一致。為上嚴格 `script-src 'self'`，前端拆除三個內聯事件處理器（改事件綁定）。本機實載驗證：五標頭全帶出、console 零 CSP 違規 |
 
 ## 如何新增下一個節點
 

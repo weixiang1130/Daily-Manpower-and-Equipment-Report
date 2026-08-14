@@ -4620,7 +4620,7 @@ function auditReportHTML(entries, subtitle){
     .toolbar button{font-size:14px;padding:6px 16px;cursor:pointer;}
     @media print{.toolbar{display:none;} body{margin:12mm;}}
   </style></head><body>
-  <div class="toolbar"><button onclick="window.print()">🖨 列印 / 另存 PDF</button>（於列印對話框選「另存為 PDF」）</div>
+  <div class="toolbar"><button id="auditPrintBtn" type="button">🖨 列印 / 另存 PDF</button>（於列印對話框選「另存為 PDF」）</div>
   <h1>成控現場稽核報告</h1>
   <p class="sub">工地：${esc(MASTER.currentSite)}｜${esc(subtitle)}｜共 ${entries.length} 筆稽核紀錄｜稽核人員：${esc(auditors.join("、")||"—")}｜產出日期：${esc(localDate())}</p>
   <h2>稽核彙總</h2>
@@ -4641,6 +4641,9 @@ function openAuditPDF(entries, subtitle){
   if(!w){ toast("瀏覽器攔截了報告視窗，請允許彈出視窗後再試"); return; }
   w.document.write(auditReportHTML(entries, subtitle));
   w.document.close();
+  // 列印鈕改事件綁定（不再用內聯 onclick，配合 CSP script-src 'self'）：由父視窗掛在
+  // 子視窗按鈕上，子文件因此完全不含內聯腳本；about:blank 繼承本頁 CSP 也不會擋到列印
+  w.document.getElementById("auditPrintBtn")?.addEventListener("click", ()=>w.print());
 }
 
 function exportAuditCSV(){
@@ -5168,6 +5171,8 @@ document.addEventListener("DOMContentLoaded", ()=>{
      真的拿掉會整支壞掉。改 PRICING_UI 一個常數就整組回來。 */
   if(!PRICING_UI) document.documentElement.classList.add("no-pricing");
   document.getElementById("refreshBtn").addEventListener("click", ()=>refreshData(false));
+  // 連線失敗覆蓋層的「重新載入」鈕：改用事件綁定、不再用內聯 onclick，配合 CSP script-src 'self'
+  document.getElementById("fatalReloadBtn").addEventListener("click", ()=>location.reload());
   /* v22.5：說明文字欄位的自動列點。稽核的「現場狀況說明」與「不符原因」是動態
      產生，各自在 renderAuditForm／renderAuditItems 內掛；設定頁名單池與
      工作內容補充刻意不納入（見 initAutoNumber 上方說明）。 */

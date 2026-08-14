@@ -400,6 +400,17 @@ function sendJson(res, obj, status = 200){
 
 const server = http.createServer(async (req, res) => {
   try{
+    /* 安全性回應標頭（與雲端 netlify.toml／地端 .NET **逐字一致**）。setHeader 早於 writeHead
+       設定，後續 writeHead 只覆寫同名者（content-type 等），不影響這些。 */
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("Permissions-Policy", "geolocation=(), camera=(), microphone=(), payment=(), usb=()");
+    res.setHeader("Content-Security-Policy",
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+      + "font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'; "
+      + "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'");
+
     if(!authorized(req)){
       res.writeHead(401, {
         "WWW-Authenticate": 'Basic realm="KG Manpower", charset="UTF-8"',

@@ -20,3 +20,15 @@
 [functions]
   # 資料 API（api.mjs 內以 export const config = { path: "/api/data" } 宣告路由）
   directory = "backend/cloud/functions"
+
+# 安全性回應標頭（靜態前端與 /api 皆套用）。
+# CSP 與地端 .NET（Program.cs）／server.mjs **必須逐字一致**——同一份前端。
+# HSTS 由 Netlify 於自訂網域自動提供，此處不重複宣告。
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "no-referrer"
+    Permissions-Policy = "geolocation=(), camera=(), microphone=(), payment=(), usb=()"
+    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"

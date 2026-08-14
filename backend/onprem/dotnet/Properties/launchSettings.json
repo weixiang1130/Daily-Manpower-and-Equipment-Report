@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json.schemastore.org/launchsettings.json",
+  "//": "本檔只影響 `dotnet run`（本機開發/測試），不影響發佈後的服務。刻意把開發環境設為 Development，讓上線組態守衛（Program.cs）不擋本機的 Auth:Mode=Off 測試；正式部署跑的是發佈後的執行檔，環境為 Production，守衛照常生效。",
+  "profiles": {
+    "KgAudit.Api": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "applicationUrl": "http://localhost:8080",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    }
+  }
+}

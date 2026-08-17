@@ -46,6 +46,7 @@
 | [40](40-windows-auth-verified.md) | Windows 驗證網域實測通過＋HTTP.sys 支援（v23.4） | 「開發機無網域測不了」是**先前的誤判**——機器本來就是網域成員。以真實網域帳號實測身分鏈四段全通、匿名被擋、**冒名三種嘗試全部無效**。同時補上 `KGAUDIT_HTTPSYS=1`（文件教資訊處設 `UseHttpSys`，程式卻沒有這個設定點）與 `/whoami` 身分鏈診斷端點 |
 | [42](42-onprem-config-guard.md) | 地端上線組態守衛（交付前資安盤點） | 地端 .NET 授權層品質足夠，真正風險是**部署組態設錯且不會報錯**（`Mode=Off`/`Dev`、`Windows`＋非 `hrapi`）。改為**非開發環境偵測到即拒絕啟動**（把「設錯就破功」變成「設錯起不來」）。code review 抓到關鍵缺口：以 `!IsDevelopment()` 取代 `IsProduction()`——後者只認字面 `Production`，`Prod`/`Staging` 會繞過守衛。逃生口 `KGAUDIT_ALLOW_INSECURE=1`。八情境實跑驗證 |
 | [43](43-security-headers-csp.md) | 安全性回應標頭與 CSP（交付前資安盤點・第 2 批） | 三後端（雲端 `netlify.toml`／地端 .NET `OnStarting`／Node `setHeader`）統一加上 CSP＋`X-Content-Type-Options`／`X-Frame-Options`／`Referrer-Policy`／`Permissions-Policy`，CSP 逐字一致。為上嚴格 `script-src 'self'`，前端拆除三個內聯事件處理器（改事件綁定）。本機實載驗證：五標頭全帶出、console 零 CSP 違規 |
+| [44](44-date-field-width.md) | 日期欄位寬度修正（現場回饋） | 日期欄末碼被日曆圖示擋住——根因是沿用數字欄的 `max-width:120px`，而日期需約 132px（文字 108＋內距 22＋圖示 24），**與螢幕大小無關**。新增 `.field-date`＋全域 `input[type="date"]{min-width:150px}`（`min-width` 優先權高於 `max-width`，一併保護所有篩選列日期欄）。全系統 12 個日期欄實測 12／12 通過 |
 
 ## 如何新增下一個節點
 

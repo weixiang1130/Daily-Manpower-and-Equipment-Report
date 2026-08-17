@@ -216,6 +216,16 @@ body{
 .field-num{grid-column:span 2;}
 .field-num input{max-width:120px;}
 .field-num label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+/* 日期欄位（現場回饋）：原本沿用 .field-num 的 120px 上限，但日期比數字長得多——
+   「2026-08-18」在 15px 字級約需 108px，Chrome 的 <input type="date"> 右側還有
+   日曆圖示要佔約 24px，合計約 132px。壓在 120px 的結果是**最後一碼被圖示蓋住**，
+   要確認日期還得再點開日曆看一次（且與螢幕大小無關，是寫死的上限）。
+   ⚠ min-width 的優先權高於 max-width，故這條同時解掉散在篩選列的其他日期欄。 */
+input[type="date"]{min-width:150px;}
+.field-date{grid-column:span 3;}          /* 2/12 欄放不下 150px，加寬到 3/12 免得擠壓鄰欄 */
+.field-date input{max-width:180px;}       /* 3/12 欄實測約 289px，對日期而言過寬；收斂但仍留足餘裕 */
+.field-date label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .field label{font-size:12px;font-weight:700;color:var(--ink-700,var(--fg-secondary));}
 
 /* 標籤與其控制項併排：動態列表區塊原本「標籤 / 空狀態框 / 加入控制 / 說明」

@@ -79,7 +79,10 @@ def num(v, default="NULL"):
     if v is None:
         return default
     try:
-        return str(round(float(v), 2))
+        # v24：保留 4 位小數——工數可能是「時數÷8」的換算值（5 小時＝0.625）。
+        # 捨到 2 位會變 0.63，且 Python 的 banker's rounding 給 0.62、
+        # SQL Server 給 0.63，兩條匯入路徑還會不一致。
+        return str(round(float(v), 4))
     except (TypeError, ValueError):
         return default
 

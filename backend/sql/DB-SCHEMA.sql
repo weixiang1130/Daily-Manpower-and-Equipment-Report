@@ -15,6 +15,10 @@
       合約的 409 語意不可省略
    4. 舊制欄位（legacy_*）僅承載歷史資料，新寫入不再產生
    5. 全部文字欄用 NVARCHAR（繁中）；日期一律 DATE（本地日期，勿轉時區）
+   6. **工數欄位一律 DECIMAL(8,4)**（v24）：工地改填「實際工作時數」，系統以
+      8 小時＝1 工換算，5 小時＝0.625 工。用 DECIMAL(6,2) 會被四捨五入成 0.63
+      （實測），反推回去變 5.04 小時，計價對不回來。
+      加班欄位維持 (6,2)——那是「時數」本身、以 0.5 為級距輸入，不經換算。
    ========================================================================== */
 
 /* sqlcmd 預設 QUOTED_IDENTIFIER OFF，而計算欄位（total_ot）要求 ON */
@@ -52,7 +56,7 @@ CREATE TABLE dbo.labor_records (
     work_date       DATE NOT NULL,
     vendor          NVARCHAR(200) NOT NULL,
     applicant       NVARCHAR(100) NOT NULL,
-    required_units  DECIMAL(6,2) NOT NULL CONSTRAINT DF_labor_req DEFAULT 0,   -- 需求工數(可0.5)
+    required_units  DECIMAL(8,4) NOT NULL CONSTRAINT DF_labor_req DEFAULT 0,   -- 需求工數(可0.5)
     locations_json  NVARCHAR(MAX) NULL,   -- JSON 陣列，例 ["A區","B區"]
     categories_json NVARCHAR(MAX) NULL,   -- JSON 陣列（工作內容類別）
     category_note   NVARCHAR(MAX) NULL,   -- 前端無字數上限，勿設短欄位
@@ -73,11 +77,11 @@ CREATE TABLE dbo.labor_reports (
     check_face       BIT NOT NULL DEFAULT 0,      -- 三道查核依據
     check_card       BIT NOT NULL DEFAULT 0,
     check_toolbox    BIT NOT NULL DEFAULT 0,
-    actual           DECIMAL(6,2) NOT NULL DEFAULT 0,   -- 簽單實際出工數
+    actual           DECIMAL(8,4) NOT NULL DEFAULT 0,   -- 簽單實際出工數（v24 起可為 0.625 這類值，見檔首說明）
     ot2_total        DECIMAL(6,2) NOT NULL DEFAULT 0,   -- 加班·前2小時 總計(v11 分段計價；舊單 totalOT 歸此段)
     ot_over_total    DECIMAL(6,2) NOT NULL DEFAULT 0,   -- 加班·第3小時起 總計
     total_ot         AS (ot2_total + ot_over_total) PERSISTED,  -- 合計＝計算欄位，杜絕三欄漂移
-    diff             DECIMAL(6,2) NOT NULL DEFAULT 0,   -- actual - required
+    diff             DECIMAL(8,4) NOT NULL DEFAULT 0,   -- actual - required
     zero_work        BIT NOT NULL DEFAULT 0,            -- 0工確認
     sign_return_date DATE NULL,                          -- 簽單繳回日
     vendor_done_work  DECIMAL(6,2) NULL,   -- 廠商代辦 工數（NULL=未填，與 0 區分）
@@ -98,7 +102,7 @@ CREATE TABLE dbo.labor_report_worktypes (
     record_id   VARCHAR(64) NOT NULL CONSTRAINT FK_labor_wt
                 REFERENCES dbo.labor_reports(record_id) ON DELETE CASCADE,
     work_type   NVARCHAR(100) NOT NULL,          -- 粗工/技術工/打石工…
-    work        DECIMAL(6,2) NOT NULL DEFAULT 0, -- 出工數
+    work        DECIMAL(8,4) NOT NULL DEFAULT 0, -- 出工數（v24：時數÷8 換算，如 5 小時＝0.625）
     ot2         DECIMAL(6,2) NOT NULL DEFAULT 0, -- 加班·前2小時
     ot_over     DECIMAL(6,2) NOT NULL DEFAULT 0  -- 加班·第3小時起
 );
@@ -184,9 +188,9 @@ CREATE TABLE dbo.labor_audits (
                     REFERENCES dbo.labor_records(id) ON DELETE CASCADE,
     audited_at      DATE NOT NULL,
     auditor         NVARCHAR(100) NOT NULL,
-    applied         DECIMAL(6,2) NOT NULL DEFAULT 0,   -- 稽核當下申請工數快照
-    actual_count    DECIMAL(6,2) NOT NULL DEFAULT 0,   -- 現場實點人數
-    diff            DECIMAL(6,2) NOT NULL DEFAULT 0,   -- actual_count - applied
+    applied         DECIMAL(8,4) NOT NULL DEFAULT 0,   -- 稽核當下申請工數快照
+    actual_count    DECIMAL(8,4) NOT NULL DEFAULT 0,   -- 現場實點人數
+    diff            DECIMAL(8,4) NOT NULL DEFAULT 0,   -- actual_count - applied
     items_json      NVARCHAR(MAX) NULL CONSTRAINT CK_labor_audit_items CHECK (items_json IS NULL OR ISJSON(items_json) = 1),
     note            NVARCHAR(MAX) NULL,                 -- 現場狀況說明（不限字數）
     status_at_audit NVARCHAR(10) NULL                   -- 稽核當下單據狀態快照
@@ -307,7 +311,7 @@ CREATE TABLE dbo.labor_agent_items (
                  REFERENCES dbo.labor_reports(record_id) ON DELETE CASCADE,
     vendor       NVARCHAR(200) NOT NULL,           -- 責任歸屬廠商
     work_type    NVARCHAR(100) NOT NULL,           -- 必須是本單 workTypes 出現過的工種
-    work         DECIMAL(6,2) NOT NULL CONSTRAINT DF_lagent_work DEFAULT 0,
+    work         DECIMAL(8,4) NOT NULL CONSTRAINT DF_lagent_work DEFAULT 0,
     ot2          DECIMAL(6,2) NOT NULL CONSTRAINT DF_lagent_ot2  DEFAULT 0,
     ot_over      DECIMAL(6,2) NOT NULL CONSTRAINT DF_lagent_oto  DEFAULT 0,
     note         NVARCHAR(MAX) NULL

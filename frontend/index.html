@@ -74,6 +74,14 @@
 
     <div class="panel">
       <div class="panel-head">
+        <h2>逾期未回報（全部工地）</h2>
+        <p class="hint">出工日期已過、但尚未完成回報覆核的單據，依逾期天數由多到少排列。點選任一列即切換至該工地。</p>
+      </div>
+      <div id="overdueList" class="list-simple"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
         <h2>各工地列控總覽</h2>
         <p class="hint">點選工地名稱即切換至該工地的資料環境（Context Switch），並跳轉至點工清單。</p>
       </div>
@@ -82,7 +90,19 @@
 
     <div class="panel">
       <div class="panel-head">
+        <h2>本月出工量排名（全部工地）</h2>
+        <p class="hint">統計本月已回報單據的本工工數，口徑與「歷程報表」的逐工種展開一致（加班另計，不折算）。</p>
+      </div>
+      <div class="dash-rank-grid">
+        <div><h3>工地榜</h3><div id="rankBySite"></div></div>
+        <div><h3>分包商榜</h3><div id="rankByVendor"></div></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
         <h2>待繳回簽單提醒（全部工地）</h2>
+        <p class="hint">依出工日排序；簽單須於出工日後 20 天內繳回，逾期不予採計。</p>
       </div>
       <div id="dueList" class="list-simple"></div>
     </div>
@@ -126,7 +146,7 @@
           </div>
           <div class="field field-num">
             <label title="本次申請的總工數，可含小數">需求工數</label>
-            <input type="number" id="l_required" min="0" step="0.5" value="0" required>
+            <input type="number" id="l_required" min="0" step="any" value="0" required>
           </div>
 
           <div class="field field-wide field-half">
@@ -192,7 +212,7 @@
 
           <div class="field field-num">
             <label title="簽單實際出工數，可含小數（如 0.5、1.5）">實際出工數</label>
-            <input type="number" id="l_actual" min="0" step="0.5" value="0">
+            <input type="number" id="l_actual" min="0" step="any" value="0">
           </div>
           <div class="field field-num">
             <label title="實際數與申請數的差異，自動計算">差異</label>

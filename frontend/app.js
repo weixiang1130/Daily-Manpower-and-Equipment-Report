@@ -76,7 +76,19 @@ function localDate(d = new Date()){
   const p = n => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
 }
-function fmt(n){ const v = Math.round((Number(n)||0)*100)/100; return String(v); }
+/* 顯示用數字：最多 4 位小數、去尾零。
+   ⚠ 原本是 2 位小數，但工數自 v24 起可由「實際工作時數÷8」換算而來
+   （例：5 小時＝0.625 工），2 位小數會顯示成 0.63——畫面與匯出的數字
+   加總不回來，成本部對帳就會對不上。與排名的 fmtRank 統一為 4 位。 */
+function fmt(n){ return String(+(Number(n)||0).toFixed(4)); }
+
+/* 工數 ⇄ 時數：一工＝8 小時。
+   這不是新發明的口徑——排名早就用「加班時數÷8」折算工數（v21.3），
+   本工沿用同一基準只是把口徑補齊。
+   **只存工數**，時數是它的另一種檢視（work×8 完全可逆），故資料結構不動。 */
+const WORK_HOURS_PER_UNIT = 8;
+const hoursToWork = h => +(((Number(h) || 0) / WORK_HOURS_PER_UNIT).toFixed(4));
+const workToHours = w => +(((Number(w) || 0) * WORK_HOURS_PER_UNIT).toFixed(4));
 
 function toast(msg){
   const t = document.getElementById("toast");
@@ -207,7 +219,7 @@ const COL_W = new Map([
   ["現場查核回饋",220], ["出工明細(工種)",150], ["機具使用明細",150],
   ["工作內容",120], ["實際工作內容",180], ["申請備註",150],
   ["工作地點",120], ["機具類型",110], ["類型",110],
-  ["根基自辦備註",100], ["廠商代辦備註",100],
+  ["根基自辦備註",100], ["廠商代辦備註",100], ["代辦明細(廠商)",190],
   ["廠商",110], ["分包商",110], ["機具廠商",110], ["責任廠商",110], ["型號",120],
   ["期間",110], ["工地",180], ["查核結果",100],
   /* 人名不折行：三字姓名 ＋ 少數四字，給 90 */
@@ -1073,7 +1085,18 @@ function initLaborReportForm(){
     const el = e.target;
     const i = parseInt(el.dataset.i,10);
     if(Number.isNaN(i) || !typeState[i]) return;
-    if(el.classList.contains("tr-work")) typeState[i].work = parseFloat(el.value)||0;
+    /* 出工數與實際時數是同一個值的兩種檢視——改一邊就同步另一邊。
+       直接寫對方 input 的 value（不呼叫 renderTypeRows），否則重繪會讓游標跳掉。 */
+    if(el.classList.contains("tr-work")){
+      typeState[i].work = parseFloat(el.value)||0;
+      const h = el.closest(".att-row").querySelector(".tr-hours");
+      if(h) h.value = workToHours(typeState[i].work);
+    }
+    if(el.classList.contains("tr-hours")){
+      typeState[i].work = hoursToWork(parseFloat(el.value)||0);
+      const w = el.closest(".att-row").querySelector(".tr-work");
+      if(w) w.value = typeState[i].work;
+    }
     if(el.classList.contains("tr-ot2")) typeState[i].ot2 = parseFloat(el.value)||0;
     if(el.classList.contains("tr-otover")) typeState[i].otOver = parseFloat(el.value)||0;
     syncTotalsFromTypes();
@@ -1092,7 +1115,16 @@ function initLaborReportForm(){
     const el = e.target;
     const i = parseInt(el.dataset.i,10);
     if(Number.isNaN(i) || !agentState[i]) return;
-    if(el.classList.contains("ag-work")) agentState[i].work = parseFloat(el.value)||0;
+    if(el.classList.contains("ag-work")){
+      agentState[i].work = parseFloat(el.value)||0;
+      const h = el.closest(".att-row").querySelector(".ag-hours");
+      if(h) h.value = workToHours(agentState[i].work);
+    }
+    if(el.classList.contains("ag-hours")){
+      agentState[i].work = hoursToWork(parseFloat(el.value)||0);
+      const w = el.closest(".att-row").querySelector(".ag-work");
+      if(w) w.value = agentState[i].work;
+    }
     if(el.classList.contains("ag-ot2")) agentState[i].ot2 = parseFloat(el.value)||0;
     if(el.classList.contains("ag-otover")) agentState[i].otOver = parseFloat(el.value)||0;
     if(el.classList.contains("ag-note-in")) agentState[i].note = el.value;
@@ -1146,10 +1178,10 @@ function initLaborReportForm(){
 
     /* v23：代辦列的檢查是**硬性擋下**（不是可確認的警告）——代辦超量會讓代扣金額
        大於我們實際付出去的錢，那是直接算錯帳，不能讓人按確認繞過去 */
-    if(!zeroWork){
-      const agentErrs = collectAgentErrors(typeState, agentState);
-      if(agentErrs.length){ toast("代辦資料有誤，未送出：\n- " + agentErrs.join("\n- ")); return; }
-    }
+    // 0 工單也可能只代扣加班時數——驗證一律執行；collectAgentErrors 本來就
+    // 分開比對本工與兩段加班，不會誤擋
+    const agentErrs = collectAgentErrors(typeState, agentState);
+    if(agentErrs.length){ toast("代辦資料有誤，未送出：\n- " + agentErrs.join("\n- ")); return; }
 
     const warnings = collectLaborWarnings(typeState, actual, ot2Total, otOverTotal, zeroWork);
     if(warnings.length){
@@ -1166,7 +1198,9 @@ function initLaborReportForm(){
         checkCard: document.getElementById("l_check_card").checked,
         checkToolbox: document.getElementById("l_check_toolbox").checked,
         // v11：改逐「工種」覆核（粗工/技術工/打石工…）；舊單的逐人 attendance 資料原樣保留
-        workTypes: zeroWork ? [] : typeState.map(t=>({type:t.type, work:t.work||0, ot2:t.ot2||0, otOver:t.otOver||0})),
+        /* v24：0 工單保留工種（本工 0、加班照記）——工種是計價與排名的鍵，
+           清空會讓夜間加班單對不到費率，也算不進該工種的排名 */
+        workTypes: typeState.map(t=>({type:t.type, work: zeroWork ? 0 : (t.work||0), ot2:t.ot2||0, otOver:t.otOver||0})),
         attendance: (rec.report && rec.report.attendance) || [],
         actual, ot2Total, otOverTotal, totalOT,
         diff: actual - rec.required,
@@ -1253,9 +1287,10 @@ function renderTypeRows(){
     <div class="att-row present">
       <span class="tr-name">${esc(t.type)}</span>
       <div class="att-fields">
-        <label>出工數<input type="number" class="tr-work" data-i="${i}" step="0.5" min="0" value="${t.work}" ${zero?'disabled':''}></label>
-        <label>加班·前2小時<input type="number" class="tr-ot2" data-i="${i}" step="0.5" min="0" value="${t.ot2}" ${zero?'disabled':''}></label>
-        <label>加班·第3小時起<input type="number" class="tr-otover" data-i="${i}" step="0.5" min="0" value="${t.otOver}" ${zero?'disabled':''}></label>
+        <label>出工數<input type="number" class="tr-work" data-i="${i}" step="any" min="0" value="${t.work}" ${zero?'disabled':''}></label>
+        <label title="當日實際工作時數（不含休息）；系統以 8 小時＝1 工換算，與出工數雙向連動">實際時數<input type="number" class="tr-hours" data-i="${i}" step="0.5" min="0" value="${workToHours(t.work)}" ${zero?'disabled':''}></label>
+        <label>加班·前2小時<input type="number" class="tr-ot2" data-i="${i}" step="0.5" min="0" value="${t.ot2}"></label>
+        <label>加班·第3小時起<input type="number" class="tr-otover" data-i="${i}" step="0.5" min="0" value="${t.otOver}"></label>
       </div>
       <button type="button" class="att-remove" data-i="${i}" title="移除此工種">×</button>
     </div>`).join("");
@@ -1276,9 +1311,10 @@ function renderAgentRows(){
     <div class="att-row present">
       <span class="tr-name">${esc(a.vendor)}<br><small>${esc(a.type)}</small></span>
       <div class="att-fields">
-        <label>代辦工數<input type="number" class="ag-work" data-i="${i}" step="0.5" min="0" value="${a.work}" ${zero?"disabled":""}></label>
-        <label>加班·前2小時<input type="number" class="ag-ot2" data-i="${i}" step="0.5" min="0" value="${a.ot2}" ${zero?"disabled":""}></label>
-        <label>加班·第3小時起<input type="number" class="ag-otover" data-i="${i}" step="0.5" min="0" value="${a.otOver}" ${zero?"disabled":""}></label>
+        <label>代辦工數<input type="number" class="ag-work" data-i="${i}" step="any" min="0" value="${a.work}" ${zero?"disabled":""}></label>
+        <label title="只代扣幾小時的情形直接填時數；系統以 8 小時＝1 工換算，與代辦工數雙向連動">代辦時數<input type="number" class="ag-hours" data-i="${i}" step="0.5" min="0" value="${workToHours(a.work)}" ${zero?"disabled":""}></label>
+        <label>加班·前2小時<input type="number" class="ag-ot2" data-i="${i}" step="0.5" min="0" value="${a.ot2}"></label>
+        <label>加班·第3小時起<input type="number" class="ag-otover" data-i="${i}" step="0.5" min="0" value="${a.otOver}"></label>
         <label class="ag-note">代辦內容<input type="text" class="ag-note-in" data-i="${i}" value="${esc(a.note||"")}" placeholder="這家廠商來做了什麼（例：協助吊運鋼構）" ${zero?"disabled":""}></label>
       </div>
       <button type="button" class="att-remove" data-i="${i}" title="移除此代辦列">×</button>
@@ -1327,7 +1363,6 @@ function fillAgentSelects(){
 
 function addAgentRow(){
   if(!editingLaborReportId){ toast("請先從清單選擇要回報的紀錄"); return; }
-  if(document.getElementById("l_zeroWork").checked){ toast("已勾選 0 工確認，無代辦可填"); return; }
   const vEl = document.getElementById("l_agentVendor");
   const vendor = vEl.value.trim();   // v23.5：自由輸入，前後空白一律去掉（否則統計會拆成兩列）
   const type = document.getElementById("l_agentType").value;
@@ -1374,9 +1409,10 @@ function collectAgentErrors(types, agents){
 /* v11 回報改逐工種：選工種加入一列（工程師不需知道點工姓名） */
 function addTypeRow(type){
   if(!editingLaborReportId){ toast("請先從清單選擇要回報的紀錄"); return; }
-  if(document.getElementById("l_zeroWork").checked){ toast("已勾選 0 工確認，請先取消再加入工種"); return; }
   if(typeState.some(t=>t.type===type)){ toast(`「${type}」已在覆核清單中，請直接修改該列數字`); return; }
-  typeState.push({ type, work:1, ot2:0, otOver:0 });
+  // 0 工單（只有夜間加班）仍要能指定工種：本工從 0 起算、加班照填
+  const zeroNow = document.getElementById("l_zeroWork").checked;
+  typeState.push({ type, work: zeroNow ? 0 : 1, ot2:0, otOver:0 });
   renderTypeRows();
   syncTotalsFromTypes();
 }
@@ -1392,13 +1428,21 @@ function syncTotalsFromTypes(){
 function onZeroWorkToggle(){
   const zero = document.getElementById("l_zeroWork").checked;
   if(zero){
-    typeState = [];
+    /* v24：「0 工」＝**本工 0**，不等於「整張單沒有內容」——日間沒進工區、
+       只有夜間進場加班的單就是 0 工＋加班時數，實務上很常見。
+       舊寫法把 typeState 整個清空，工種跟著不見，報表只能回退成
+       「（未填工種）」，排名與計價都對不到那個工種。
+       改成只把本工歸零、**保留工種與加班時數**。 */
+    typeState.forEach(t=>{ t.work = 0; });
     document.getElementById("l_actual").value = 0;
-    document.getElementById("l_ot2").value = 0;
-    document.getElementById("l_otOver").value = 0;
+    if(!typeState.length){
+      document.getElementById("l_ot2").value = 0;
+      document.getElementById("l_otOver").value = 0;
+    }
   }
   renderTypeRows();
-  updateLaborDiff();
+  renderAgentRows();
+  syncTotalsFromTypes();
 }
 
 function updateLaborDiff(){
@@ -2242,6 +2286,18 @@ function isThisMonth(dateStr){
   return d.getFullYear()===now.getFullYear() && d.getMonth()===now.getMonth();
 }
 
+/* 兩個「YYYY-MM-DD」相差幾天（b - a）。
+   ⚠ 一律用 Date.UTC 由年月日三段組出來比較，**不可** new Date(字串) 再相減——
+   後者把純日期字串當 UTC 午夜、把帶時間的字串當本地時間，兩種混用會在
+   UTC+8 的早晨差整整一天（計價紅線 2 的同源問題）。這裡兩邊都走 UTC，
+   純粹當「日曆天」相減，不受時區與日光節約影響。 */
+function daysBetween(a, b){
+  if(!a || !b) return 0;
+  const pa = String(a).split("-").map(Number), pb = String(b).split("-").map(Number);
+  if(pa.length < 3 || pb.length < 3) return 0;
+  return Math.round((Date.UTC(pb[0], pb[1]-1, pb[2]) - Date.UTC(pa[0], pa[1]-1, pa[2])) / 86400000);
+}
+
 function renderDashboard(){
   if(!READY) return;
   let allLabor = [], allEquip = [];
@@ -2258,8 +2314,26 @@ function renderDashboard(){
   const equipPending = allEquip.filter(({x})=>x.status!=="已回報");
   const pendingSign = allLabor.filter(({r})=>r.status==="已回報" && r.report && !r.report.signReturnDate);
 
+  /* 戰情室：逾期未回報＝出工日已過、卻仍停在「待回報」的單（跨工地）。
+     只算「出工日 < 今天」——當天的單還沒到回報時機，不是逾期。
+     機具的廠商一律走 recVendor()（v22.6 起廠商在回報時才填，唯一權威）。 */
+  const today = localDate();
+  const overdue = [];
+  allLabor.forEach(({site, r})=>{
+    if(r.status !== "已回報" && r.date && r.date < today)
+      overdue.push({ site, kind:"點工", date:r.date, vendor:r.vendor || "—",
+                     who:r.applicant || "—", days: daysBetween(r.date, today) });
+  });
+  allEquip.forEach(({site, x})=>{
+    if(x.status !== "已回報" && x.date && x.date < today)
+      overdue.push({ site, kind:"機具", date:x.date, vendor:recVendor(x) || "—",
+                     who:x.applicant || "—", days: daysBetween(x.date, today) });
+  });
+  overdue.sort((a,b)=> b.days - a.days || String(a.site).localeCompare(b.site));
+
   const cards = [
     {label:"本月出工回報次數", value:reportedThisMonth.length, cls:""},
+    {label:"逾期未回報", value:overdue.length, cls: overdue.length? "bad":""},
     {label:"本月人數異常件數", value:abnormal.length, cls: abnormal.length? "bad":""},
     {label:"點工待回報", value:laborPending.length, cls: laborPending.length? "warn":""},
     {label:"機具待回報", value:equipPending.length, cls: equipPending.length? "warn":""},
@@ -2270,17 +2344,29 @@ function renderDashboard(){
   `).join("");
 
   renderSiteBreakdown();
+  renderOverdueList(overdue);
+  renderDashRanking(allLabor);
 
+  /* 簽單提醒：改依「出工日後 20 天」的期限倒數排序，最急的在最上面。
+     只列出尚未填繳回日者；已逾期與快到期分別給不同標記，讓人一眼看出要先追哪一張。 */
   const dueEl = document.getElementById("dueList");
   if(!pendingSign.length){
     dueEl.innerHTML = '<div class="empty-row">目前沒有待繳回的簽單</div>';
   }else{
-    dueEl.innerHTML = pendingSign.slice(0,10).map(({site,r})=>`
+    const dueRows = pendingSign
+      .map(({site,r})=>({ site, r, left: SIGN_RETURN_MAX_DAYS - daysBetween(r.date, today) }))
+      .sort((a,b)=> a.left - b.left);
+    const tagOf = left => left < 0
+      ? `<span class="tag bad">已逾期 ${-left} 天</span>`
+      : (left <= 5 ? `<span class="tag warn">剩 ${left} 天</span>`
+                   : `<span class="tag">尚有 ${left} 天</span>`);
+    dueEl.innerHTML = dueRows.slice(0,10).map(({site,r,left})=>`
       <div class="row-item">
         <span>${esc(site)}・${esc(r.date)}・${esc(r.vendor)}・${esc((r.report&&r.report.engineer)||"—")}</span>
-        <span class="tag warn">尚未填寫簽單繳回日</span>
+        ${tagOf(left)}
       </div>
-    `).join("");
+    `).join("")
+      + (dueRows.length > 10 ? `<div class="empty-row">…另有 ${dueRows.length - 10} 張未列出</div>` : "");
   }
 
   const recentEl = document.getElementById("recentAudits");
@@ -2296,6 +2382,64 @@ function renderDashboard(){
       </div>
     `).join("");
   }
+}
+
+/* 戰情室：逾期未回報清單（跨工地）。
+   這是「總覽跨工地待回報名單」那個擱置項的落地——工地端各自看得到自己的待回報，
+   但沒有人看得到「全公司哪幾張拖最久」，而那正是成控要追的東西。
+   列可點擊：切到該工地並跳到對應清單頁，直接接上處理動線。 */
+function renderOverdueList(overdue){
+  const el = document.getElementById("overdueList");
+  if(!el) return;
+  if(!overdue.length){
+    el.innerHTML = '<div class="empty-row">目前沒有逾期未回報的單據</div>';
+    return;
+  }
+  const sev = d => d >= 7 ? "bad" : (d >= 3 ? "warn" : "");
+  el.innerHTML = overdue.slice(0, 12).map(o=>`
+    <div class="row-item clickable" data-site="${esc(o.site)}" data-kind="${esc(o.kind)}">
+      <span><strong>${esc(o.site)}</strong>・${esc(o.kind)}・${esc(o.date)}
+        <span class="row-meta">${esc(o.vendor)}／${esc(o.who)}</span></span>
+      <span class="tag ${sev(o.days)}">逾期 ${o.days} 天</span>
+    </div>
+  `).join("")
+    + (overdue.length > 12 ? `<div class="empty-row">…另有 ${overdue.length - 12} 張未列出</div>` : "");
+
+  // 事件綁定（不可用內聯 onclick，會被 CSP 的 script-src 'self' 擋下）
+  el.querySelectorAll(".row-item[data-site]").forEach(row=>{
+    row.addEventListener("click", ()=>{
+      switchSiteContext(row.dataset.site);
+      switchMainTab(row.dataset.kind === "機具" ? "equipment" : "labor");
+    });
+  });
+}
+
+/* 戰情室：本月出工量排名（工地榜／分包商榜）。
+   ⚠ 工數一律取自 reportTypeRows()——逐工種展開的唯一權威（計價紅線 3）。
+   自己在這裡另寫一套加總，就會多出一個與報表對不起來的口徑。
+   只計本工工數、加班不折算：折算比例是計價議題，看板不該自創換算。 */
+function renderDashRanking(allLabor){
+  const siteEl = document.getElementById("rankBySite");
+  const vendEl = document.getElementById("rankByVendor");
+  if(!siteEl || !vendEl) return;
+
+  const bySite = new Map(), byVendor = new Map();
+  allLabor.forEach(({site, r})=>{
+    if(!(r.status === "已回報" && r.report && isThisMonth(r.report.reportedAt))) return;
+    const work = reportTypeRows(r).reduce((s,t)=> s + (Number(t.work) || 0), 0);
+    if(!work) return;
+    bySite.set(site, (bySite.get(site) || 0) + work);
+    const v = r.vendor || "（未填廠商）";
+    byVendor.set(v, (byVendor.get(v) || 0) + work);
+  });
+
+  const toRows = m => [...m.entries()]
+    .map(([label, value])=>({ label, value }))
+    .sort((a,b)=> b.value - a.value);
+
+  // tableBelow:false —— 戰情室只放圖、下方沒有數值表（完整數值在「歷程報表」頁）
+  siteEl.innerHTML = hBarChart(toRows(bySite), { max:8, unit:"工", title:"本月工地出工量", tableBelow:false });
+  vendEl.innerHTML = hBarChart(toRows(byVendor), { max:8, unit:"工", title:"本月分包商出工量", tableBelow:false });
 }
 
 function renderSiteBreakdown(){
@@ -2386,15 +2530,49 @@ function laborDetail(rep){
   return "";
 }
 
-/* 自辦/代辦欄位：新結構（工數/時數/備註）優先，舊版單一文字歸入備註 */
-function doneCols(rep){
+/* 代辦逐筆（v23）→ 報表用的彙總與明細字串。
+
+   ⚠ v23 起代辦改存 `rep.agentItems[]`，舊制三欄（vendorDoneWork/Hours/Note）只承繼歷史單。
+   明細與計價彙總原本仍只讀舊欄位，導致 v23 之後回報的代辦在兩份**給成本部的報表**裡
+   永遠是空白（畫面上有、匯出後沒有）——這個函式就是把那條線接回去。
+
+   **新舊不相加**：有 agentItems 就以它為準，否則回退舊欄位。相加會把同一筆代辦算兩次
+   （舊單被編輯過時兩邊都有值），那是直接算錯錢。 */
+function agentSummary(rep, kind){
+  const items = (rep && rep.agentItems) || [];
+  if(!items.length) return null;
+  const note = items.map(a=>a.note).filter(Boolean).join("；");
+  if(kind === "equipment"){
+    // 機具代辦綁廠商層級，只有數量（單位依主計價品項的 charge_type，見合約 §4.9）
+    return { work: items.reduce((t,a)=> t + (Number(a.qty) || 0), 0), hours: 0,
+             detail: items.map(a=>`${a.vendor}(${fmt(a.qty||0)})`).join("、"), note };
+  }
+  return {
+    work:  items.reduce((t,a)=> t + (Number(a.work)   || 0), 0),
+    hours: items.reduce((t,a)=> t + (Number(a.ot2)    || 0) + (Number(a.otOver) || 0), 0),
+    detail: items.map(a=>{
+      const parts = [`${fmt(a.work||0)}工`];
+      if(a.ot2)    parts.push(`前2h:${fmt(a.ot2)}h`);
+      if(a.otOver) parts.push(`逾2h:${fmt(a.otOver)}h`);
+      return `${a.vendor}·${a.type}(${parts.join("/")})`;
+    }).join("、"),
+    note
+  };
+}
+
+/* 自辦/代辦欄位：新結構（工數/時數/備註）優先，舊版單一文字歸入備註。
+   代辦三欄 v23 起由 agentItems 供應；末欄「代辦明細(廠商)」把組成攤開，
+   讓人看得見這筆扣工是扣給誰、哪個工種（計價紅線 4）。 */
+function doneCols(rep, kind){
+  const ag = agentSummary(rep, kind);
   return [
     rep.selfDoneWork != null ? fmt(rep.selfDoneWork) : "",
     rep.selfDoneHours != null ? fmt(rep.selfDoneHours) : "",
     rep.selfDoneNote || rep.selfDone || "",
-    rep.vendorDoneWork != null ? fmt(rep.vendorDoneWork) : "",
-    rep.vendorDoneHours != null ? fmt(rep.vendorDoneHours) : "",
-    rep.vendorDoneNote || rep.vendorDone || ""
+    ag ? fmt(ag.work) : (rep.vendorDoneWork != null ? fmt(rep.vendorDoneWork) : ""),
+    ag ? (ag.hours ? fmt(ag.hours) : "") : (rep.vendorDoneHours != null ? fmt(rep.vendorDoneHours) : ""),
+    ag ? ag.note : (rep.vendorDoneNote || rep.vendorDone || ""),
+    ag ? ag.detail : ""
   ];
 }
 
@@ -2403,7 +2581,7 @@ const REPORT_DEFS = {
     title:"點工紀錄",
     headers:["出工日期","廠商","需求工數","工作內容","工作地點","申請人","狀態","人臉紀錄","白卡紀錄","工具箱紀錄","簽單繳回日","簽單實際出工數","差異","0工確認","簽單責任工程師","加班時數(前2小時)","加班時數(第3小時起)","加班總時數","出工明細(工種)",
       ...(PRICING_UI ? ["計價金額","計價組成"] : []),
-      "根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註","現場查核回饋"],
+      "根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註","代辦明細(廠商)","現場查核回饋"],
     records: ()=>cur().labor.filter(r=>inReportRange(r.date) && matchReportVendor(r) && matchReportCat(r,"labor") && matchReportEngineer(r,"labor")),
     rows(recs){ return (recs || this.records()).map(r=>{
       const rep = r.report || {};
@@ -2425,7 +2603,7 @@ const REPORT_DEFS = {
         laborDetail(rep),
         // v22.8 金額＋組成（v23.1：畫面層開關關閉時整組不輸出，見 PRICING_UI）
         ...(PRICING_UI ? (reported ? amountCells(laborAmount(r)) : ["", ""]) : [])
-      ].concat(doneCols(rep), [rep.conclusion||""]);
+      ].concat(doneCols(rep, "labor"), [rep.conclusion||""]);
     }); }
   },
   equipment: {
@@ -2436,7 +2614,7 @@ const REPORT_DEFS = {
        - 新增：預定使用時數／申請備註／出工天數／加班時數／實際工作內容 */
     headers:["出工日期","機具廠商","機具類型","型號","工作內容","工作地點","需求數量(台)","預定使用時數","申請備註","申請人","狀態","簽單繳回日","機具實際工作使用時數","差異","出工天數","加班時數","實際工作內容",
       ...(PRICING_UI ? ["計價品項","加班費率品項","計價金額","計價組成"] : []),
-      "0使用確認","機具使用明細","簽單責任工程師","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註"],
+      "0使用確認","機具使用明細","簽單責任工程師","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註","代辦明細(廠商)"],
     records: ()=>cur().equipment.filter(x=>inReportRange(x.date) && matchReportVendor(x) && matchReportCat(x,"equipment") && matchReportEngineer(x,"equipment")),
     rows(recs){ return (recs || this.records()).map(x=>{
       const rep = x.report || {};
@@ -2459,7 +2637,7 @@ const REPORT_DEFS = {
             : []),
         rep.zeroUse?"V":"", usageDetail,
         rep.checker||""
-      ].concat(doneCols(rep));
+      ].concat(doneCols(rep, "equipment"));
     }); }
   }
 };
@@ -2496,8 +2674,11 @@ function buildPricingSummary(kind){
     }
     g.selfW += rep.selfDoneWork || 0;
     g.selfH += rep.selfDoneHours || 0;
-    g.vendW += rep.vendorDoneWork || 0;
-    g.vendH += rep.vendorDoneHours || 0;
+    /* v23 代辦落在 agentItems；有就以它為準、否則回退舊欄位（新舊不相加，見 agentSummary）。
+       原本只讀舊欄位，成本部拿到的計價彙總「廠商代辦工數/時數」對新單一律是 0。 */
+    const ag = agentSummary(rep, kind);
+    if(ag){ g.vendW += ag.work; g.vendH += ag.hours; }
+    else  { g.vendW += rep.vendorDoneWork || 0; g.vendH += rep.vendorDoneHours || 0; }
   });
   return Object.values(groups).sort((a,b)=>a.vendor.localeCompare(b.vendor,"zh-Hant"));
 }
@@ -3430,7 +3611,8 @@ function buildVendorRanking(kind){
   const g = new Map();
   recs.forEach(r=>{
     const v = recVendor(r) || "（未填廠商）";
-    const e = g.get(v) || { vendor: v, count: 0, work: 0, ot2: 0, otOver: 0, days: 0, ot: 0, amount: 0, noRate: 0 };
+    const e = g.get(v) || { vendor: v, count: 0, work: 0, ot2: 0, otOver: 0, days: 0, ot: 0,
+                            agWork: 0, agOt: 0, amount: 0, noRate: 0 };
     e.count++;
     if(kind === "labor"){
       // 逐工種展開與加班歸段一律走 reportTypeRows（口徑唯一權威，v21.3）
@@ -3439,14 +3621,24 @@ function buildVendorRanking(kind){
       e.days += r.report.days || 0;
       e.ot += r.report.otHours || 0;
     }
+    /* v24 代辦扣工：這些工是向本單廠商叫的，但成本歸屬另一家，
+       因此要從本單廠商的排名扣回。**扣的量與原始量分欄並存**——
+       只給一個扣完的淨值會看不出組成（計價紅線 4）。 */
+    const ag = agentSummary(r.report, kind);
+    if(ag){ e.agWork += ag.work; e.agOt += ag.hours; }
     const amt = kind === "labor" ? laborAmount(r) : equipAmount(r);
     if(amt.amount == null) e.noRate++; else e.amount += amt.amount;
     g.set(v, e);
   });
   const rows = [...g.values()];
   // 點工的「使用數量」沿用叫工排名的總工數口徑（本工＋加班÷8）；機具用出工天數
-  rows.forEach(e=>{ e.units = kind === "labor" ? totalUnits(e) : e.days; });
-  rows.sort((a,b)=> b.units - a.units || b.amount - a.amount);
+  rows.forEach(e=>{
+    e.units = kind === "labor" ? totalUnits(e) : e.days;
+    // 代辦扣抵量換算成同一單位：點工＝工數（加班÷8）、機具＝數量
+    e.agUnits = kind === "labor" ? (e.agWork + e.agOt / OT_PER_UNIT) : e.agWork;
+    e.netUnits = e.units - e.agUnits;
+  });
+  rows.sort((a,b)=> b.netUnits - a.netUnits || b.amount - a.amount);
   return rows;
 }
 
@@ -3467,17 +3659,18 @@ function buildAgentDeductionSummary(){
 }
 
 /* 兩張排行榜的金額欄跟著 PRICING_UI 走；代辦扣抵那張**刻意保留金額**（見 PRICING_UI 說明） */
-const VRANK_LABOR_COLS = ["排名","廠商","已回報單數","本工","加班前2h","加班2h後","總工數",
+const VRANK_LABOR_COLS = ["排名","廠商","已回報單數","本工","加班前2h","加班2h後","總工數","代辦扣工","淨工數",
   ...(PRICING_UI ? ["計價金額","未能計價單數"] : [])];
-const VRANK_EQUIP_COLS = ["排名","廠商","已回報單數","出工天數","加班時數",
+const VRANK_EQUIP_COLS = ["排名","廠商","已回報單數","出工天數","加班時數","代辦扣抵","淨出工天數",
   ...(PRICING_UI ? ["計價金額","未能計價單數"] : [])];
 const VRANK_DED_COLS   = ["責任歸屬廠商","代辦列數","代扣金額","未能計價列數","未能計價原因"];
 
 const vrankLaborRow = (e,i) => [i+1, e.vendor, e.count, fmtRank(e.work),
   e.ot2 ? fmtRank(e.ot2) : "", e.otOver ? fmtRank(e.otOver) : "", fmtRank(e.units),
+  e.agUnits ? "-" + fmtRank(e.agUnits) : "", fmtRank(e.netUnits),
   ...(PRICING_UI ? [e.amount, e.noRate || ""] : [])];
 const vrankEquipRow = (e,i) => [i+1, e.vendor, e.count, fmtRank(e.days),
-  e.ot ? fmtRank(e.ot) : "",
+  e.ot ? fmtRank(e.ot) : "", e.agUnits ? "-" + fmtRank(e.agUnits) : "", fmtRank(e.netUnits),
   ...(PRICING_UI ? [e.amount, e.noRate || ""] : [])];
 const vrankDedRow = e => [e.vendor, e.rows, e.amount, e.noRate || "", [...e.whys].join("；")];
 
@@ -3495,7 +3688,10 @@ const vrankDedRow = e => [e.vendor, e.rows, e.amount, e.noRate || "", [...e.whys
    - 只畫前 N 名，其餘在圖下明講「另有 N 家未列出」（不做無聲截斷）
    ========================================================== */
 function hBarChart(rows, opts){
-  const o = Object.assign({ max: 10, unit: "", title: "" }, opts || {});
+  /* tableBelow：呼叫端下方是否真的有數值表。報表頁有（預設 true），
+     戰情室的排名只有圖、沒有表——那裡若照樣寫「完整資料見下方表格」就是假訊息，
+     使用者會往下找一張不存在的表。 */
+  const o = Object.assign({ max: 10, unit: "", title: "", tableBelow: true }, opts || {});
   if(!rows.length) return '<div class="empty-row">此期間無資料可繪製</div>';
   const shown = rows.slice(0, o.max);
   const rest = rows.length - shown.length;
@@ -3514,7 +3710,7 @@ function hBarChart(rows, opts){
   const first = shown[0];
   const summary = `${o.title}：共 ${rows.length} 項，第一名 ${first.label} ${fmtRank(first.value)}${o.unit}`;
   return `<div class="hbar" role="img" aria-label="${esc(summary)}">${bars}</div>`
-    + (rest > 0 ? `<p class="hint">圖只列前 ${o.max} 名，另有 ${rest} 項未列出——完整資料見下方表格。</p>` : "");
+    + (rest > 0 ? `<p class="hint">圖只列前 ${o.max} 名，另有 ${rest} 項未列出${o.tableBelow ? "——完整資料見下方表格" : ""}。</p>` : "");
 }
 
 function vrankTableHTML(title, cols, rows, note){
@@ -3544,16 +3740,17 @@ function renderVendorRankReport(){
   /* v23.1：先給圖再給表。排名的重點是「誰多誰少、差多少」，
      長條的長度一眼就答得出來；精確數字仍由下方表格負責（§10 圖不取代表） */
   const chartOf = (rows, unit, title) => hBarChart(
-    rows.map(e=>({ label: e.vendor, value: e.units, sub: `${e.count} 單` })), { unit, title });
+    rows.map(e=>({ label: e.vendor, value: e.netUnits, sub: `${e.count} 單` })), { unit, title });
 
   el.innerHTML =
     chartOf(lab, " 工", "點工廠商排名")
-    + vrankTableHTML(`點工廠商排名（${period}・依總工數）`, VRANK_LABOR_COLS, lab.map(vrankLaborRow),
+    + vrankTableHTML(`點工廠商排名（${period}・依淨工數）`, VRANK_LABOR_COLS, lab.map(vrankLaborRow),
       "<strong>總工數＝本工＋(加班前2h＋加班2h後)÷8</strong>（工數以 8 小時換算），與叫工排名同一口徑。"
+      + "<strong>淨工數＝總工數－代辦扣工</strong>——代辦的部分成本歸屬另一家，排名依淨工數；扣抵量另列一欄，看得出組成。"
       + (PRICING_UI ? "「未能計價單數」為查無費率的單——那些單的金額<strong>不含</strong>在計價金額裡，不是 0 元。" : ""))
     + chartOf(eq, " 天", "機具廠商排名")
-    + vrankTableHTML(`機具廠商排名（${period}・依出工天數）`, VRANK_EQUIP_COLS, eq.map(vrankEquipRow),
-      "機具不與點工併榜——出工天數與工數是不同單位，相加沒有意義。")
+    + vrankTableHTML(`機具廠商排名（${period}・依淨出工天數）`, VRANK_EQUIP_COLS, eq.map(vrankEquipRow),
+      "機具不與點工併榜——出工天數與工數是不同單位，相加沒有意義。淨出工天數＝出工天數－代辦扣抵。")
     + vrankTableHTML(`代辦扣抵彙總（${period}・依責任歸屬廠商）`, VRANK_DED_COLS, ded.map(vrankDedRow),
       "代辦＝向本單廠商叫的工／機具但成本歸屬另一家，計價時從該廠商扣回。"
       + "金額依<strong>本單廠商</strong>的當季費率自動計算（合約 §4.10）。");
@@ -3566,7 +3763,7 @@ function exportVendorRankXls(){
   if(!lab.length && !eq.length && !ded.length){ toast("此期間內尚無已回報資料可排名"); return; }
   const period = reportPeriodLabel();
   downloadCSVBlocks([
-    { title: `點工廠商排名（${period}・依總工數＝本工＋加班÷8）`, headers: VRANK_LABOR_COLS, rows: lab.map(vrankLaborRow) },
+    { title: `點工廠商排名（${period}・依淨工數＝總工數－代辦扣工）`, headers: VRANK_LABOR_COLS, rows: lab.map(vrankLaborRow) },
     { title: `機具廠商排名（${period}・依出工天數）`, headers: VRANK_EQUIP_COLS, rows: eq.map(vrankEquipRow) },
     { title: `代辦扣抵彙總（${period}・依責任歸屬廠商）`, headers: VRANK_DED_COLS, rows: ded.map(vrankDedRow) }
   ], `廠商排名_${MASTER.currentSite}${exportFilterTag()}.csv`);
@@ -3593,7 +3790,8 @@ const totalUnits = e => e.work + (e.ot2 + e.otOver) / OT_PER_UNIT;
 const RANK_COLS = [
   { t: "工種" }, { t: "排名", num: 1 }, { t: "簽單責任工程師" },
   { t: "本工", num: 1 }, { t: "加班前2h", num: 1 }, { t: "加班2h後", num: 1 },
-  { t: "加班合計(時)", num: 1, xls: 1 }, { t: "總工數", num: 1 }
+  { t: "加班合計(時)", num: 1, xls: 1 }, { t: "總工數", num: 1 },
+  { t: "代辦扣工", num: 1 }, { t: "淨工數", num: 1 }
 ];
 const RANK_COLS_VIEW = RANK_COLS.filter(c => !c.xls);
 
@@ -3610,21 +3808,43 @@ function buildRankingData(){
       if(!(t.work > 0 || t.ot2 > 0 || t.otOver > 0)) return;
       counted = true;
       const g = agg[t.type] || (agg[t.type] = Object.create(null));
-      const e = g[eng] || (g[eng] = { work: 0, ot2: 0, otOver: 0 });
+      const e = g[eng] || (g[eng] = { work: 0, ot2: 0, otOver: 0, agWork: 0, agOt: 0 });
       e.work += t.work; e.ot2 += t.ot2; e.otOver += t.otOver;
+    });
+    /* v24：代辦扣工歸到「簽單責任工程師 × 該代辦列的工種」。
+       這樣自辦比例偏高時，看得出是哪幾位工程師沒把代辦扣出去——
+       只給一個總扣工數，查不到責任落點。
+       代辦的工種一定在本單 workTypes 內（送出前由 collectAgentErrors 擋），
+       故不會憑空生出新工種。 */
+    ((r.report && r.report.agentItems) || []).forEach(a=>{
+      if(!a || !a.type) return;
+      const g = agg[a.type] || (agg[a.type] = Object.create(null));
+      const e = g[eng] || (g[eng] = { work: 0, ot2: 0, otOver: 0, agWork: 0, agOt: 0 });
+      e.agWork += Number(a.work) || 0;
+      e.agOt   += (Number(a.ot2) || 0) + (Number(a.otOver) || 0);
+      counted = true;
     });
     if(counted) recCount++;
   });
   const rows = Object.keys(agg).map(type => {
     const ranked = Object.entries(agg[type])
-      .map(([name, e]) => ({ name, work: e.work, ot2: e.ot2, otOver: e.otOver, units: totalUnits(e) }))
-      .sort((a, b) => b.units - a.units);
+      .map(([name, e]) => {
+        const units = totalUnits(e);
+        const agUnits = (e.agWork || 0) + (e.agOt || 0) / OT_PER_UNIT;
+        return { name, work: e.work, ot2: e.ot2, otOver: e.otOver,
+                 agWork: e.agWork || 0, agOt: e.agOt || 0,
+                 units, agUnits, netUnits: units - agUnits };
+      })
+      .sort((a, b) => b.netUnits - a.netUnits);
     const sum = ranked.reduce((a, e) => ({
-      work: a.work + e.work, ot2: a.ot2 + e.ot2, otOver: a.otOver + e.otOver
-    }), { work: 0, ot2: 0, otOver: 0 });
-    return { type, ranked, sum, units: totalUnits(sum) };
+      work: a.work + e.work, ot2: a.ot2 + e.ot2, otOver: a.otOver + e.otOver,
+      agWork: a.agWork + e.agWork, agOt: a.agOt + e.agOt
+    }), { work: 0, ot2: 0, otOver: 0, agWork: 0, agOt: 0 });
+    const units = totalUnits(sum);
+    const agUnits = sum.agWork + sum.agOt / OT_PER_UNIT;
+    return { type, ranked, sum, units, agUnits, netUnits: units - agUnits };
   });
-  rows.sort((a, b) => b.units - a.units);   // 量大的工種列在前
+  rows.sort((a, b) => b.netUnits - a.netUnits);   // 量大的工種列在前
   return { rows, recCount };
 }
 
@@ -3666,12 +3886,14 @@ function renderRankingReport(){
      逐工種的細節仍由下方原表負責。 */
   const engTotals = new Map();
   rows.forEach(r => r.ranked.forEach(e => {
-    const t = engTotals.get(e.name) || { work:0, ot2:0, otOver:0 };
+    const t = engTotals.get(e.name) || { work:0, ot2:0, otOver:0, agWork:0, agOt:0 };
     t.work += e.work; t.ot2 += e.ot2; t.otOver += e.otOver;
+    t.agWork += e.agWork || 0; t.agOt += e.agOt || 0;
     engTotals.set(e.name, t);
   }));
   const engRows = [...engTotals.entries()]
-    .map(([name, t]) => ({ label: name, value: totalUnits(t) }))
+    .map(([name, t]) => ({ label: name,
+      value: totalUnits(t) - (t.agWork + t.agOt / OT_PER_UNIT) }))
     .sort((a, b) => b.value - a.value);
   const chartHTML = hBarChart(engRows, { unit: " 工", title: "各工程師叫工總量" });
 
@@ -3687,13 +3909,17 @@ function renderRankingReport(){
       + '<td class="num">' + fmtRank(e.work) + "</td>"
       + '<td class="num">' + (e.ot2 ? fmtRank(e.ot2) : "") + "</td>"
       + '<td class="num">' + (e.otOver ? fmtRank(e.otOver) : "") + "</td>"
-      + '<td class="num"><strong>' + fmtRank(e.units) + "</strong></td></tr>").join("");
+      + '<td class="num">' + fmtRank(e.units) + "</td>"
+      + '<td class="num">' + (e.agUnits ? "-" + fmtRank(e.agUnits) : "") + "</td>"
+      + '<td class="num"><strong>' + fmtRank(e.netUnits) + "</strong></td></tr>").join("");
     return lines + '<tr class="rank-subtotal">'
       + '<td colspan="2" class="subtotal-label"><strong>小計（' + r.ranked.length + " 人）</strong></td>"
       + '<td class="num"><strong>' + fmtRank(r.sum.work) + "</strong></td>"
       + '<td class="num"><strong>' + (r.sum.ot2 ? fmtRank(r.sum.ot2) : "") + "</strong></td>"
       + '<td class="num"><strong>' + (r.sum.otOver ? fmtRank(r.sum.otOver) : "") + "</strong></td>"
-      + '<td class="num"><strong>' + fmtRank(r.units) + "</strong></td></tr>";
+      + '<td class="num"><strong>' + fmtRank(r.units) + "</strong></td>"
+      + '<td class="num"><strong>' + (r.agUnits ? "-" + fmtRank(r.agUnits) : "") + "</strong></td>"
+      + '<td class="num"><strong>' + fmtRank(r.netUnits) + "</strong></td></tr>";
   }).join("");
   el.innerHTML = chartHTML
     + '<div class="summary-title">逐工種明細</div>'
@@ -3702,7 +3928,9 @@ function renderRankingReport(){
     + "<thead><tr>" + RANK_COLS_VIEW.map(c => "<th" + (c.num ? ' class="num"' : "") + ">" + esc(c.t) + "</th>").join("") + "</tr></thead>"
     + "<tbody>" + body + "</tbody></table>" + pagerHTML
     + '<p class="hint rank-hint">本工＝回報的工種出工數（可含 0.5 工）；加班為時數。'
-    + "<strong>總工數＝本工＋(加班前2h＋加班2h後)÷8</strong>（工數以 8 小時換算），排名依總工數。僅計已回報單。</p>";
+    + "<strong>總工數＝本工＋(加班前2h＋加班2h後)÷8</strong>（工數以 8 小時換算）。"
+    + "<strong>淨工數＝總工數－代辦扣工</strong>，排名依淨工數；代辦扣工按該列工種歸到簽單責任工程師，"
+    + "自辦比例偏高時可據此查出未做代扣的落點。僅計已回報單。</p>";
   bindPager(el, "ranking", renderRankingReport);
 }
 
@@ -3867,7 +4095,7 @@ function exportRankingXls(){
   const xml = [], merges = [];
 
   // 第 1 列：期別標題（整列合併）
-  xml.push('<row r="1">' + xlText(0, 1, XS.TITLE, "期別/月份：" + rankingPeriodLabel() + "　（總工數＝本工＋加班時數÷8；排名依總工數）")
+  xml.push('<row r="1">' + xlText(0, 1, XS.TITLE, "期別/月份：" + rankingPeriodLabel() + "　（總工數＝本工＋加班時數÷8；淨工數＝總工數－代辦扣工；排名依淨工數）")
     + Array.from({ length: N - 1 }, (_, i) => xlText(i + 1, 1, XS.TITLE, "")).join("") + "</row>");
   merges.push("A1:" + colRef(N - 1) + "1");
   // 第 2 列：表頭（沿用 RANK_COLS 單一來源）
@@ -3886,7 +4114,9 @@ function exportRankingXls(){
         + xlNum(4, rn, XS.NUM, e.ot2 ? fmtRank(e.ot2) : "")
         + xlNum(5, rn, XS.NUM, e.otOver ? fmtRank(e.otOver) : "")
         + xlNum(6, rn, XS.NUM, ot ? fmtRank(ot) : "")
-        + xlNum(7, rn, XS.NUMB, fmtRank(e.units)) + "</row>");
+        + xlNum(7, rn, XS.NUM, fmtRank(e.units))
+        + xlNum(8, rn, XS.NUM, e.agUnits ? fmtRank(-e.agUnits) : "")
+        + xlNum(9, rn, XS.NUMB, fmtRank(e.netUnits)) + "</row>");
       rn++;
     });
     const sot = r.sum.ot2 + r.sum.otOver;
@@ -3898,7 +4128,9 @@ function exportRankingXls(){
       + xlNum(4, rn, XS.SUBN, r.sum.ot2 ? fmtRank(r.sum.ot2) : "")
       + xlNum(5, rn, XS.SUBN, r.sum.otOver ? fmtRank(r.sum.otOver) : "")
       + xlNum(6, rn, XS.SUBN, sot ? fmtRank(sot) : "")
-      + xlNum(7, rn, XS.SUBN, fmtRank(r.units)) + "</row>");
+      + xlNum(7, rn, XS.SUBN, fmtRank(r.units))
+      + xlNum(8, rn, XS.SUBN, r.agUnits ? fmtRank(-r.agUnits) : "")
+      + xlNum(9, rn, XS.SUBN, fmtRank(r.netUnits)) + "</row>");
     merges.push("A" + start + ":A" + rn);     // 工種格跨資料列＋小計列
     merges.push("B" + rn + ":C" + rn);        // 小計標籤跨排名＋工程師欄
     rn++;

@@ -47,6 +47,8 @@
 | [42](42-onprem-config-guard.md) | 地端上線組態守衛（交付前資安盤點） | 地端 .NET 授權層品質足夠，真正風險是**部署組態設錯且不會報錯**（`Mode=Off`/`Dev`、`Windows`＋非 `hrapi`）。改為**非開發環境偵測到即拒絕啟動**（把「設錯就破功」變成「設錯起不來」）。code review 抓到關鍵缺口：以 `!IsDevelopment()` 取代 `IsProduction()`——後者只認字面 `Production`，`Prod`/`Staging` 會繞過守衛。逃生口 `KGAUDIT_ALLOW_INSECURE=1`。八情境實跑驗證 |
 | [43](43-security-headers-csp.md) | 安全性回應標頭與 CSP（交付前資安盤點・第 2 批） | 三後端（雲端 `netlify.toml`／地端 .NET `OnStarting`／Node `setHeader`）統一加上 CSP＋`X-Content-Type-Options`／`X-Frame-Options`／`Referrer-Policy`／`Permissions-Policy`，CSP 逐字一致。為上嚴格 `script-src 'self'`，前端拆除三個內聯事件處理器（改事件綁定）。本機實載驗證：五標頭全帶出、console 零 CSP 違規 |
 | [44](44-date-field-width.md) | 日期欄位寬度修正（現場回饋） | 日期欄末碼被日曆圖示擋住——根因是沿用數字欄的 `max-width:120px`，而日期需約 132px（文字 108＋內距 22＋圖示 24），**與螢幕大小無關**。新增 `.field-date`＋全域 `input[type="date"]{min-width:150px}`（`min-width` 優先權高於 `max-width`，一併保護所有篩選列日期欄）。全系統 12 個日期欄實測 12／12 通過 |
+| [45](45-hours-conversion-agent-deduction.md) | 時數換算與代辦扣工上排名（現場回饋五題） | 現場實務以「小時」計，系統的工卻是 0.5 粗顆粒。工數⇄時數雙向換算（8 小時＝1 工、4 位小數、只存工數）；0 工單改為保留工種（夜間加班單原本工種被清空、排名與計價都對不到）；代辦扣工進入廠商與工程師排名並**分欄呈現**（淨工數＝總工數−代辦扣工）。**順帶修掉一個計價 bug**：v23 代辦改存 agentItems 後，明細與計價彙總仍讀舊欄位，成本部拿到的代辦欄位對新單一律空白/0 |
+| [46](46-dashboard-war-room.md) | 總覽升級為戰情室 | 總覽答得出「總共有多少」、答不出**「現在該追誰」**。新增跨工地**逾期未回報**清單（依逾期天數排序、整列可點直達該工地與對應清單頁）＝長期擱置的待回報名單；簽單提醒改依 20 天期限倒數排序；新增本月出工量雙榜長條圖。純讀取呈現、不新增寫入路徑 |
 
 ## 如何新增下一個節點
 

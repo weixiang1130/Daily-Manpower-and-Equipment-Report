@@ -539,6 +539,14 @@ tr.clickable:hover td{background:var(--teal-100);}
 }
 .list-simple .row-item:last-child{border-bottom:none;}
 
+/* ---------- 戰情室（總覽） ---------- */
+/* 雙欄排名：窄螢幕自動疊成一欄，不另寫 media query */
+.dash-rank-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:22px;}
+.dash-rank-grid h3{margin:0 0 10px;font-size:14px;color:var(--teal-800);}
+.row-item .row-meta{color:var(--fg-tertiary);font-size:13px;margin-left:6px;}
+.list-simple .row-item.clickable{cursor:pointer;padding-left:6px;padding-right:6px;}
+.list-simple .row-item.clickable:hover{background:var(--bg-surface-1);}
+
 /* ---------- Report tabs ---------- */
 .report-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;}
 .rtab{
@@ -730,13 +738,16 @@ td.num{font-family:'DM Mono',Consolas,monospace;}    /* 等寬字讓整數位對
 /* table-layout:fixed 是必要的：預設 auto 版面下 col 寬度只是建議值，
    碰上 th,td{white-space:nowrap} 會被 min-content 撐開，max-width 也擋不住 */
 .rank-table{max-width:1080px;table-layout:fixed;}
-.rank-table col:nth-child(1){width:16%;}
-.rank-table col:nth-child(2){width:7%;}
-.rank-table col:nth-child(3){width:19%;}
-.rank-table col:nth-child(4){width:12%;}
-.rank-table col:nth-child(5){width:14%;}
-.rank-table col:nth-child(6){width:14%;}
-.rank-table col:nth-child(7){width:18%;}
+/* v24：新增「代辦扣工／淨工數」後為 9 欄，重新配比（合計 100%） */
+.rank-table col:nth-child(1){width:14%;}
+.rank-table col:nth-child(2){width:6%;}
+.rank-table col:nth-child(3){width:16%;}
+.rank-table col:nth-child(4){width:10%;}
+.rank-table col:nth-child(5){width:11%;}
+.rank-table col:nth-child(6){width:11%;}
+.rank-table col:nth-child(7){width:11%;}
+.rank-table col:nth-child(8){width:10%;}
+.rank-table col:nth-child(9){width:11%;}
 .rank-table th.num,.rank-table td.num{padding-right:18px;}
 /* 工種格跨整組（含小計列），舊制單的長字串（多個內容類別串接）需換行不得溢出 */
 .rank-table .rank-type{white-space:normal;word-break:break-all;vertical-align:middle;

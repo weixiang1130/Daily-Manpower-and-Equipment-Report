@@ -1921,7 +1921,7 @@ function renderUsageLog(){
     const hrs = usageLogState.reduce((t,u)=>t+(Number(u.hours)||0),0);
     hint.innerHTML = `<strong>在場天數 ${days} 天</strong>（由筆數自動統計，供廠商排名使用）`
       + (hrs ? `｜累計時數 ${fmt(hrs)} 小時` : "")
-      + "。月租的計價金額依租期按比例計算，與本區筆數無關。";
+      + "。月租依租期計算，與本區筆數無關（本區只記施工軌跡與在場天數）。";
   }
 }
 
@@ -3931,12 +3931,17 @@ function buildAgentDeductionSummary(){
   return [...g.values()].sort((a,b)=> b.amount - a.amount);
 }
 
-/* 兩張排行榜的金額欄跟著 PRICING_UI 走；代辦扣抵那張**刻意保留金額**（見 PRICING_UI 說明） */
+/* 三張排行榜的金額欄一律跟著 PRICING_UI 走。
+   ⚠ v23.1 曾**刻意保留**代辦扣抵的金額欄，v24.5 起改為一併關閉——
+     現場回饋「系統完全不接觸計價議題」，留著金額只會讓人看到
+     「代扣金額 0／未能計價原因：未綁定費率」而誤以為系統壞了。
+     計算邏輯與費率資料原樣保留，改一個常數即整組回來。 */
 const VRANK_LABOR_COLS = ["排名","廠商","已回報單數","本工","加班前2h","加班2h後","總工數","代辦扣工","淨工數",
   ...(PRICING_UI ? ["計價金額","未能計價單數"] : [])];
 const VRANK_EQUIP_COLS = ["排名","廠商","已回報單數","在場天數","月租(台·月)","加班時數","代辦扣抵","淨在場天數",
   ...(PRICING_UI ? ["計價金額","未能計價單數"] : [])];
-const VRANK_DED_COLS   = ["責任歸屬廠商","代辦列數","代扣金額","未能計價列數","未能計價原因"];
+const VRANK_DED_COLS   = ["責任歸屬廠商","代辦列數",
+  ...(PRICING_UI ? ["代扣金額","未能計價列數","未能計價原因"] : [])];
 
 const vrankLaborRow = (e,i) => [i+1, e.vendor, e.count, fmtRank(e.work),
   e.ot2 ? fmtRank(e.ot2) : "", e.otOver ? fmtRank(e.otOver) : "", fmtRank(e.units),
@@ -3946,7 +3951,8 @@ const vrankEquipRow = (e,i) => [i+1, e.vendor, e.count, fmtRank(e.days),
   e.monthUnits ? fmtRank(e.monthUnits) : "",
   e.ot ? fmtRank(e.ot) : "", e.agUnits ? "-" + fmtRank(e.agUnits) : "", fmtRank(e.netUnits),
   ...(PRICING_UI ? [e.amount, e.noRate || ""] : [])];
-const vrankDedRow = e => [e.vendor, e.rows, e.amount, e.noRate || "", [...e.whys].join("；")];
+const vrankDedRow = e => [e.vendor, e.rows,
+  ...(PRICING_UI ? [e.amount, e.noRate || "", [...e.whys].join("；")] : [])];
 
 /* ==========================================================
    橫向長條圖（v23.1；零依賴 inline SVG）
@@ -4028,8 +4034,10 @@ function renderVendorRankReport(){
       + "<strong>在場天數</strong>：日租＝出工天數、月租＝逐日使用紀錄的筆數，同為「天」才可比；"
       + "<strong>月租(台·月)</strong>是月租的成本單位（租期按比例），刻意不與天數相加。")
     + vrankTableHTML(`代辦扣抵彙總（${period}・依責任歸屬廠商）`, VRANK_DED_COLS, ded.map(vrankDedRow),
-      "代辦＝向本單廠商叫的工／機具但成本歸屬另一家，計價時從該廠商扣回。"
-      + "金額依<strong>本單廠商</strong>的當季費率自動計算（合約 §4.10）。");
+      "代辦＝向本單廠商叫的工／機具但成本歸屬另一家。"
+      + (PRICING_UI
+          ? "計價時從該廠商扣回，金額依<strong>本單廠商</strong>的當季費率自動計算（合約 §4.10）。"
+          : "本表僅統計歸屬與數量；扣抵量已反映在上方兩張排行榜的「代辦扣工／代辦扣抵」欄。"));
 }
 
 function exportVendorRankXls(){

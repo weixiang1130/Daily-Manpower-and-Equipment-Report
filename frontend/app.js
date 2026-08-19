@@ -5407,7 +5407,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
   initCombobox("cb_l_vendor", "vendors", "輸入以搜尋分包商");
   initCombobox("cb_l_applicant", "people", "輸入以搜尋申請人");
   initCombobox("cb_l_engineer", "people", "輸入以搜尋簽單責任工程師");
-  initCombobox("cb_l_type_add", "laborTypes", "加入出工工種：輸入搜尋（粗工／技術工／打石工⋯），選取後加入覆核清單", {onPick: addTypeRow});
+  initCombobox("cb_l_type_add", "laborTypes", "加入出工工種：直接輸入即可（清單沒有的工種會出現「＋ 新增選項」，例：夜班雜工）", {onPick: addTypeRow});
   initCombobox("cb_l_locations", "locations", "輸入以搜尋工作地點", {multi:"l_locations"});
   initCombobox("cb_e_vendor", "vendors", "輸入以搜尋機具廠商");
   initCombobox("cb_e_applyVendor", "vendors", "選填：已知車行可先填，否則回報時再填");   // v22.9.1

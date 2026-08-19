@@ -140,8 +140,13 @@ def done_vals(rep):
 
 
 def emit_attachments(site, parent_kind, parent_id, atts):
-    """v14 附件描述資料（合約 §4.6）：只入描述資料；file_path 由切換日
-       附件搬運腳本補填（備份 JSON 不含檔案本體）"""
+    """v14 附件描述資料（合約 §4.6）。
+
+    file_path 直接寫入 attachment_id：地端服務讀檔時是
+    `Path.Combine(ATTACH_DIR, file_path)`，而 `export-cloud-bundle.py` 匯出的
+    附件**檔名就是 attachment_id**——因此只要把 attachments/ 底下的檔案複製到
+    ATTACH_DIR，附件立刻可下載，不需要事後再回頭 UPDATE 資料庫。
+    （檔案還沒放進去時，服務會回「附件本體尚未搬運」的明確訊息，不是壞掉。）"""
     for a in atts or []:
         if (not a or not a.get("id") or not ID_RE.match(str(a["id"]))
                 or not str(a.get("name") or "").strip()):
@@ -150,11 +155,12 @@ def emit_attachments(site, parent_kind, parent_id, atts):
         up = a.get("uploadedAt")
         out.append(
             "INSERT INTO dbo.attachments (attachment_id, site_id, parent_kind, parent_id, "
-            "name, content_type, size_bytes, uploaded_at) VALUES ("
+            "name, content_type, size_bytes, uploaded_at, file_path) VALUES ("
             f"{q(a['id'])}, {site_ref(site)}, '{parent_kind}', {q(parent_id)}, "
             f"{q(str(a['name'])[:200])}, {q(str(a.get('type') or 'application/octet-stream')[:50])}, "
             f"{int(a.get('size') or 0)}, "
-            f"{q(up) if up and DATE_RE.match(str(up)) else 'NULL'});"
+            f"{q(up) if up and DATE_RE.match(str(up)) else 'NULL'}, "
+            f"{q(a['id'])});"
         )
         counts["attachments"] += 1
 

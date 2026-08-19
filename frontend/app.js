@@ -582,8 +582,8 @@ function initCollapsibles(){
 
 /* ---------------- 清單篩選（v15：依日期/廠商找要覆核的單） ---------------- */
 const listFilter = {
-  labor: { date: "", vendor: "" },
-  equipment: { date: "", vendor: "" }
+  labor: { date: "", vendor: "", applicant: "" },
+  equipment: { date: "", vendor: "", applicant: "" }
 };
 /* v15.2：清單分頁（每頁 20 筆，取代 v15.1「顯示全部」展開——展開後仍是長頁面）。
    套用：點工清單、機具清單、稽核紀錄清單；篩選/切站自動回第 1 頁 */
@@ -598,7 +598,8 @@ function resetListFilters(){
   listPage.report = 1;
   listPage.ranking = 1;
   ["laborListDate","equipListDate"].forEach(id=>{ const el = document.getElementById(id); if(el) el.value = ""; });
-  ["laborListVendor","equipListVendor"].forEach(id=>{ const el = document.getElementById(id); if(el) el.value = ""; });
+  ["laborListVendor","equipListVendor","laborListApplicant","equipListApplicant"]
+    .forEach(id=>{ const el = document.getElementById(id); if(el) el.value = ""; });
 }
 /* 依 listPage[kind] 取當頁資料並產生頁碼列 HTML；unit＝總量的單位詞（排名報表分的是「個工種」不是「筆」） */
 function paginate(kind, list, unit){
@@ -621,29 +622,50 @@ function bindPager(el, kind, renderFn){
     el.scrollTop = 0;   // 換頁後回到表頭
   }));
 }
-function initListFilter(kind, dateId, vendorId, clearId, renderFn){
-  document.getElementById(dateId).addEventListener("change", e=>{ listFilter[kind].date = e.target.value; listPage[kind] = 1; renderFn(); });
-  document.getElementById(vendorId).addEventListener("change", e=>{ listFilter[kind].vendor = e.target.value; listPage[kind] = 1; renderFn(); });
+function initListFilter(kind, dateId, vendorId, clearId, renderFn, applicantId){
+  const bind = (id, key) => {
+    const el = document.getElementById(id);
+    if(el) el.addEventListener("change", e=>{ listFilter[kind][key] = e.target.value; listPage[kind] = 1; renderFn(); });
+  };
+  bind(dateId, "date"); bind(vendorId, "vendor"); bind(applicantId, "applicant");
   document.getElementById(clearId).addEventListener("click", ()=>{
-    listFilter[kind] = { date: "", vendor: "" };
+    listFilter[kind] = { date: "", vendor: "", applicant: "" };
     listPage[kind] = 1;
-    document.getElementById(dateId).value = "";
-    document.getElementById(vendorId).value = "";
+    [dateId, vendorId, applicantId].forEach(id=>{
+      const el = document.getElementById(id); if(el) el.value = "";
+    });
     renderFn();
   });
 }
 /* 廠商下拉選項由該類紀錄實際值彙集；回傳套用篩選後的清單與計數文字 */
-function applyListFilter(kind, all, vendorSelId, countId){
+/* 下拉選項一律由「目前清單實際出現過的值」動態組出，不用名單池——
+   名單池會列出全站所有人，但清單裡多半只有少數幾位，選了沒資料的等於空篩。
+   選中的值若已不在清單中（例如又改了日期），自動退回「全部」而不是留著空篩。 */
+function fillFilterSelect(selId, values, allLabel, current){
+  const sel = document.getElementById(selId);
+  if(!sel) return current;
+  sel.innerHTML = `<option value="">${esc(allLabel)}</option>`
+    + values.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join("");
+  if(values.includes(current)){ sel.value = current; return current; }
+  sel.value = ""; return "";
+}
+
+function applyListFilter(kind, all, vendorSelId, countId, applicantSelId){
   const f = listFilter[kind];
-  const vendors = [...new Set(all.map(recVendor).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
-  const sel = document.getElementById(vendorSelId);
-  if(sel){
-    sel.innerHTML = `<option value="">全部廠商</option>` + vendors.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join("");
-    if(vendors.includes(f.vendor)) sel.value = f.vendor; else { f.vendor = ""; sel.value = ""; }
-  }
-  const list = all.filter(r=>(!f.date || r.date===f.date) && (!f.vendor || recVendor(r)===f.vendor));
+  const uniq = arr => [...new Set(arr.filter(Boolean))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
+
+  f.vendor = fillFilterSelect(vendorSelId, uniq(all.map(recVendor)), "全部廠商", f.vendor);
+  /* 申請人篩選（現場回饋）：多位工程師常同時向同一家廠商叫工，
+     只篩廠商還要再從一堆單裡找自己的名字。 */
+  f.applicant = fillFilterSelect(applicantSelId, uniq(all.map(r=>r.applicant)), "全部申請人", f.applicant);
+
+  const list = all.filter(r=>
+    (!f.date || r.date === f.date)
+    && (!f.vendor || recVendor(r) === f.vendor)
+    && (!f.applicant || r.applicant === f.applicant));
   const cnt = document.getElementById(countId);
-  if(cnt) cnt.textContent = (f.date || f.vendor) ? `符合 ${list.length}／共 ${all.length} 筆` : `共 ${all.length} 筆`;
+  const filtering = f.date || f.vendor || f.applicant;
+  if(cnt) cnt.textContent = filtering ? `符合 ${list.length}／共 ${all.length} 筆` : `共 ${all.length} 筆`;
   return list;
 }
 
@@ -1161,8 +1183,14 @@ function initLaborReportForm(){
     const totalOT = ot2Total + otOverTotal;
     const zeroWork = document.getElementById("l_zeroWork").checked;
 
-    if(actual === 0 && !zeroWork){
-      toast("實際出工數為 0：若當日確實無人出工，請先勾選「0 工確認」再送出");
+    /* v24.1：「日間無出工、夜間才進場加班」是常見情形（現場簽單就長這樣）。
+       這種單的出工數本來就是 0，但**有加班時數**——硬要使用者勾「0 工確認」，
+       等於要他聲明「完全無人出工」，與事實不符，現場因此卡住送不出去。
+       0 工確認的用意是攔「忘了填」，而加班時數就是「沒忘記填」的證據，
+       所以只在**本工與加班都是 0** 時才硬性擋下；其餘走可確認的警告。 */
+    const anyOT = ot2Total > 0 || otOverTotal > 0;
+    if(actual === 0 && !zeroWork && !anyOT){
+      toast("實際出工數與加班時數都是 0：若當日確實無人出工，請先勾選「0 工確認」再送出");
       return;
     }
     if(zeroWork && actual !== 0){
@@ -1252,7 +1280,10 @@ function collectLaborWarnings(types, actual, ot2Total, otOverTotal, zeroWork){
   const w = [];
   if(zeroWork) return w;
   types.forEach(t=>{
-    if(!(t.work > 0)) w.push(`${t.type}：已加入工種，但出工數為 0`);
+    const tOT = (t.ot2 || 0) + (t.otOver || 0);
+    if(!(t.work > 0) && !tOT) w.push(`${t.type}：已加入工種，但出工數與加班時數都是 0`);
+    // 日間無出工、夜間加班：合法但少見，讓填報者再確認一次而不是直接擋下
+    if(!(t.work > 0) && tOT) w.push(`${t.type}：本日無正常出工，僅有加班 ${fmt(tOT)} 小時（夜間進場）——請確認無誤`);
     // 加班前 2 小時的上限＝人數 × 2 小時
     if(t.work > 0 && t.ot2 > t.work * 2) w.push(`${t.type}：前 2 小時加班 ${fmt(t.ot2)} 小時，超過 出工數 ${fmt(t.work)} 工 × 2 小時的上限`);
     if(t.work > 0 && (t.ot2 + t.otOver) > t.work * 8) w.push(`${t.type}：加班合計 ${fmt(t.ot2 + t.otOver)} 小時，相對出工數 ${fmt(t.work)} 工異常偏高`);
@@ -1557,7 +1588,7 @@ function renderLaborList(){
   const all = cur().labor;
   const el = document.getElementById("laborList");
   if(!all.length){ el.innerHTML = '<div class="empty-row">目前工地尚無點工紀錄</div>'; document.getElementById("laborListCount").textContent = ""; return; }
-  const list = applyListFilter("labor", all, "laborListVendor", "laborListCount");
+  const list = applyListFilter("labor", all, "laborListVendor", "laborListCount", "laborListApplicant");
   if(!list.length){ el.innerHTML = '<div class="empty-row">此篩選條件內沒有點工紀錄，請調整日期／廠商</div>'; return; }
   const { shown, pagerHTML } = paginate("labor", list);
   el.innerHTML = fixedTableOpen([
@@ -2230,7 +2261,7 @@ function renderEquipList(){
   const all = cur().equipment;
   const el = document.getElementById("equipList");
   if(!all.length){ el.innerHTML = '<div class="empty-row">目前工地尚無機具紀錄</div>'; document.getElementById("equipListCount").textContent = ""; return; }
-  const list = applyListFilter("equipment", all, "equipListVendor", "equipListCount");
+  const list = applyListFilter("equipment", all, "equipListVendor", "equipListCount", "equipListApplicant");
   if(!list.length){ el.innerHTML = '<div class="empty-row">此篩選條件內沒有機具紀錄，請調整日期／廠商</div>'; return; }
   const { shown, pagerHTML } = paginate("equipment", list);
   el.innerHTML = fixedTableOpen([
@@ -5369,8 +5400,8 @@ document.addEventListener("DOMContentLoaded", ()=>{
   initTabs();
   initSubTabs();
   initCollapsibles();
-  initListFilter("labor", "laborListDate", "laborListVendor", "laborListClear", renderLaborList);
-  initListFilter("equipment", "equipListDate", "equipListVendor", "equipListClear", renderEquipList);
+  initListFilter("labor", "laborListDate", "laborListVendor", "laborListClear", renderLaborList, "laborListApplicant");
+  initListFilter("equipment", "equipListDate", "equipListVendor", "equipListClear", renderEquipList, "equipListApplicant");
   initTagRemoveHandler();
 
   initCombobox("cb_l_vendor", "vendors", "輸入以搜尋分包商");

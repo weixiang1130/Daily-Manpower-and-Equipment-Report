@@ -182,7 +182,7 @@
         <div class="panel-head">
           <h2>出工回報覆核</h2>
           <span class="site-chip" data-site-chip></span>
-          <p class="hint">由回報工程師填寫（子層，直接承繼申請單資料）。依「工種」（粗工／技術工／打石工⋯）填寫實際出工數與分段加班時數；若當日完全無人出工，勾選「0 工確認」後仍可送出。</p>
+          <p class="hint">由回報工程師填寫（子層，直接承繼申請單資料）。依「工種」（粗工／技術工／打石工⋯）填寫實際出工數與分段加班時數；若當日完全無人出工（也沒有加班），勾選「0 工確認」後仍可送出。<strong>若日間無出工、僅夜間進場加班</strong>，直接在工種列填出工數 0 ＋ 加班時數即可送出，不需勾 0 工確認。</p>
         </div>
 
         <div id="laborReportContext" class="report-context">
@@ -207,7 +207,7 @@
           </div>
 
           <div class="field field-wide">
-            <label class="chip radio full-chip zero-chip"><input type="checkbox" id="l_zeroWork"><span>0 工確認：本日申請後實際完全無人出工，本回報單以 0 工寫入</span></label>
+            <label class="chip radio full-chip zero-chip"><input type="checkbox" id="l_zeroWork"><span>0 工確認：本日申請後<strong>完全沒有出工、也沒有加班</strong>，本回報單以 0 工寫入</span></label>
           </div>
 
           <div class="field field-num">
@@ -275,6 +275,7 @@
         <label>篩選</label>
         <input type="date" id="laborListDate">
         <select id="laborListVendor" class="report-select"><option value="">全部廠商</option></select>
+        <select id="laborListApplicant" class="report-select"><option value="">全部申請人</option></select>
         <button type="button" id="laborListClear" class="btn-mini">清除</button>
         <span id="laborListCount" class="report-count"></span>
       </div>
@@ -482,6 +483,7 @@
         <label>篩選</label>
         <input type="date" id="equipListDate">
         <select id="equipListVendor" class="report-select"><option value="">全部廠商</option></select>
+        <select id="equipListApplicant" class="report-select"><option value="">全部申請人</option></select>
         <button type="button" id="equipListClear" class="btn-mini">清除</button>
         <span id="equipListCount" class="report-count"></span>
       </div>

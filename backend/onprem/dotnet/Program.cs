@@ -357,6 +357,8 @@ static async Task<JsonObject> ReadStores(SqlConnection cn, string? onlySite)
     var eqUse = await Query(cn, $"SELECT u.* FROM dbo.equip_report_usage u JOIN dbo.equip_records r ON r.id=u.record_id JOIN dbo.sites s ON s.site_id=r.site_id{siteFilter} ORDER BY u.usage_row_id", p);
     var eqAud = await Query(cn, $"SELECT a.* FROM dbo.equip_audits a JOIN dbo.equip_records r ON r.id=a.record_id JOIN dbo.sites s ON s.site_id=r.site_id{siteFilter} ORDER BY a.audited_at", p);
     var eqAgent = await Query(cn, $"SELECT g.* FROM dbo.equip_agent_items g JOIN dbo.equip_records r ON r.id=g.record_id JOIN dbo.sites s ON s.site_id=r.site_id{siteFilter} ORDER BY g.agent_row_id", p);
+    // v24.4 月租的逐日使用紀錄（合約 §4.12）
+    var eqLog = await Query(cn, $"SELECT l.* FROM dbo.equip_usage_log l JOIN dbo.equip_records r ON r.id=l.record_id JOIN dbo.sites s ON s.site_id=r.site_id{siteFilter} ORDER BY l.use_date", p);
 
     var atts = await Query(cn, $"SELECT a.* FROM dbo.attachments a JOIN dbo.sites s ON s.site_id=a.site_id{siteFilter}", p);
     var attsByParent = atts.ToLookup(a => (string)a["parent_id"]!);
@@ -369,6 +371,7 @@ static async Task<JsonObject> ReadStores(SqlConnection cn, string? onlySite)
     var useBy = eqUse.ToLookup(u => (string)u["record_id"]!);
     var eqAudBy = eqAud.ToLookup(a => (string)a["record_id"]!);
     var eqAgentBy = eqAgent.ToLookup(g => (string)g["record_id"]!);
+    var eqLogBy = eqLog.ToLookup(l => (string)l["record_id"]!);
 
     var stores = new JsonObject();
     foreach (var s in sites)
@@ -486,6 +489,14 @@ static async Task<JsonObject> ReadStores(SqlConnection cn, string? onlySite)
                     ["rateItem"] = Str(rp["rate_item"]) ?? "",     // v22.8
                     ["rateOtItem"] = Str(rp["rate_ot_item"]) ?? "",
                     ["zeroUse"] = Bit(rp["zero_use"]),
+                    // v24.4 月租：在場天數（＝逐日紀錄筆數，供排名）與逐日使用紀錄
+                    ["onSiteDays"] = Num(rp["on_site_days"]),
+                    ["usageLog"] = new JsonArray(eqLogBy[id].Select(l => (JsonNode)new JsonObject
+                    {
+                        ["date"] = DateStr(l["use_date"]),
+                        ["note"] = Str(l["note"]) ?? "",
+                        ["hours"] = Num(l["hours"])
+                    }).ToArray()),
                     ["signReturnDate"] = DateStr(rp["sign_return_date"]) ?? "",
                     // v23 代辦逐筆（合約 §4.10）；機具綁廠商層級，故無工種欄
                     ["agentItems"] = new JsonArray(eqAgentBy[id].Select(g => (JsonNode)new JsonObject
@@ -509,6 +520,10 @@ static async Task<JsonObject> ReadStores(SqlConnection cn, string? onlySite)
                 ["requiredQty"] = Num(r["required_qty"]),
                 ["plannedHours"] = Num(r["planned_hours"]),        // v22.6，可為 null
                 ["applyNote"] = Str(r["apply_note"]) ?? "",
+                // v24.4：計費方式與租期（日租＝逐日一單；月租＝整個租期一張單）
+                ["billing"] = Str(r["billing"]) ?? "日租",
+                ["rentFrom"] = DateStr(r["rent_from"]) ?? "",
+                ["rentTo"] = DateStr(r["rent_to"]) ?? "",
                 ["contracted"] = Str(r["contracted"]) ?? "",
                 ["locations"] = JsonArrayOf(r["locations_json"]),
                 ["content"] = Str(r["content"]) ?? "",
@@ -1072,6 +1087,11 @@ static async Task DeleteRecordRows(SqlConnection cn, SqlTransaction tx, int sid,
         ? ("labor_records", "labor_reports", "labor_report_worktypes", "record_id", "labor_audits", "labor_audit", "labor_agent_items")
         : ("equip_records", "equip_reports", "equip_report_usage", "record_id", "equip_audits", "equip_audit", "equip_agent_items");
 
+    // v24.4：月租逐日紀錄的 FK 掛在 equip_reports 上、有 ON DELETE CASCADE，
+    // 這裡仍明寫一行與其他子表對齊（日後有人改 FK 時不會靜默留下孤兒列）
+    if (kind == "equipment")
+        await Exec(cn, tx, "DELETE FROM dbo.equip_usage_log WHERE record_id=@id", ("@id", id));
+
     /* ⚠ 跨工地守衛，不可省略。
        單據 id 是**全域主鍵**（DB-SCHEMA.sql：PK_labor / PK_equip 只有 id），
        而下面三張子表只以 record_id 為鍵——父表那道 site_id 條件擋得住父列，
@@ -1276,22 +1296,26 @@ static async Task InsertEquip(SqlConnection cn, SqlTransaction tx, int sid, Json
 {
     await Exec(cn, tx,
         @"INSERT INTO dbo.equip_records (id, site_id, work_date, vendor, applicant, types_json, model,
-              required_qty, planned_hours, apply_note, contracted, locations_json, content, status, v, updated_at)
-          VALUES (@id,@s,@d,@ven,@app,@ty,@mo,@rq,@ph,@an,@co,@loc,@ct,@st,@v,@u)",
+              required_qty, planned_hours, apply_note, contracted, locations_json, content, status, v, updated_at,
+              billing, rent_from, rent_to)
+          VALUES (@id,@s,@d,@ven,@app,@ty,@mo,@rq,@ph,@an,@co,@loc,@ct,@st,@v,@u,@bill,@rf,@rt)",
         ("@id", id), ("@s", sid), ("@d", Sx(r, "date")),
         // v22.6：廠商改在回報時填（工地統一叫車再配車），申請單允許沒有
         ("@ven", Sx(r, "vendor")), ("@app", Sx(r, "applicant")), ("@ty", Jx(r, "types")), ("@mo", Sx(r, "model")),
         ("@rq", D0(r, "requiredQty")), ("@ph", Dx(r, "plannedHours")), ("@an", Sx(r, "applyNote")),
         ("@co", Sx(r, "contracted")), ("@loc", Jx(r, "locations")), ("@ct", Sx(r, "content")),
-        ("@st", Sx(r, "status")), ("@v", v), ("@u", now));
+        ("@st", Sx(r, "status")), ("@v", v), ("@u", now),
+        // v24.4：billing 有 CHECK 值域，非法值一律回退「日租」而不是讓交易整筆失敗
+        ("@bill", Sx(r, "billing") is string b && b == "月租" ? "月租" : "日租"),
+        ("@rf", Sx(r, "rentFrom")), ("@rt", Sx(r, "rentTo")));
 
     if (r["report"] is not JsonObject rep) return;
     await Exec(cn, tx,
         @"INSERT INTO dbo.equip_reports (record_id, reported_at, checker, vendor, actual_hours, diff, days, ot_hours,
-              work_content, rate_item, rate_ot_item, zero_use, sign_return_date,
+              work_content, rate_item, rate_ot_item, zero_use, sign_return_date, on_site_days,
               vendor_done_work, vendor_done_hours, vendor_done_note,
               self_done_work, self_done_hours, self_done_note, legacy_self_done, legacy_vendor_done)
-          VALUES (@id,@ra,@ck,@ven,@ah,@dif,@dy,@ot,@wc,@ri,@ro,@zu,@srd,
+          VALUES (@id,@ra,@ck,@ven,@ah,@dif,@dy,@ot,@wc,@ri,@ro,@zu,@srd,@osd,
                   @vdw,@vdh,@vdn,@sdw,@sdh,@sdn,@lsd,@lvd)",
         ("@id", id), ("@ra", Sx(rep, "reportedAt")), ("@ck", Sx(rep, "checker")), ("@ven", Sx(rep, "vendor")),
         ("@ah", D0(rep, "actualHours")),
@@ -1302,6 +1326,7 @@ static async Task InsertEquip(SqlConnection cn, SqlTransaction tx, int sid, Json
         // v22.8：只存挑了哪一項，金額不落庫（合約 §4.9）——費率書會換季，金額要能回算
         ("@ri", Sx(rep, "rateItem")), ("@ro", Sx(rep, "rateOtItem")),
         ("@zu", Bx(rep, "zeroUse")), ("@srd", Sx(rep, "signReturnDate")),
+        ("@osd", Dx(rep, "onSiteDays") is decimal osd ? (int)osd : (object?)null),
         ("@vdw", Dx(rep, "vendorDoneWork")), ("@vdh", Dx(rep, "vendorDoneHours")), ("@vdn", Sx(rep, "vendorDoneNote")),
         ("@sdw", Dx(rep, "selfDoneWork")), ("@sdh", Dx(rep, "selfDoneHours")), ("@sdn", Sx(rep, "selfDoneNote")),
         ("@lsd", Sx(rep, "selfDone")), ("@lvd", Sx(rep, "vendorDone")));
@@ -1323,6 +1348,18 @@ static async Task InsertEquip(SqlConnection cn, SqlTransaction tx, int sid, Json
         await Exec(cn, tx,
             "INSERT INTO dbo.equip_agent_items (record_id, vendor, qty, note) VALUES (@id,@v,@q,@n)",
             ("@id", id), ("@v", Trunc(av, 200)), ("@q", D0(a, "qty")), ("@n", Sx(a, "note")));
+    }
+
+    /* v24.4 月租的逐日使用紀錄（合約 §4.12）。一天一筆——同日重複的略過，
+       否則會撞 UQ_equip_usage_log 讓整筆交易回滾。 */
+    var seenDays = new HashSet<string>(StringComparer.Ordinal);
+    foreach (var l in (rep["usageLog"] as JsonArray) ?? new JsonArray())
+    {
+        var ud = Sx(l, "date");
+        if (ud is null || !seenDays.Add(ud)) continue;
+        await Exec(cn, tx,
+            "INSERT INTO dbo.equip_usage_log (record_id, use_date, note, hours) VALUES (@id,@d,@n,@h)",
+            ("@id", id), ("@d", ud), ("@n", Sx(l, "note")), ("@h", Dx(l, "hours")));
     }
 }
 

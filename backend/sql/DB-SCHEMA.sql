@@ -122,7 +122,13 @@ CREATE TABLE dbo.equip_records (
     model           NVARCHAR(200) NULL,           -- 型號
     required_qty    DECIMAL(8,2) NOT NULL DEFAULT 0,  -- 需求數量（台數）
     planned_hours   DECIMAL(8,2) NULL,            -- v22.6 預定使用時數（NULL=未填，差異不計算）
-    apply_note      NVARCHAR(MAX) NULL,           -- v22.6 申請備註（包月等計價前提）
+    apply_note      NVARCHAR(MAX) NULL,
+    -- v24.4 月租：計費方式與租期。日租＝逐日一單（rent_* 為 NULL）；
+    -- 月租＝整個租期一張單，計價依租期按比例、簽單期限自 rent_to 起算
+    billing         NVARCHAR(10) NOT NULL CONSTRAINT DF_equip_billing DEFAULT N'日租'
+                    CONSTRAINT CK_equip_billing CHECK (billing IN (N'日租', N'月租')),
+    rent_from       DATE NULL,
+    rent_to         DATE NULL,           -- v22.6 申請備註（包月等計價前提）
     contracted      NVARCHAR(2) NULL CONSTRAINT CK_equip_contracted CHECK (contracted IN (N'是', N'否')),  -- 合約廠商
     locations_json  NVARCHAR(MAX) NULL,
     content         NVARCHAR(MAX) NULL,           -- 工作內容（文字，前端無字數上限）
@@ -146,7 +152,9 @@ CREATE TABLE dbo.equip_reports (
     -- v22.6：diff = actual_hours - equip_records.planned_hours；
     -- planned_hours 為 NULL 的舊單無從比較，故 diff 亦放寬為可空
     diff             DECIMAL(8,2) NULL,
-    days             DECIMAL(6,2) NOT NULL DEFAULT 0,  -- v22.6 出工天數（0.5／1／2…）
+    days             DECIMAL(6,2) NOT NULL DEFAULT 0,  -- v22.6 出工天數（0.5／1／2…）；月租單以 usage_log 筆數為準
+    -- v24.4：月租單的在場天數（＝逐日使用紀錄筆數，供廠商排名；日租為 NULL）
+    on_site_days     INT NULL,
     ot_hours         DECIMAL(6,2) NOT NULL DEFAULT 0,  -- v22.6 加班時數（單一欄，機具不分段）
     work_content     NVARCHAR(MAX) NULL,               -- v22.6 實際工作內容
     -- v22.8 行情通報：只存「挑了哪一項」，金額不落庫（計價時依出工日回查當季，合約 §4.9）
@@ -329,6 +337,21 @@ CREATE TABLE dbo.equip_agent_items (
 );
 CREATE INDEX IX_equip_agent_vendor ON dbo.equip_agent_items(vendor);
 GO
+
+/* ---------- 機具月租的逐日使用紀錄（v24.4） ----------
+   月租單整個租期只有一張，但現場每天仍要留施工軌跡（哪天吊了什麼、支援誰）。
+   這張表就是那些軌跡：**筆數＝在場天數**（供廠商排名），內容供追溯。
+   ⚠ 不影響月租的計價金額——月租依租期按比例計算，與筆數無關。 */
+CREATE TABLE dbo.equip_usage_log (
+    log_row_id  INT IDENTITY(1,1) CONSTRAINT PK_equip_usage_log PRIMARY KEY,
+    record_id   VARCHAR(64) NOT NULL CONSTRAINT FK_equip_usage_log
+                REFERENCES dbo.equip_reports(record_id) ON DELETE CASCADE,
+    use_date    DATE NOT NULL,
+    note        NVARCHAR(MAX) NULL,
+    hours       DECIMAL(6,2) NULL,          -- 選填：當日時數（不計價，僅供參考）
+    CONSTRAINT UQ_equip_usage_log UNIQUE (record_id, use_date)   -- 一天一筆
+);
+CREATE INDEX IX_equip_usage_log_record ON dbo.equip_usage_log(record_id);
 
 /* ---------- 17. 全域設定（v23.2；合約 §4.1 master.adminDepartments） ----------
    目前只放「管理員部門白名單」——讓成控自己在系統後台增減管理員部門，

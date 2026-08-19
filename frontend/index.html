@@ -162,12 +162,6 @@
             <input type="text" id="l_categoryNote" class="note-input" placeholder="其他工作內容補充（選填，簡短即可）">
           </div>
 
-          <div class="field field-wide">
-            <label>簽單掃描檔／附件（選填，最多 5 件；圖片自動壓縮、PDF 上限 4MB）</label>
-            <div id="l_attachBox" class="att-strip"></div>
-            <input type="file" id="l_attachInput" accept="image/*,application/pdf" multiple hidden>
-          </div>
-
           <div class="field field-wide actions">
             <button type="submit" class="btn-primary" id="laborApplySubmitBtn">送出點工申請</button>
             <button type="button" class="btn-ghost" id="laborApplyNewBtn" style="display:none;">＋ 新增另一筆（取消編輯）</button>
@@ -226,6 +220,12 @@
           <div class="field field-num">
             <label title="加班時數－第 3 小時起（總計）">加班·3h起</label>
             <input type="number" id="l_otOver" min="0" step="0.5" value="0">
+          </div>
+
+          <div class="field field-wide">
+            <label>簽單掃描檔／附件（選填，最多 5 件；圖片自動壓縮、PDF 上限 4MB）</label>
+            <div id="l_attachBox" class="att-strip"></div>
+            <input type="file" id="l_attachInput" accept="image/*,application/pdf" multiple hidden>
           </div>
 
           <div class="field field-date">
@@ -336,9 +336,30 @@
           </div>
           <!-- v22.6：預定使用時數。回報的實際時數要跟這個相減才有意義——
                改版前是拿「實際時數」減「需求台數」，算出來的差異沒有意義 -->
-          <div class="field field-num">
-            <label title="預定使用時數（小時）；回報時以實際使用時數與此欄比對差異">預定使用時數</label>
+          <div class="field field-num" id="e_plannedHoursField">
+            <label title="**每一台**的預定使用時數（小時）。回報時的差異＝實際總時數 −（本欄 × 到場台數）">預定使用時數（每台）</label>
             <input type="number" id="e_plannedHours" min="0" step="0.5" placeholder="例：8">
+          </div>
+
+          <div class="field field-wide">
+            <label title="日租＝逐日叫車、逐日回報；月租＝整個租期一張單，回報時逐日補使用紀錄">計費方式</label>
+            <div class="chip-group">
+              <label class="chip radio"><input type="radio" name="e_billing" value="日租" checked><span>日租（逐日叫車）</span></label>
+              <label class="chip radio"><input type="radio" name="e_billing" value="月租"><span>月租（整個租期一張單）</span></label>
+            </div>
+          </div>
+
+          <div class="field field-date" id="e_rentFromField" hidden>
+            <label title="租期起日（含）">租期起日</label>
+            <input type="date" id="e_rentFrom">
+          </div>
+          <div class="field field-date" id="e_rentToField" hidden>
+            <label title="租期迄日（含）。簽單繳回期限自本日起算，不是自出工日起算">租期迄日</label>
+            <input type="date" id="e_rentTo">
+          </div>
+          <div class="field field-wide" id="e_rentHint" hidden>
+            <p class="hint">月租單<strong>整個租期只開這一張</strong>，不必每天開單。施工紀錄改在回報頁「逐日使用紀錄」逐筆補登，
+            在場天數由筆數自動統計、供排名使用；計價則依租期按比例計算。</p>
           </div>
           <div class="field">
             <label>是否為合約廠商</label>
@@ -361,12 +382,6 @@
           <div class="field field-wide field-half">
             <label>申請備註</label>
             <textarea id="e_applyNote" rows="2" placeholder="選填：例：本台為包月機具，不逐日計費（可用 1. 起頭列點）"></textarea>
-          </div>
-
-          <div class="field field-wide">
-            <label>簽單掃描檔／附件（選填，最多 5 件；圖片自動壓縮、PDF 上限 4MB）</label>
-            <div id="e_attachBox" class="att-strip"></div>
-            <input type="file" id="e_attachInput" accept="image/*,application/pdf" multiple hidden>
           </div>
 
           <div class="field field-wide actions">
@@ -397,7 +412,21 @@
           </div>
 
           <div class="field field-wide">
-            <label class="chip radio full-chip zero-chip"><input type="checkbox" id="e_zeroUse"><span>0 使用確認：機具實際未到場／未使用，本回報單以 0 時數寫入</span></label>
+            <label class="chip radio full-chip zero-chip" id="e_zeroUseWrap"><input type="checkbox" id="e_zeroUse"><span>0 使用確認：機具實際未到場／未使用，本回報單以 0 時數寫入</span></label>
+
+          <div class="field field-wide" id="e_usageLogField" hidden>
+            <div class="field-head">
+              <label title="月租單的施工軌跡：哪一天做了什麼。在場天數由筆數自動統計，供排名使用；不影響月租計價金額">逐日使用紀錄<span class="opt">月租單專用</span></label>
+              <div class="agent-add">
+                <input type="date" id="e_logDate" class="agent-pick">
+                <input type="text" id="e_logNote" class="agent-pick" placeholder="當日做了什麼（例：吊掛鋼構至南側）" style="min-width:280px;">
+                <input type="number" id="e_logHours" class="agent-pick" min="0" step="0.5" placeholder="時數(選填)" style="max-width:120px;">
+                <button type="button" id="e_logAddBtn" class="ghost-btn">＋ 加入</button>
+              </div>
+            </div>
+            <div id="e_usageLogRows" class="attendance-box"></div>
+            <p class="hint" id="e_onSiteHint"></p>
+          </div>
           </div>
 
           <!-- v22.6：實際配到的車行於此填寫（申請時工地只是叫車，還不知道配到哪家） -->
@@ -407,7 +436,7 @@
           </div>
 
           <div class="field field-num">
-            <label title="機具實際工作使用時數（總計，可含小數）">實際使用時數</label>
+            <label title="所有到場機具的實際工作使用時數**總計**（多台時由上方逐台加總）">實際使用時數（總計）</label>
             <input type="number" id="e_actualHours" min="0" step="0.5" value="0">
           </div>
           <div class="field field-num">
@@ -423,6 +452,12 @@
           <div class="field field-num">
             <label title="加班時數（小時）；機具不分段計費">加班時數</label>
             <input type="number" id="e_otHours" min="0" step="0.5" placeholder="選填">
+          </div>
+
+          <div class="field field-wide">
+            <label>簽單掃描檔／附件（選填，最多 5 件；圖片自動壓縮、PDF 上限 4MB）</label>
+            <div id="e_attachBox" class="att-strip"></div>
+            <input type="file" id="e_attachInput" accept="image/*,application/pdf" multiple hidden>
           </div>
 
           <div class="field field-date">

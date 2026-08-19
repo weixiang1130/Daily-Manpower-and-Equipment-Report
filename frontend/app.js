@@ -383,6 +383,14 @@ function reportTimingError(workDate){
 }
 
 /* 簽單繳回日檢查：必須落在 出工日 ～ 出工日＋20 天。回傳錯誤訊息或 null */
+/* 簽單繳回期限的基準日。
+   ⚠ 月租單若沿用「出工日期」，一張 8/15–9/14 的單、簽單月結後才拿得到，
+     距起日已 30 幾天 → 會被 20 天期限直接擋下，整張單送不出去。
+     月租一律改以**租期迄日**為基準。 */
+function signBaseDate(rec){
+  return (rec && isMonthly(rec) && rec.rentTo) ? rec.rentTo : (rec ? rec.date : null);
+}
+
 function signReturnError(signDate, workDate){
   if(!signDate || !workDate) return null;
   if(signDate < workDate){
@@ -938,7 +946,6 @@ function bgRefetchVerify(kind, id, baseV, stillEditing, onGone){
 function initLaborApplyForm(){
   document.getElementById("l_date").valueAsDate = new Date(Date.now()+86400000);
   document.getElementById("laborApplyNewBtn").addEventListener("click", resetLaborApplyForm);
-  initAttBox(laborAtt, "l_attachBox", "l_attachInput");
 
   document.getElementById("laborApplyForm").addEventListener("submit", async e=>{
     e.preventDefault();
@@ -961,15 +968,6 @@ function initLaborApplyForm(){
     const store = cur();
     const existing = editingLaborApplyId ? store.labor.find(r=>r.id===editingLaborApplyId) : null;
 
-    // v14：先上傳新附件（失敗即中止、輸入保留可重試），再組單據
-    let attachments;
-    try{
-      attachments = await attUploadPending(laborAtt);
-    }catch(err){
-      toast("⚠ 附件上傳失敗，資料未送出，請檢查網路後再按一次送出");
-      return;
-    }
-
     const rec = {
       id: editingLaborApplyId || uid(),
       date, vendor, applicant, required,
@@ -977,7 +975,8 @@ function initLaborApplyForm(){
       locations: tagState.l_locations.slice(),
       categories: tagState.l_categories.slice(),
       categoryNote: document.getElementById("l_categoryNote").value.trim(),
-      attachments,
+      // v24.2：附件改由回報端維護；申請端原樣承繼，**不可覆寫成空**
+      attachments: existing ? (existing.attachments || []) : [],
       status: existing ? existing.status : "待回報",
       report: existing ? existing.report : null,
       audits: existing ? (existing.audits || []) : []
@@ -1005,7 +1004,6 @@ function initLaborApplyForm(){
       store.labor.unshift(rec);
       toast("點工申請已送出至共用資料庫，待現場回報覆核");
     }
-    attFinalize(laborAtt);   // 儲存成功後才真正刪除被移除的附件
     resetLaborApplyForm();
     collapsePanel("laborApplyPanel");   // v15：送出後收回表單，清單一目了然
     renderDashboard();
@@ -1024,7 +1022,6 @@ function resetLaborApplyForm(){
   setCombo("cb_l_applicant", "");
   setTags("l_locations", []);
   setTags("l_categories", []);
-  resetAttState(laborAtt, "l_attachBox");
   document.getElementById("laborApplyTitle").textContent = "新增點工申請";
   document.getElementById("laborApplySubmitBtn").textContent = "送出點工申請";
   document.getElementById("laborApplyNewBtn").style.display = "none";
@@ -1051,9 +1048,6 @@ async function loadLaborApplyRecord(id){
   setTags("l_locations", rec.locations);
   setTags("l_categories", rec.categories);
   document.getElementById("l_categoryNote").value = rec.categoryNote || "";
-  resetAttState(laborAtt);
-  laborAtt.existing = (rec.attachments || []).slice();
-  renderAttBox(laborAtt, "l_attachBox");
 
   document.getElementById("laborApplyTitle").textContent = `編輯點工申請：${rec.date}・${rec.vendor}`;
   document.getElementById("laborApplySubmitBtn").textContent = "儲存變更";
@@ -1095,6 +1089,10 @@ function setNumField(id, v){
 }
 
 function initLaborReportForm(){
+  /* v24.2：簽單掃描檔改掛在**回報**表單。
+     實務流程是「先申請 → 施工 → 拿到簽單 → 回報」，申請當下簽單根本還不存在，
+     放在申請頁等於要人先傳一個還沒有的檔案。 */
+  initAttBox(laborAtt, "l_attachBox", "l_attachInput");
   document.getElementById("laborReportCancelBtn").addEventListener("click", ()=>{
     resetLaborReportForm();
     collapsePanel("laborReportPanel");   // v15：取消後收回表單
@@ -1217,8 +1215,19 @@ function initLaborReportForm(){
       if(!ok) return;
     }
 
+    /* v24.2：簽單掃描檔改在回報端上傳。先傳檔（失敗即中止、輸入保留可重試），
+       成功後才把合併結果寫回單據的 attachments[] */
+    let laborAttList;
+    try{
+      laborAttList = await attUploadPending(laborAtt);
+    }catch(err){
+      toast("⚠ 附件上傳失敗，資料未送出，請檢查網路後再按一次送出");
+      return;
+    }
+
     const updated = Object.assign({}, rec, {
       status: "已回報",
+      attachments: laborAttList,
       report: {
         reportedAt: localDate(),
         engineer,
@@ -1267,6 +1276,7 @@ function initLaborReportForm(){
 
     const idx = store.labor.findIndex(r=>r.id===updated.id);
     store.labor[idx] = updated;
+    attFinalize(laborAtt);   // v24.2：儲存成功後才真正刪除被移除的附件（改隨回報送出）
     toast(zeroWork ? "已以 0 工寫入共用資料庫" : "回報已儲存至共用資料庫");
     resetLaborReportForm();
     collapsePanel("laborReportPanel");   // v15：送出後收回表單
@@ -1495,6 +1505,7 @@ function resetLaborReportForm(){
   document.getElementById("l_typeRows").innerHTML = "";
   renderAgentRows();
   document.getElementById("l_diff").value = "";
+  resetAttState(laborAtt, "l_attachBox");
   document.getElementById("laborReportContext").innerHTML = '<div class="empty-row">請從下方清單點選「填寫回報」開始</div>';
   lockSignReturnRange("l_signReturnDate", null);                 // 清掉上一張單留下的範圍
   refreshAutoGrow(document.getElementById("laborReportForm"));   // form.reset() 不觸發 input，高度要收回
@@ -1514,6 +1525,10 @@ async function loadLaborReportRecord(id){
   if(isLockedDate(rec.date)){ toast(`此單日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員修改`); renderLaborList(); return; }
   editingLaborReportId = id;
   editingLaborReportBaseV = rec.v || 0;   // v18：版本快照，送出以此為 baseV
+  // v24.2：附件改由回報端維護——載入單據上既有的，讓人可檢視/刪除/續傳
+  laborAtt.existing = (rec.attachments || []).slice();
+  laborAtt.pendingFiles = []; laborAtt.pendingDelete = [];
+  renderAttBox(laborAtt, "l_attachBox");
 
   // v11：逐工種覆核；舊單（僅逐人 attendance）帶總數手填即可
   const prevTypes = (rec.report && rec.report.workTypes) || [];
@@ -1633,10 +1648,92 @@ function renderLaborList(){
 let editingEquipApplyId = null;
 let editingEquipApplyBaseV = 0;
 
+/* ==========================================================
+   月租機具（v24.4）
+
+   為什麼要有這個：現場約 24% 的機具單是月租（吊卡/吊車/山貓水車…），
+   但系統只認「一天一單」，於是工地每天開一張、在工作內容裡手寫
+   「此單為包月吊卡計算-1、-2、-3…」自己編流水號。那個流水號就是
+   系統缺的功能。
+
+   做法：月租＝**整個租期一張單**，施工軌跡改記在回報端的「逐日使用紀錄」。
+     • 計價數量＝租期按比例（月），與日租的「天/小時」不同單位
+     • 供應量＝在場天數（逐日紀錄的筆數），排名用它才與日租可比
+   兩者刻意分開——同一個「出工天數」欄位在日租時剛好兩者相同，
+   月租一拆開就撐不住了。
+   ========================================================== */
+const BILLING_DAILY = "日租";
+const BILLING_MONTHLY = "月租";
+
+/* ⚠ 按比例的分母：目前採**日曆天 30 天**為一個月。
+   這個數字直接乘進金額，正式啟用計價前務必與合約條款核對
+   （若合約以工作天 26 天為基準，改這個常數即可）。 */
+const MONTH_PRORATA_DAYS = 30;
+
+const isMonthly = r => (r && r.billing) === BILLING_MONTHLY;
+
+/* 租期天數（含頭含尾）。缺任一端回 null——寧可不算，也不要算出一個假的數字 */
+function rentSpanDays(r){
+  if(!r || !r.rentFrom || !r.rentTo) return null;
+  const d = daysBetween(r.rentFrom, r.rentTo);
+  return d >= 0 ? d + 1 : null;
+}
+
+/* 機具的「供應量」單位（排名用）：
+   日租＝出工天數；月租＝在場天數（逐日使用紀錄的筆數）。
+   兩者都是「天」，排名才比得起來。 */
+function equipOnSiteDays(x){
+  const rep = x && x.report;
+  if(!rep) return 0;
+  if(isMonthly(x)) return (rep.usageLog || []).length;
+  return rep.days || 0;
+}
+
+/* 月租的計價月數（按比例）。跨月時**依日曆月拆開**——成本部按月計價，
+   一張 8/15–9/14 的單必須拆成 8 月 17 天、9 月 14 天，否則整筆金額
+   會壓在起日那個月，計價月份歸屬就錯了（計價紅線 2 的同源問題）。
+   回傳 [{month:"2026-08", days:17, months:0.5667}, ...] */
+function monthlyProrataParts(r){
+  const span = rentSpanDays(r);
+  if(span == null) return [];
+  const parts = [];
+  let cur = r.rentFrom;
+  while(cur <= r.rentTo){
+    const [y, m] = cur.split("-").map(Number);
+    const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();   // 該月最後一天
+    const monthEnd = `${y}-${String(m).padStart(2,"0")}-${String(lastDay).padStart(2,"0")}`;
+    const segEnd = monthEnd < r.rentTo ? monthEnd : r.rentTo;
+    const days = daysBetween(cur, segEnd) + 1;
+    parts.push({ month: cur.slice(0,7), days,
+                 months: +(days / MONTH_PRORATA_DAYS).toFixed(4) });
+    // 跳到下個月 1 日
+    const ny = m === 12 ? y + 1 : y, nm = m === 12 ? 1 : m + 1;
+    cur = `${ny}-${String(nm).padStart(2,"0")}-01`;
+  }
+  return parts;
+}
+
+function equipBillingValue(){
+  const el = document.querySelector('input[name="e_billing"]:checked');
+  return el ? el.value : BILLING_DAILY;
+}
+
+/* 月租時顯示租期、隱藏「預定使用時數」——月租沒有「每台預定幾小時」的概念，
+   留著只會讓人填一個不會被用到的數字，還會算出一個無意義的差異。 */
+function onEquipBillingToggle(){
+  const monthly = equipBillingValue() === BILLING_MONTHLY;
+  ["e_rentFromField","e_rentToField","e_rentHint"].forEach(id=>{
+    const el = document.getElementById(id); if(el) el.hidden = !monthly;
+  });
+  const ph = document.getElementById("e_plannedHoursField");
+  if(ph) ph.hidden = monthly;
+}
+
 function initEquipApplyForm(){
+  document.querySelectorAll('input[name="e_billing"]')
+    .forEach(el => el.addEventListener("change", onEquipBillingToggle));
   document.getElementById("e_date").valueAsDate = new Date(Date.now()+86400000);
   document.getElementById("equipApplyNewBtn").addEventListener("click", resetEquipApplyForm);
-  initAttBox(equipAtt, "e_attachBox", "e_attachInput");
 
   document.getElementById("equipApplyForm").addEventListener("submit", async e=>{
     e.preventDefault();
@@ -1660,17 +1757,18 @@ function initEquipApplyForm(){
     const okSite = confirm(`⚠ 工地確認\n\n本筆機具申請將寫入共用資料庫的工地：\n「${MASTER.currentSite}」\n\n${date}・${types.join("、")}・需求 ${fmt(requiredQty)} 台${plannedHours != null ? `・預定 ${fmt(plannedHours)} 小時` : ""}\n\n工地正確嗎？`);
     if(!okSite) return;
 
+    /* v24.4 月租：租期必填且迄日不得早於起日——租期是計價與簽單期限的基準，
+       缺了它整張單無從計算，寧可當下擋下也不要事後才發現。 */
+    const billing = equipBillingValue();
+    const rentFrom = document.getElementById("e_rentFrom").value;
+    const rentTo = document.getElementById("e_rentTo").value;
+    if(billing === BILLING_MONTHLY){
+      if(!rentFrom || !rentTo){ toast("月租單請填寫租期起訖日"); return; }
+      if(rentTo < rentFrom){ toast(`租期迄日（${rentTo}）早於起日（${rentFrom}），請確認`); return; }
+    }
+
     const store = cur();
     const existing = editingEquipApplyId ? store.equipment.find(r=>r.id===editingEquipApplyId) : null;
-
-    // v14：先上傳新附件（失敗即中止、輸入保留可重試），再組單據
-    let attachments;
-    try{
-      attachments = await attUploadPending(equipAtt);
-    }catch(err){
-      toast("⚠ 附件上傳失敗，資料未送出，請檢查網路後再按一次送出");
-      return;
-    }
 
     const rec = {
       id: editingEquipApplyId || uid(),
@@ -1680,12 +1778,17 @@ function initEquipApplyForm(){
       vendor: getCombo("cb_e_applyVendor"),
       model: document.getElementById("e_model").value.trim(),
       requiredQty,
-      plannedHours,
+      plannedHours: billing === BILLING_MONTHLY ? null : plannedHours,
+      // v24.4 月租：整個租期一張單
+      billing,
+      rentFrom: billing === BILLING_MONTHLY ? rentFrom : "",
+      rentTo:   billing === BILLING_MONTHLY ? rentTo   : "",
       contracted: document.querySelector('input[name="e_contract"]:checked').value,
       locations: tagState.e_locations.slice(),
       content: document.getElementById("e_content").value.trim(),
       applyNote: document.getElementById("e_applyNote").value.trim(),
-      attachments,
+      // v24.2：附件改由回報端維護；申請端原樣承繼，**不可覆寫成空**
+      attachments: existing ? (existing.attachments || []) : [],
       status: existing ? existing.status : "待回報",
       report: existing ? existing.report : null,
       audits: existing ? (existing.audits || []) : []   // v14 修復：編輯申請單不可洗掉既有稽核紀錄
@@ -1713,7 +1816,6 @@ function initEquipApplyForm(){
       store.equipment.unshift(rec);
       toast("機具申請已送出至共用資料庫，待現場回報");
     }
-    attFinalize(equipAtt);   // 儲存成功後才真正刪除被移除的附件
     resetEquipApplyForm();
     collapsePanel("equipApplyPanel");   // v15：送出後收回表單
     renderDashboard();
@@ -1723,6 +1825,8 @@ function initEquipApplyForm(){
 }
 
 function resetEquipApplyForm(){
+  const d = document.querySelector('input[name="e_billing"][value="日租"]');
+  if(d) d.checked = true;
   editingEquipApplyId = null;
   editingEquipApplyBaseV = 0;
   document.getElementById("equipApplyForm").reset();
@@ -1732,7 +1836,6 @@ function resetEquipApplyForm(){
   setCombo("cb_e_applicant", "");
   setTags("e_type", []);
   setTags("e_locations", []);
-  resetAttState(equipAtt, "e_attachBox");
   refreshAutoGrow(document.getElementById("equipApplyForm"));   // form.reset() 不觸發 input
   document.getElementById("equipApplyTitle").textContent = "新增機具申請";
   document.getElementById("equipApplySubmitBtn").textContent = "送出機具申請";
@@ -1758,6 +1861,12 @@ async function loadEquipApplyRecord(id){
   setCombo("cb_e_applicant", rec.applicant);
   setTags("e_type", rec.types);
   document.getElementById("e_model").value = rec.model || "";
+  // v24.4：還原計費方式與租期
+  const bsel = document.querySelector(`input[name="e_billing"][value="${isMonthly(rec) ? BILLING_MONTHLY : BILLING_DAILY}"]`);
+  if(bsel) bsel.checked = true;
+  document.getElementById("e_rentFrom").value = rec.rentFrom || "";
+  document.getElementById("e_rentTo").value = rec.rentTo || "";
+  onEquipBillingToggle();
   document.getElementById("e_requiredQty").value = rec.requiredQty;
   document.getElementById("e_plannedHours").value = rec.plannedHours != null ? rec.plannedHours : "";
   document.querySelector(`input[name="e_contract"][value="${rec.contracted||"是"}"]`).checked = true;
@@ -1765,8 +1874,6 @@ async function loadEquipApplyRecord(id){
   document.getElementById("e_content").value = rec.content || "";
   document.getElementById("e_applyNote").value = rec.applyNote || "";
   resetAttState(equipAtt);
-  equipAtt.existing = (rec.attachments || []).slice();
-  renderAttBox(equipAtt, "e_attachBox");
 
   // v22.6：申請單不再必有廠商，標題改用機具類型辨識
   document.getElementById("equipApplyTitle").textContent =
@@ -1790,7 +1897,90 @@ let editingEquipReportId = null;
 let editingEquipReportBaseV = 0;
 let usageState = [];
 
+let usageLogState = [];   // v24.4 月租的逐日使用紀錄 [{date, note, hours}]
+
+function renderUsageLog(){
+  const box = document.getElementById("e_usageLogRows");
+  const hint = document.getElementById("e_onSiteHint");
+  if(!box) return;
+  if(!usageLogState.length){
+    box.innerHTML = '<div class="empty-row">尚無使用紀錄——每天做完在上方加一筆即可，不必另開新單</div>';
+  }else{
+    box.innerHTML = usageLogState.map((u,i)=>`
+      <div class="att-row present">
+        <span class="tr-name">${esc(u.date)}</span>
+        <div class="att-fields">
+          <label class="ag-note">內容<input type="text" class="ulog-note" data-i="${i}" value="${esc(u.note||"")}"></label>
+          <label>時數<input type="number" class="ulog-hours" data-i="${i}" step="0.5" min="0" value="${u.hours ?? ""}" placeholder="選填"></label>
+        </div>
+        <button type="button" class="att-remove" data-i="${i}" title="移除此筆">×</button>
+      </div>`).join("");
+  }
+  if(hint){
+    const days = usageLogState.length;
+    const hrs = usageLogState.reduce((t,u)=>t+(Number(u.hours)||0),0);
+    hint.innerHTML = `<strong>在場天數 ${days} 天</strong>（由筆數自動統計，供廠商排名使用）`
+      + (hrs ? `｜累計時數 ${fmt(hrs)} 小時` : "")
+      + "。月租的計價金額依租期按比例計算，與本區筆數無關。";
+  }
+}
+
+function addUsageLogRow(){
+  if(!editingEquipReportId){ toast("請先從清單選擇要回報的紀錄"); return; }
+  const d = document.getElementById("e_logDate").value;
+  const note = document.getElementById("e_logNote").value.trim();
+  const hours = document.getElementById("e_logHours").value;
+  if(!d){ toast("請先選擇使用日期"); return; }
+  const rec = cur().equipment.find(r=>r.id===editingEquipReportId);
+  // 落在租期外的日期多半是選錯——擋下比事後對帳才發現好
+  if(rec && rec.rentFrom && rec.rentTo && (d < rec.rentFrom || d > rec.rentTo)){
+    toast(`${d} 不在租期（${rec.rentFrom} ～ ${rec.rentTo}）內`); return;
+  }
+  if(usageLogState.some(u=>u.date === d)){ toast(`${d} 已有紀錄，請直接修改該列`); return; }
+  usageLogState.push({ date: d, note, hours: hours === "" ? null : (parseFloat(hours)||0) });
+  usageLogState.sort((a,b)=> a.date.localeCompare(b.date));
+  document.getElementById("e_logNote").value = "";
+  document.getElementById("e_logHours").value = "";
+  renderUsageLog();
+}
+
+/* 月租：改用逐日紀錄，隱藏「到場覆核／0 使用確認／出工天數／差異」
+   ——那些是日租的概念，月租填了只會互相矛盾。 */
+function applyEquipBillingView(rec){
+  const monthly = isMonthly(rec);
+  const show = (id, on) => { const el = document.getElementById(id); if(el) el.hidden = !on; };
+  show("e_usageLogField", monthly);
+  const zw = document.getElementById("e_zeroUseWrap");
+  if(zw) zw.hidden = monthly;
+  const dayField = document.getElementById("e_days") && document.getElementById("e_days").closest(".field");
+  if(dayField) dayField.hidden = monthly;
+  const diffField = document.getElementById("e_diff") && document.getElementById("e_diff").closest(".field");
+  if(diffField) diffField.hidden = monthly;
+  if(monthly && rec){
+    const lg = document.getElementById("e_logDate");
+    if(lg){ lg.min = rec.rentFrom || ""; lg.max = rec.rentTo || ""; if(!lg.value) lg.value = rec.rentFrom || ""; }
+  }
+}
+
 function initEquipReportForm(){
+  document.getElementById("e_logAddBtn").addEventListener("click", addUsageLogRow);
+  const logBox = document.getElementById("e_usageLogRows");
+  logBox.addEventListener("input", e=>{
+    const i = parseInt(e.target.dataset.i,10);
+    if(Number.isNaN(i) || !usageLogState[i]) return;
+    if(e.target.classList.contains("ulog-note")) usageLogState[i].note = e.target.value;
+    if(e.target.classList.contains("ulog-hours"))
+      usageLogState[i].hours = e.target.value.trim()==="" ? null : (parseFloat(e.target.value)||0);
+  });
+  logBox.addEventListener("click", e=>{
+    const btn = e.target.closest(".att-remove");
+    if(!btn) return;
+    usageLogState.splice(parseInt(btn.dataset.i,10), 1);
+    renderUsageLog();
+  });
+
+  // v24.2：簽單掃描檔改掛在回報表單（理由同點工端）
+  initAttBox(equipAtt, "e_attachBox", "e_attachInput");
   /* v22.9.1：單台機具時「實際使用時數」直接可編輯，輸入即寫回該台。
      正式資料中一張多類型機具單都沒有，計價（時租）用的也是這個總時數而非逐台，
      所以單台情形不再要求去改那個不起眼的逐台小欄位——直接填這一格即可。 */
@@ -1824,6 +2014,7 @@ function initEquipReportForm(){
     if(!cb) return;
     const i = parseInt(cb.dataset.i,10);
     usageState[i].present = cb.checked;
+    // 到場台數變了，差異的基準（預定時數 × 台數）跟著變
     /* v22.9：勾選**不預填時數**。改版前預設 8 小時，而總計欄位是唯讀的（逐台加總），
        使用者看到的就是「一勾就鎖 8 小時」——申請 4 小時、實際只用 1 小時的單子，
        只要沒人特地去改逐台欄位就會以 8 小時進計價（時租品項直接乘上去）。
@@ -1921,7 +2112,7 @@ function initEquipReportForm(){
     // v22.7：出工日還沒到不能回報；簽單繳回日須在 出工日～出工日+20 天
     const timingErr = reportTimingError(rec.date);
     if(timingErr){ toast(timingErr); return; }
-    const signErr = signReturnError(document.getElementById("e_signReturnDate").value, rec.date);
+    const signErr = signReturnError(document.getElementById("e_signReturnDate").value, signBaseDate(rec));
     if(signErr){ toast(signErr); return; }
 
     /* v23：代辦超量是硬性擋下——代扣金額大於實際付出去的錢就是算錯帳 */
@@ -1936,8 +2127,18 @@ function initEquipReportForm(){
       if(!ok) return;
     }
 
+    // v24.2：簽單掃描檔改在回報端上傳（理由同點工端）
+    let equipAttList;
+    try{
+      equipAttList = await attUploadPending(equipAtt);
+    }catch(err){
+      toast("⚠ 附件上傳失敗，資料未送出，請檢查網路後再按一次送出");
+      return;
+    }
+
     const updated = Object.assign({}, rec, {
       status: "已回報",
+      attachments: equipAttList,
       report: {
         reportedAt: localDate(),
         checker,
@@ -1945,9 +2146,16 @@ function initEquipReportForm(){
         actualHours,
         // v22.6：差異＝實際時數 − **預定時數**。改版前是減 requiredQty（台數），
         // 等於拿時數減台數，算出來的差異沒有意義。舊單沒有預定時數 → null（不比較）
-        diff: rec.plannedHours != null ? actualHours - rec.plannedHours : null,
+        /* v24.3：差異口徑＝實際總時數 −（預定時數 × 到場台數），與畫面 updateEquipDiff 同源。
+           預定是「每台」、實際是「加總」，不乘台數會讓多台單的差異虛高。 */
+        diff: rec.plannedHours != null
+          ? actualHours - rec.plannedHours * (usageState.filter(u=>u.present).length || 0)
+          : null,
         vendor,      // 實際配到的車行；計價分組走 recVendor()
-        days,        // 出工天數（0.5／1／2…）
+        days,        // 出工天數（0.5／1／2…）；月租單改看 usageLog 的筆數
+        // v24.4 月租：逐日使用紀錄（施工軌跡）＋在場天數（排名用）
+        usageLog: isMonthly(rec) ? usageLogState.slice() : [],
+        onSiteDays: isMonthly(rec) ? usageLogState.length : null,
         otHours,     // 加班時數（單一欄，機具不分段）
         workContent: document.getElementById("e_workContent").value.trim(),
         // v22.8：只存「挑了哪一項」，不存金額——計價時依出工日回查當季費率
@@ -1986,6 +2194,7 @@ function initEquipReportForm(){
 
     const idx = store.equipment.findIndex(r=>r.id===updated.id);
     store.equipment[idx] = updated;
+    attFinalize(equipAtt);   // v24.2：儲存成功後才真正刪除被移除的附件（改隨回報送出）
     toast(zeroUse ? "已以 0 時數寫入共用資料庫" : "回報已儲存至共用資料庫");
     resetEquipReportForm();
     collapsePanel("equipReportPanel");   // v15：送出後收回表單
@@ -2063,15 +2272,29 @@ function onZeroUseToggle(){
 /* v22.6：差異＝實際使用時數 − 預定使用時數（同單位才比得出來）。
    改版前是減 requiredQty（需求台數），拿時數減台數本就無意義。
    舊單沒有 plannedHours，顯示提示而非算出一個假的數字。 */
+/* 到場台數＝逐台列裡勾選「到場」的數量。這是差異計算的關鍵——
+   實際使用時數是**各台加總**，若拿它去減「單台的預定時數」，多台時差異必然虛高。 */
+function equipPresentCount(){
+  return usageState.filter(u => u.present).length;
+}
+
 function updateEquipDiff(){
   if(!editingEquipReportId){ document.getElementById("e_diff").value = ""; return; }
   const rec = cur().equipment.find(r=>r.id===editingEquipReportId);
   if(!rec) return;
   const el = document.getElementById("e_diff");
   if(rec.plannedHours == null){ el.value = "（申請單未填預定時數）"; return; }
+  const n = equipPresentCount();
+  if(n === 0){ el.value = "（尚未勾選到場機具）"; return; }
+  /* v24.3：預定使用時數是**每台**的時數，實際使用時數是**各台加總**——
+     兩者單位不同，直接相減會讓多台單的差異虛高（申請 2 台各 8 小時、
+     實際各做 8 小時＝16 小時，舊算法會顯示差異 +8，看起來像超用一倍）。
+     改成 實際總時數 −（預定時數 × 到場台數），並把組成寫在欄位裡讓人看得見。 */
+  const expect = rec.plannedHours * n;
   const actualHours = parseFloat(document.getElementById("e_actualHours").value) || 0;
-  const diff = actualHours - rec.plannedHours;
-  el.value = diff===0 ? "0（相符）" : fmt(diff);
+  const diff = actualHours - expect;
+  const basis = `${n} 台 × ${fmt(rec.plannedHours)}h = ${fmt(expect)}h`;
+  el.value = diff === 0 ? `0（相符・${basis}）` : `${fmt(diff)}（${basis}）`;
 }
 
 /* ---- 代辦列（機具；v23，合約 §4.10） ----
@@ -2162,6 +2385,9 @@ function resetEquipReportForm(){
   document.getElementById("e_usage").innerHTML = "";
   renderEquipAgentRows();
   document.getElementById("e_diff").value = "";
+  resetAttState(equipAtt, "e_attachBox");
+  usageLogState = [];
+  renderUsageLog();
   document.getElementById("equipReportContext").innerHTML = '<div class="empty-row">請從下方清單點選「填寫回報」開始</div>';
   lockSignReturnRange("e_signReturnDate", null);                 // 清掉上一張單留下的範圍
   refreshAutoGrow(document.getElementById("equipReportForm"));   // form.reset() 不觸發 input，高度要收回
@@ -2180,7 +2406,16 @@ async function loadEquipReportRecord(id){
   if(!rec){ toast("此紀錄已被其他人刪除"); renderAll(); return; }
   if(isLockedDate(rec.date)){ toast(`此單日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員修改`); renderEquipList(); return; }
   editingEquipReportId = id;
-  editingEquipReportBaseV = rec.v || 0;   // v18：版本快照，送出以此為 baseV
+  editingEquipReportBaseV = rec.v || 0;
+  // v24.2：附件改由回報端維護（理由同點工端）
+  equipAtt.existing = (rec.attachments || []).slice();
+  equipAtt.pendingFiles = []; equipAtt.pendingDelete = [];
+  renderAttBox(equipAtt, "e_attachBox");
+  // v24.4 月租：載入逐日使用紀錄並切換版面
+  usageLogState = ((rec.report && rec.report.usageLog) || [])
+    .map(u=>({ date:u.date, note:u.note||"", hours: u.hours ?? null }));
+  applyEquipBillingView(rec);
+  renderUsageLog();
 
   const prev = (rec.report && rec.report.usage) || [];
   usageState = (rec.types||[]).map(type=>{
@@ -2202,7 +2437,7 @@ async function loadEquipReportRecord(id){
   document.getElementById("e_actualHours").value = rep.actualHours != null ? rep.actualHours : "";
   updateEquipDiff();
   document.getElementById("e_signReturnDate").value = rep.signReturnDate || "";
-  lockSignReturnRange("e_signReturnDate", rec.date);   // v22.7：選擇器直接限制在可採計範圍內
+  lockSignReturnRange("e_signReturnDate", signBaseDate(rec));   // v22.7 選擇器限範圍；v24.4 月租以租期迄日為基準
   setCombo("cb_e_checker", rep.checker || "");
   // v22.6：回報廠商——舊單的廠商在申請層，用 recVendor() 帶出來讓人接著編輯
   setCombo("cb_e_vendor", recVendor(rec));
@@ -3643,14 +3878,21 @@ function buildVendorRanking(kind){
   recs.forEach(r=>{
     const v = recVendor(r) || "（未填廠商）";
     const e = g.get(v) || { vendor: v, count: 0, work: 0, ot2: 0, otOver: 0, days: 0, ot: 0,
-                            agWork: 0, agOt: 0, amount: 0, noRate: 0 };
+                            agWork: 0, agOt: 0, amount: 0, noRate: 0,
+                            monthUnits: 0, monthlyCount: 0 };
     e.count++;
     if(kind === "labor"){
       // 逐工種展開與加班歸段一律走 reportTypeRows（口徑唯一權威，v21.3）
       reportTypeRows(r).forEach(t=>{ e.work += t.work; e.ot2 += t.ot2; e.otOver += t.otOver; });
     }else{
-      e.days += r.report.days || 0;
+      /* v24.4：供應量一律用「在場天數」——日租＝出工天數、月租＝逐日紀錄筆數。
+         兩者同為「天」才比得起來；月租的成本單位（台·月）另外累計，不混進天數。 */
+      e.days += equipOnSiteDays(r);
       e.ot += r.report.otHours || 0;
+      if(isMonthly(r)){
+        e.monthUnits += monthlyProrataParts(r).reduce((t,p)=>t+p.months, 0);
+        e.monthlyCount++;
+      }
     }
     /* v24 代辦扣工：這些工是向本單廠商叫的，但成本歸屬另一家，
        因此要從本單廠商的排名扣回。**扣的量與原始量分欄並存**——
@@ -3692,7 +3934,7 @@ function buildAgentDeductionSummary(){
 /* 兩張排行榜的金額欄跟著 PRICING_UI 走；代辦扣抵那張**刻意保留金額**（見 PRICING_UI 說明） */
 const VRANK_LABOR_COLS = ["排名","廠商","已回報單數","本工","加班前2h","加班2h後","總工數","代辦扣工","淨工數",
   ...(PRICING_UI ? ["計價金額","未能計價單數"] : [])];
-const VRANK_EQUIP_COLS = ["排名","廠商","已回報單數","出工天數","加班時數","代辦扣抵","淨出工天數",
+const VRANK_EQUIP_COLS = ["排名","廠商","已回報單數","在場天數","月租(台·月)","加班時數","代辦扣抵","淨在場天數",
   ...(PRICING_UI ? ["計價金額","未能計價單數"] : [])];
 const VRANK_DED_COLS   = ["責任歸屬廠商","代辦列數","代扣金額","未能計價列數","未能計價原因"];
 
@@ -3701,6 +3943,7 @@ const vrankLaborRow = (e,i) => [i+1, e.vendor, e.count, fmtRank(e.work),
   e.agUnits ? "-" + fmtRank(e.agUnits) : "", fmtRank(e.netUnits),
   ...(PRICING_UI ? [e.amount, e.noRate || ""] : [])];
 const vrankEquipRow = (e,i) => [i+1, e.vendor, e.count, fmtRank(e.days),
+  e.monthUnits ? fmtRank(e.monthUnits) : "",
   e.ot ? fmtRank(e.ot) : "", e.agUnits ? "-" + fmtRank(e.agUnits) : "", fmtRank(e.netUnits),
   ...(PRICING_UI ? [e.amount, e.noRate || ""] : [])];
 const vrankDedRow = e => [e.vendor, e.rows, e.amount, e.noRate || "", [...e.whys].join("；")];
@@ -3781,7 +4024,9 @@ function renderVendorRankReport(){
       + (PRICING_UI ? "「未能計價單數」為查無費率的單——那些單的金額<strong>不含</strong>在計價金額裡，不是 0 元。" : ""))
     + chartOf(eq, " 天", "機具廠商排名")
     + vrankTableHTML(`機具廠商排名（${period}・依淨出工天數）`, VRANK_EQUIP_COLS, eq.map(vrankEquipRow),
-      "機具不與點工併榜——出工天數與工數是不同單位，相加沒有意義。淨出工天數＝出工天數－代辦扣抵。")
+      "機具不與點工併榜——出工天數與工數是不同單位，相加沒有意義。淨在場天數＝在場天數－代辦扣抵。"
+      + "<strong>在場天數</strong>：日租＝出工天數、月租＝逐日使用紀錄的筆數，同為「天」才可比；"
+      + "<strong>月租(台·月)</strong>是月租的成本單位（租期按比例），刻意不與天數相加。")
     + vrankTableHTML(`代辦扣抵彙總（${period}・依責任歸屬廠商）`, VRANK_DED_COLS, ded.map(vrankDedRow),
       "代辦＝向本單廠商叫的工／機具但成本歸屬另一家，計價時從該廠商扣回。"
       + "金額依<strong>本單廠商</strong>的當季費率自動計算（合約 §4.10）。");
@@ -3795,7 +4040,7 @@ function exportVendorRankXls(){
   const period = reportPeriodLabel();
   downloadCSVBlocks([
     { title: `點工廠商排名（${period}・依淨工數＝總工數－代辦扣工）`, headers: VRANK_LABOR_COLS, rows: lab.map(vrankLaborRow) },
-    { title: `機具廠商排名（${period}・依出工天數）`, headers: VRANK_EQUIP_COLS, rows: eq.map(vrankEquipRow) },
+    { title: `機具廠商排名（${period}・依在場天數）`, headers: VRANK_EQUIP_COLS, rows: eq.map(vrankEquipRow) },
     { title: `代辦扣抵彙總（${period}・依責任歸屬廠商）`, headers: VRANK_DED_COLS, rows: ded.map(vrankDedRow) }
   ], `廠商排名_${MASTER.currentSite}${exportFilterTag()}.csv`);
 }

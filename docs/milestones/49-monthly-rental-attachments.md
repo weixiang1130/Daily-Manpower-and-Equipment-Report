@@ -145,3 +145,50 @@ console 零錯誤。所有測試以攔截 `api()` 或拋棄式資料庫進行，
 
 實載掃描：代辦扣抵欄位只剩「責任歸屬廠商／代辦列數」；點工／機具明細與計價彙總
 的表頭**零計價相關欄位**；設定頁費率面板與機具計價品項下拉皆為 `display:none`。
+
+---
+
+## 補強 — 交付前 code review 九項修正
+
+節點 49 上線後做了一次 XHIGH code review，抓到九項，全部修畢。其中兩項會直接壞事：
+
+### 🔴 1. 地端 API 讀月租單就整站 500
+
+`on_site_days` 是 `INT`，卻用 `Num()` 讀——`Num()` 走 `(decimal)v` 的**拆箱轉換**，
+拆箱要求型別完全相符，boxed `int` 會丟 `InvalidCastException`。
+
+後果不是「那一筆壞掉」，而是**只要資料庫裡有任何一張月租單，`scope=all` 就回 500、
+全站載不進來**。本檔其他 INT 欄（`v`、`size_bytes`）一律用 `Convert.ToInt32`，
+這裡是漏網。已改為 `Convert.ToInt32` ＋ null/DBNull 守衛。
+
+### 🔴 2. 跨工地隔離破口
+
+新增的 `DELETE FROM dbo.equip_usage_log` 被放在**跨工地守衛之前**，而其他子表的
+刪除全部在守衛之後——那道守衛存在的理由正是「單據 id 是全域主鍵，子表只認
+record_id」。
+
+後果：只有 A 站權限的人，帶著 B 站月租單的 id 呼叫 `op:deleteRecord`，
+守衛會擋下父列，但**B 站的逐日使用紀錄已經在上面被刪光**，交易照常提交、不報錯。
+已移到守衛之後。
+
+### 其餘七項
+
+| # | 問題 | 修正 |
+|---|---|---|
+| 3 | `loadEquipApplyRecord` 殘留 `resetAttState(equipAtt)`——附件已改由回報端維護，這行會把使用者正開著的回報表單附件清空，送出即以 `attachments:[]` 覆寫、**簽單掃描檔無聲消失**（點工端已移除，機具端漏掉） | 移除並註明理由 |
+| 4 | 逐日紀錄的文字框在 `<form>` 內且無 Enter 防護——打完當日內容按 Enter 會**提前送出整張回報** | 新增 `bindEnterToAdd()`，一併套用到兩處代辦輸入 |
+| 5 | 月租單每次送出都跳「有實際使用時數，但出工天數為 0」——該欄在月租是隱藏的，必然為 0 | `collectEquipWarnings` 加 `monthly` 參數跳過；訊息也不再提計價 |
+| 6 | `resetEquipReportForm` 沒還原月租隱藏的欄位 | 補 `applyEquipBillingView(null)` |
+| 7 | 附件在儲存前上傳，409／失敗時留下孤兒檔案 | 新增 `attRollbackUploaded()`，兩端失敗路徑都收回 |
+| 8 | 月租提示仍寫「計價依租期按比例計算」（計價已下架） | 文案收斂 |
+| 9 | `equipOnSiteDays` 只看 `usageLog.length`，不採用已存的 `onSiteDays` | 改為優先採用已存值、缺漏才回退筆數 |
+
+### 驗證
+
+- 地端 .NET 建置 0 警告 0 錯誤
+- **升級腳本在含 1,900 筆真實資料的 `KG_AUDIT_STAGING` 實跑**：17→18 表、驗收 5 列全 OK
+- 升級後 `GET /api/data?scope=all` 由 **500 恢復 200**——同時證明第 1 項確實修好
+- `DeleteRecordRows` 逐行確認：守衛在前、逐日紀錄刪除在後
+- 瀏覽器實測：開回報載入 1 個附件 → 編輯申請單 → **仍為 1（保住）**；
+  Enter 於逐日紀錄欄位**不再觸發表單送出**；月租無警告而日租仍提醒；
+  `onSiteDays=7` 取 7、僅 `usageLog` 三筆取 3、日租取 `days`

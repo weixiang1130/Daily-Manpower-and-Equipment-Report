@@ -1156,6 +1156,7 @@ function initLaborReportForm(){
     renderAgentRows();
   });
   document.getElementById("l_agentAddBtn").addEventListener("click", addAgentRow);
+  bindEnterToAdd(["l_agentVendor"], addAgentRow);
 
   document.getElementById("laborReportForm").addEventListener("submit", async e=>{
     e.preventDefault();
@@ -1264,6 +1265,9 @@ function initLaborReportForm(){
       const resp = await apiSaveRecord("labor", updated, editingLaborReportBaseV);   // v18：以開表單快照為 baseV（合約 §3.3）
       updated.v = resp.v; updated.updatedAt = resp.updatedAt;
     }catch(err){
+      /* 附件是在儲存之前上傳的，這裡儲存沒成功＝那些檔案沒有任何單據引用它，
+         不收回就會變成永遠留在儲存空間的孤兒（切換日實測抓到過 3 個）。 */
+      await attRollbackUploaded(laborAtt, laborAttList, rec.attachments);
       if(err.status === 409){
         toast("⚠ 此單剛被其他人修改或刪除，您的回報未儲存；已重新載入最新內容，請重新填寫");
         await refetchSite(MASTER.currentSite).catch(()=>{});
@@ -1685,8 +1689,12 @@ function rentSpanDays(r){
 function equipOnSiteDays(x){
   const rep = x && x.report;
   if(!rep) return 0;
-  if(isMonthly(x)) return (rep.usageLog || []).length;
-  return rep.days || 0;
+  if(!isMonthly(x)) return rep.days || 0;
+  /* 月租：以**已存的 onSiteDays** 為準，缺漏才回退成逐日紀錄的筆數。
+     兩者送出時同源，但若後端回傳被裁過（只給 onSiteDays 沒給 usageLog），
+     只看筆數會讓該廠商的在場天數整個掉成 0。 */
+  if(rep.onSiteDays != null) return Number(rep.onSiteDays) || 0;
+  return (rep.usageLog || []).length;
 }
 
 /* 月租的計價月數（按比例）。跨月時**依日曆月拆開**——成本部按月計價，
@@ -1873,7 +1881,9 @@ async function loadEquipApplyRecord(id){
   setTags("e_locations", rec.locations);
   document.getElementById("e_content").value = rec.content || "";
   document.getElementById("e_applyNote").value = rec.applyNote || "";
-  resetAttState(equipAtt);
+  /* v24.2 起附件由**回報端**維護，equipAtt 是回報表單的狀態。
+     這裡若再 resetAttState(equipAtt)，會把使用者正開著的回報表單附件清空，
+     接著送出就以 attachments:[] 覆寫、簽單掃描檔無聲消失。點工端同理，已一併移除。 */
 
   // v22.6：申請單不再必有廠商，標題改用機具類型辨識
   document.getElementById("equipApplyTitle").textContent =
@@ -1921,7 +1931,7 @@ function renderUsageLog(){
     const hrs = usageLogState.reduce((t,u)=>t+(Number(u.hours)||0),0);
     hint.innerHTML = `<strong>在場天數 ${days} 天</strong>（由筆數自動統計，供廠商排名使用）`
       + (hrs ? `｜累計時數 ${fmt(hrs)} 小時` : "")
-      + "。月租依租期計算，與本區筆數無關（本區只記施工軌跡與在場天數）。";
+      + "。本區只記施工軌跡與在場天數。";
   }
 }
 
@@ -1962,8 +1972,25 @@ function applyEquipBillingView(rec){
   }
 }
 
+/* 「＋ 加入」型的輸入框（逐日紀錄、代辦）都在 <form> 內，瀏覽器的隱含送出會把
+   Enter 當成整張表單送出——使用者打完當日內容按 Enter，等於把整張回報提前送掉。
+   改成 Enter＝執行該區塊的「加入」動作。 */
+function bindEnterToAdd(inputIds, addFn){
+  inputIds.forEach(id=>{
+    const el = document.getElementById(id);
+    if(!el) return;
+    el.addEventListener("keydown", e=>{
+      if(e.key !== "Enter") return;
+      e.preventDefault();      // 擋掉表單的隱含送出
+      addFn();
+    });
+  });
+}
+
 function initEquipReportForm(){
   document.getElementById("e_logAddBtn").addEventListener("click", addUsageLogRow);
+  bindEnterToAdd(["e_logDate","e_logNote","e_logHours"], addUsageLogRow);
+  bindEnterToAdd(["e_agentVendor"], addEquipAgentRow);
   const logBox = document.getElementById("e_usageLogRows");
   logBox.addEventListener("input", e=>{
     const i = parseInt(e.target.dataset.i,10);
@@ -2121,7 +2148,7 @@ function initEquipReportForm(){
       if(agentErrs.length){ toast("代辦資料有誤，未送出：\n- " + agentErrs.join("\n- ")); return; }
     }
 
-    const warnings = collectEquipWarnings(usageState, actualHours, zeroUse, days, otHours);
+    const warnings = collectEquipWarnings(usageState, actualHours, zeroUse, days, otHours, isMonthly(rec));
     if(warnings.length){
       const ok = confirm("⚠ 系統偵測到以下數據配置異常，請確認是否輸入錯誤：\n\n- " + warnings.join("\n- ") + "\n\n確認無誤仍要送出嗎？");
       if(!ok) return;
@@ -2182,6 +2209,8 @@ function initEquipReportForm(){
       const resp = await apiSaveRecord("equipment", updated, editingEquipReportBaseV);   // v18：同上
       updated.v = resp.v; updated.updatedAt = resp.updatedAt;
     }catch(err){
+      // 同點工端：儲存沒成功就把剛上傳的附件收回，不留孤兒檔案
+      await attRollbackUploaded(equipAtt, equipAttList, rec.attachments);
       if(err.status === 409){
         toast("⚠ 此單剛被其他人修改或刪除，您的回報未儲存；已重新載入最新內容，請重新填寫");
         await refetchSite(MASTER.currentSite).catch(()=>{});
@@ -2204,16 +2233,20 @@ function initEquipReportForm(){
   resetEquipReportForm();
 }
 
-function collectEquipWarnings(usage, actualHours, zeroUse, days, otHours){
+function collectEquipWarnings(usage, actualHours, zeroUse, days, otHours, monthly){
   const w = [];
   if(zeroUse) return w;
   usage.filter(u=>u.present).forEach(u=>{
     if(!(u.hours > 0)) w.push(`${u.type}：已勾選到場，但實際使用時數為 0`);
     if(u.hours > 12) w.push(`${u.type}：單日使用 ${fmt(u.hours)} 小時，高於常態`);
   });
-  // v22.6：出工天數與加班時數直接進計價，異常值要在送出前攔一次
-  if(days === 0 && actualHours > 0) w.push("有實際使用時數，但出工天數為 0（計價會抓不到本張單的日數）");
-  if(days > 3) w.push(`出工天數 ${fmt(days)} 天，高於常態（單張申請通常為單日）`);
+  /* v22.6：出工天數異常值要在送出前攔一次。
+     ⚠ 月租單的出工天數欄位是隱藏的（改用逐日使用紀錄算在場天數），必然為 0——
+       對它示警等於每次送出都跳一個與本計費方式無關的訊息。 */
+  if(!monthly){
+    if(days === 0 && actualHours > 0) w.push("有實際使用時數，但出工天數為 0（本張單的日數會抓不到）");
+    if(days > 3) w.push(`出工天數 ${fmt(days)} 天，高於常態（單張申請通常為單日）`);
+  }
   if(otHours > 12) w.push(`加班時數 ${fmt(otHours)} 小時，高於常態`);
   return w;
 }
@@ -2388,6 +2421,7 @@ function resetEquipReportForm(){
   resetAttState(equipAtt, "e_attachBox");
   usageLogState = [];
   renderUsageLog();
+  applyEquipBillingView(null);   // 還原月租隱藏的欄位，否則下次展開會看到缺欄
   document.getElementById("equipReportContext").innerHTML = '<div class="empty-row">請從下方清單點選「填寫回報」開始</div>';
   lockSignReturnRange("e_signReturnDate", null);                 // 清掉上一張單留下的範圍
   refreshAutoGrow(document.getElementById("equipReportForm"));   // form.reset() 不觸發 input，高度要收回
@@ -4683,6 +4717,21 @@ function attFinalize(st){
   st.pendingDelete.forEach(id => {
     api("POST", { op: "deleteAttachment", site: MASTER.currentSite, id }).catch(() => {});
   });
+}
+
+/* 儲存失敗時把「這次剛上傳的」附件從儲存空間收回。
+   判斷方式：出現在送出清單、但不在單據原有清單裡的，就是這一輪新傳的。
+   刪不掉不擋流程（使用者的重點是資料沒存成功），失敗僅忽略。 */
+async function attRollbackUploaded(st, sentList, beforeList){
+  const before = new Set((beforeList || []).map(a => a && a.id).filter(Boolean));
+  const fresh = (sentList || []).filter(a => a && a.id && !before.has(a.id));
+  for(const a of fresh){
+    try{ await api("POST", { op: "deleteAttachment", site: MASTER.currentSite, id: a.id }); }
+    catch(e){ /* 收不回就算了，不能因此擋住錯誤提示 */ }
+  }
+  // 清單回到單據原本的狀態，避免使用者再按一次送出時重複計入
+  st.existing = (beforeList || []).slice();
+  st.pendingDelete = [];
 }
 
 function resetAttState(st, boxId){

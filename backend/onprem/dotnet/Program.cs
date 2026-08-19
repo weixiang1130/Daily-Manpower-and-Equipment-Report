@@ -490,7 +490,12 @@ static async Task<JsonObject> ReadStores(SqlConnection cn, string? onlySite)
                     ["rateOtItem"] = Str(rp["rate_ot_item"]) ?? "",
                     ["zeroUse"] = Bit(rp["zero_use"]),
                     // v24.4 月租：在場天數（＝逐日紀錄筆數，供排名）與逐日使用紀錄
-                    ["onSiteDays"] = Num(rp["on_site_days"]),
+                    /* ⚠ on_site_days 是 INT，**不可用 Num()**——Num 走 (decimal)v 的拆箱轉換，
+                       拆箱要求型別完全相符，boxed int 會丟 InvalidCastException，
+                       於是任何一張月租單都會讓整個 scope=all 回 500、全站載不進來。
+                       本檔其他 INT 欄（v、size_bytes）一律用 Convert.ToInt32。 */
+                    ["onSiteDays"] = rp["on_site_days"] is null or DBNull
+                        ? null : JsonValue.Create(Convert.ToInt32(rp["on_site_days"])),
                     ["usageLog"] = new JsonArray(eqLogBy[id].Select(l => (JsonNode)new JsonObject
                     {
                         ["date"] = DateStr(l["use_date"]),
@@ -1087,11 +1092,6 @@ static async Task DeleteRecordRows(SqlConnection cn, SqlTransaction tx, int sid,
         ? ("labor_records", "labor_reports", "labor_report_worktypes", "record_id", "labor_audits", "labor_audit", "labor_agent_items")
         : ("equip_records", "equip_reports", "equip_report_usage", "record_id", "equip_audits", "equip_audit", "equip_agent_items");
 
-    // v24.4：月租逐日紀錄的 FK 掛在 equip_reports 上、有 ON DELETE CASCADE，
-    // 這裡仍明寫一行與其他子表對齊（日後有人改 FK 時不會靜默留下孤兒列）
-    if (kind == "equipment")
-        await Exec(cn, tx, "DELETE FROM dbo.equip_usage_log WHERE record_id=@id", ("@id", id));
-
     /* ⚠ 跨工地守衛，不可省略。
        單據 id 是**全域主鍵**（DB-SCHEMA.sql：PK_labor / PK_equip 只有 id），
        而下面三張子表只以 record_id 為鍵——父表那道 site_id 條件擋得住父列，
@@ -1113,6 +1113,12 @@ static async Task DeleteRecordRows(SqlConnection cn, SqlTransaction tx, int sid,
     // v23 代辦列：FK 掛在 *_reports 上、有 ON DELETE CASCADE，刪 repT 本來就會連動，
     // 這裡仍明寫一行與其他子表對齊——日後有人改動 FK 時不會靜默留下孤兒列
     await Exec(cn, tx, $"DELETE FROM dbo.{agentT} WHERE record_id=@id", ("@id", id));
+    /* v24.4 月租逐日紀錄：FK 掛在 equip_reports 上、有 ON DELETE CASCADE，
+       這裡明寫一行與其他子表對齊。
+       ⚠ **必須放在上面那道跨工地守衛之後**——單據 id 是全域主鍵，放在守衛之前
+         等於帶著別站的 id 就能刪掉別站的逐日紀錄，而且交易照常提交、不報錯。 */
+    if (kind == "equipment")
+        await Exec(cn, tx, "DELETE FROM dbo.equip_usage_log WHERE record_id=@id", ("@id", id));
     await Exec(cn, tx, $"DELETE FROM dbo.{repT} WHERE record_id=@id", ("@id", id));
     await Exec(cn, tx, $"DELETE FROM dbo.{recT} WHERE id=@id AND site_id=@s", ("@id", id), ("@s", sid));
 }

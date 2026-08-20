@@ -416,12 +416,16 @@
 
           <div class="field field-wide" id="e_usageLogField" hidden>
             <div class="field-head">
-              <label title="月租單的施工軌跡：哪一天做了什麼。在場天數由筆數自動統計，供排名使用">逐日使用紀錄<span class="opt">月租單專用</span></label>
-              <div class="agent-add">
+              <label title="月租單的施工軌跡：哪一天、誰簽認、做了什麼。在場天數由筆數自動統計，供排名使用">逐日使用紀錄<span class="opt">月租單專用・當日內容填這裡</span></label>
+              <div class="agent-add ulog-add">
                 <input type="date" id="e_logDate" class="agent-pick">
-                <input type="text" id="e_logNote" class="agent-pick" placeholder="當日做了什麼（例：吊掛鋼構至南側）" style="min-width:280px;">
-                <input type="number" id="e_logHours" class="agent-pick" min="0" step="0.5" placeholder="時數(選填)" style="max-width:120px;">
+                <input type="number" id="e_logHours" class="agent-pick ulog-h" min="0" step="0.5" placeholder="時數(選填)">
+                <input type="text" id="e_logSigner" class="agent-pick ulog-signer" list="e_logSignerList"
+                       placeholder="當日簽認工程師（選填）">
+                <datalist id="e_logSignerList"></datalist>
                 <button type="button" id="e_logAddBtn" class="ghost-btn">＋ 加入</button>
+                <input type="text" id="e_logNote" class="ulog-note-in"
+                       placeholder="當日做了什麼（例：吊掛鋼構至南側、支援翔博吊運）——打完按 Enter 直接加入">
               </div>
             </div>
             <div id="e_usageLogRows" class="attendance-box"></div>
@@ -467,6 +471,7 @@
           <div class="field">
             <label>簽單責任工程師</label>
             <div class="combobox" id="cb_e_checker"></div>
+            <small class="field-note" id="e_checkerHint"></small>
           </div>
 
           <!-- v23：代辦改逐筆列（合約 §4.10）。機具只綁到廠商層級，
@@ -701,8 +706,27 @@
           <label>出工工種清單（點工回報覆核用，例：粗工／技術工／打石工）</label>
           <textarea id="cfg_laborTypes" rows="4"></textarea>
         </div>
+        <!-- 鎖檔（v24.7）：結算後把指定出工日期區間凍結。可預約生效時刻、可隨時開關。 -->
         <div class="field field-wide">
-          <label>計價鎖定日期（此日期「含」以前的單據，非管理員不可新增/修改/刪除；留空＝不鎖定）</label>
+          <div class="field-head">
+            <label title="鎖檔＝把指定「出工日期」區間的單據凍結：非管理員不可申請、回報、修改或刪除。可預約生效時刻（到點才鎖，讓工地在期限前補完單），也可隨時停用解鎖。各工地獨立設定。">鎖檔區間<span class="opt">管理員限定・結算後凍結資料</span></label>
+            <div class="agent-add lock-add">
+              <input type="date" id="lk_from" class="agent-pick" title="鎖定起日（出工日期，含）">
+              <span class="lk-sep">～</span>
+              <input type="date" id="lk_to" class="agent-pick" title="鎖定迄日（出工日期，含）">
+              <input type="datetime-local" id="lk_eff" class="agent-pick" title="生效時刻；留空＝儲存後立即生效">
+              <input type="text" id="lk_note" class="agent-pick lk-note-in" placeholder="說明（例：8月結算）">
+              <button type="button" id="lk_addBtn" class="ghost-btn">＋ 加入</button>
+            </div>
+          </div>
+          <div id="lockRangeRows" class="attendance-box"></div>
+          <p class="hint" id="lockRangeHint" style="margin:6px 0 0;"></p>
+          <div class="lock-actions">
+            <button type="button" id="lk_applyAllBtn" class="btn-ghost">套用到全部工地</button>
+          </div>
+        </div>
+        <div class="field field-wide" id="legacyLockField" hidden>
+          <label>舊版單一鎖定日（此日期「含」以前全部鎖定。已由上方「鎖檔區間」取代，清空即停用）</label>
           <input type="date" id="cfg_lockDate" style="max-width:220px;">
         </div>
         <div class="field field-wide actions">

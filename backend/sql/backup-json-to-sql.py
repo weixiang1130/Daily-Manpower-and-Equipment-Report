@@ -27,6 +27,15 @@
 import json
 import re
 import sys
+
+# 中文版 Windows 的主控台預設是 cp950，編不出「⚠」這類符號——
+# 最後一行摘要會丟 UnicodeEncodeError 並以非零結束碼收場，
+# 檔案其實早就寫好了，卻看起來像匯出失敗。改成 UTF-8 輸出並容錯。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 from datetime import datetime, timezone
 
 if len(sys.argv) != 3:
@@ -48,12 +57,26 @@ STATUSES = ("待回報", "已回報")
 
 out = []
 skipped = {"id": 0, "date": 0, "status": 0, "type": 0, "option_dup": 0, "audit": 0,
-           "attachment": 0, "agent": 0}
+           "attachment": 0, "agent": 0, "usage_log": 0}
 counts = {"sites": 0, "site_options": 0, "labor_records": 0, "labor_reports": 0,
           "labor_report_worktypes": 0, "equip_records": 0, "equip_reports": 0,
           "equip_report_usage": 0, "labor_audits": 0, "equip_audits": 0,
           "attachments": 0, "site_rate_bindings": 0,
-          "labor_agent_items": 0, "equip_agent_items": 0, "app_settings": 0}
+          "labor_agent_items": 0, "equip_agent_items": 0, "app_settings": 0,
+          "equip_usage_log": 0, "site_lock_ranges": 0}
+
+
+def dt_sec(v):
+    """datetime-local 字串 → SQL Server 收得下的形狀。
+
+    前端 <input type="datetime-local"> 送出的是 "YYYY-MM-DDTHH:MM"（**沒有秒**），
+    SQL Server 轉 DATETIME2 時這個形狀會直接丟
+    「Conversion failed when converting date and/or time from character string」，
+    而且因為 SET XACT_ABORT ON，整包匯入會回滾——ISO 8601 的 T 格式必須帶到秒。
+    """
+    if not v:
+        return None
+    return v + ":00" if len(v) == 16 and v[10] == "T" else v
 
 
 def q(s):
@@ -212,6 +235,18 @@ for i, site in enumerate(master_sites + orphan_sites):
     out.append(f"INSERT INTO dbo.sites (name, lock_date, sort_order, is_active) "
                f"VALUES ({q(site)}, {lock}, {i}, {active});")
     counts["sites"] += 1
+    # v24.7 鎖檔區間（合約 §4.2）。兩側日期全空＝鎖住所有日期，視為漏填而略過。
+    for lr in cfg.get("lockRanges") or []:
+        if not lr or (not lr.get("from") and not lr.get("to")):
+            continue
+        out.append(
+            "INSERT INTO dbo.site_lock_ranges (site_id, client_id, date_from, date_to, "
+            "effective_at, is_enabled, note) VALUES ("
+            f"{site_ref(site)}, {q(lr.get('id') or None)}, {q(lr.get('from') or None)}, "
+            f"{q(lr.get('to') or None)}, {q(dt_sec(lr.get('effectiveAt')))}, "
+            f"{bit(lr.get('enabled') is not False)}, {q(lr.get('note') or None)});"
+        )
+        counts["site_lock_ranges"] += 1
 
 # ---------- app_settings：master.adminDepartments（v23.2；合約 §4.1） ----------
 # 值存 JSON 字串（與合約的陣列形狀一致）；未設定就整筆不寫，
@@ -328,7 +363,7 @@ for site, store in (data["stores"] or {}).items():
         out.append(
             "INSERT INTO dbo.equip_records (id, site_id, work_date, vendor, applicant, "
             "types_json, model, required_qty, planned_hours, apply_note, contracted, "
-            "locations_json, content, "
+            "locations_json, content, billing, rent_from, rent_to, "
             "status, v, updated_at) VALUES ("
             # v22.6：vendor 允許 NULL（新單的廠商在 equip_reports）
             f"{q(r['id'])}, {site_ref(site)}, {q(r['date'])}, {q(r.get('vendor') or None)}, "
@@ -336,6 +371,9 @@ for site, store in (data["stores"] or {}).items():
             f"{num(r.get('requiredQty'), '0')}, {num(r.get('plannedHours'))}, "
             f"{q(r.get('applyNote') or None)}, {q(r.get('contracted') or None)}, "
             f"{qj(r.get('locations'))}, {q(r.get('content') or None)}, "
+            # v24.4 月租（合約 §4.12）：舊單沒有 billing 鍵——**必須補成「日租」**，
+            # 送 NULL 會撞 NOT NULL 讓整包 COMMIT 回滾
+            f"{q(r.get('billing') or '日租')}, {q(r.get('rentFrom') or None)}, {q(r.get('rentTo') or None)}, "
             f"{q(r['status'])}, {int(r.get('v') or 1)}, {local_dt(r.get('updatedAt'))});"
         )
         counts["equip_records"] += 1
@@ -344,7 +382,7 @@ for site, store in (data["stores"] or {}).items():
             out.append(
                 "INSERT INTO dbo.equip_reports (record_id, reported_at, checker, vendor, "
                 "actual_hours, diff, days, ot_hours, work_content, rate_item, rate_ot_item, "
-                "zero_use, sign_return_date, " + done_cols() + ") VALUES ("
+                "zero_use, sign_return_date, on_site_days, " + done_cols() + ") VALUES ("
                 f"{q(r['id'])}, {q(rep.get('reportedAt') or None)}, {q(rep.get('checker') or None)}, "
                 f"{q(rep.get('vendor') or None)}, "
                 # v22.6：diff 可為 NULL（申請單未填預定時數＝無從比較），
@@ -355,6 +393,8 @@ for site, store in (data["stores"] or {}).items():
                 # v22.8：只存挑了哪一項，金額不落庫（合約 §4.9）
                 f"{q(rep.get('rateItem') or None)}, {q(rep.get('rateOtItem') or None)}, "
                 f"{bit(rep.get('zeroUse'))}, {q(rep.get('signReturnDate') or None)}, "
+                # v24.4：在場天數（月租的排名供應量）；日租單為 NULL
+                f"{num(rep.get('onSiteDays'))}, "
                 + done_vals(rep) + ");"
             )
             counts["equip_reports"] += 1
@@ -368,6 +408,21 @@ for site, store in (data["stores"] or {}).items():
                     f"{num(u.get('hours'), '0')});"
                 )
                 counts["equip_report_usage"] += 1
+            # v24.4/v24.7 月租逐日使用紀錄（合約 §4.12）。UQ 是 (record_id, use_date)——
+            # 同日重複只留首見，否則整包 COMMIT 會因撞鍵而全數回滾
+            seen_days = set()
+            for l in rep.get("usageLog") or []:
+                d = (l or {}).get("date")
+                if not d or d in seen_days:
+                    skipped["usage_log"] += 1
+                    continue
+                seen_days.add(d)
+                out.append(
+                    "INSERT INTO dbo.equip_usage_log (record_id, use_date, note, hours, signer) "
+                    f"VALUES ({q(r['id'])}, {q(d)}, {q(l.get('note') or None)}, "
+                    f"{num(l.get('hours'))}, {q(l.get('signer') or None)});"
+                )
+                counts["equip_usage_log"] += 1
             # v23 代辦逐筆（合約 §4.10）；機具只綁到廠商層級，故無工種欄
             for a in rep.get("agentItems") or []:
                 if not a or not a.get("vendor"):

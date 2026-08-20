@@ -6,8 +6,15 @@
 
 | 檔案 | 內容 | 驗證狀態 |
 |---|---|---|
-| `DB-SCHEMA.sql` | **17 資料表＋5 VIEW**（SQL Server 方言，含欄位註解、id/狀態 CHECK、計算欄位）。演進：v13 稽核兩表＋`v_audit_log`／v14 `attachments`／**v22.8 行情通報三表**（`rate_books`、`rate_book_rows`、`site_rate_bindings`）／**v23 代辦兩表**（`labor_agent_items`、`equip_agent_items`）／**v23.2 `app_settings`** | ✅ LocalDB 實建 |
+| `DB-SCHEMA.sql` | **19 資料表＋5 VIEW**（SQL Server 方言，含欄位註解、id/狀態 CHECK、計算欄位）。演進：v13 稽核兩表＋`v_audit_log`／v14 `attachments`／**v22.8 行情通報三表**（`rate_books`、`rate_book_rows`、`site_rate_bindings`）／**v23 代辦兩表**（`labor_agent_items`、`equip_agent_items`）／**v23.2 `app_settings`**／**v24.4 `equip_usage_log`**（月租逐日紀錄）／**v24.7 `site_lock_ranges`**（鎖檔區間） | ✅ LocalDB 實建 |
 | `backup-json-to-sql.py` | 備份 JSON → INSERT 腳本轉換器（含髒資料防護與計數、時區正規化、預期筆數對帳註腳） | ✅ 兩組備份實測 |
+| `export-cloud-bundle.py` | 切換日遷移包匯出器：資料 JSON ＋**附件本體** ＋ 費率書 ＋ 含 SHA256 的 MANIFEST（可續傳） | ✅ 全鏈路實測 |
+| `ALTER-v24-work-precision.sql` | 工數欄位 `DECIMAL(6,2)` → `DECIMAL(8,4)`。**已建庫且有資料者必跑**，否則 0.625 工會被存成 0.63 | ✅ 舊版建庫實測 |
+| `ALTER-v244-monthly-rental.sql` | 機具月租：`equip_records` ＋billing/租期、`equip_reports` ＋on_site_days、新增 `equip_usage_log` | ✅ 舊版建庫實測 |
+| `ALTER-v247-lock-ranges.sql` | 鎖檔區間 `site_lock_ranges` ＋ `equip_usage_log.signer`。純新增、可線上執行、重複執行安全 | ✅ 舊版建庫實測 |
+
+> **全新建庫不需要跑任何 ALTER**——`DB-SCHEMA.sql` 已含全部定義。
+> ALTER 只給「已依舊版建過庫且已有資料」的環境依序升級。
 
 **實測涵蓋**（SQL Server LocalDB）：
 - 正式站完整備份：16 工地／1,353 選項／92 點工單匯入零錯誤；計價彙總三項總數與來源 JSON 獨立計算一致
@@ -97,6 +104,10 @@ sqlcmd -S <伺服器> -d KG_AUDIT -f 65001 -x -b -C -i DB-SCHEMA.sql
 sqlcmd -S <伺服器> -d KG_AUDIT -f 65001 -x -b -C -i import.sql
 ```
 
+> **已建過庫的環境**（不是全新建庫）：跳過 `DB-SCHEMA.sql`，改依序執行
+> `ALTER-v24-work-precision.sql` → `ALTER-v244-monthly-rental.sql` → `ALTER-v247-lock-ranges.sql`
+> 後再匯入。三支都會印出實際做了什麼並附驗收查詢。
+
 **旗標缺一不可**：`-f 65001`＝UTF-8；`-x`＝停用 $() 變數替換（防環境變數被注入自由文字欄）；`-b`＝遇錯即停且回傳非零結束碼；`-C`＝信任伺服器憑證（ODBC 18 預設強制加密，自簽憑證環境沒有 -C 會直接拒連）。
 
 **步驟 4）對帳**（於 SSMS 或 sqlcmd 執行下列 SQL）：
@@ -107,6 +118,8 @@ SELECT 'labor_records' AS t, COUNT(*) AS n FROM dbo.labor_records
 UNION ALL SELECT 'labor_reports', COUNT(*) FROM dbo.labor_reports
 UNION ALL SELECT 'labor_report_worktypes', COUNT(*) FROM dbo.labor_report_worktypes
 UNION ALL SELECT 'equip_records', COUNT(*) FROM dbo.equip_records
+-- v24.4 月租：逐日使用紀錄；備份裡沒有月租單時為 0，不算異常
+UNION ALL SELECT 'equip_usage_log', COUNT(*) FROM dbo.equip_usage_log
 -- v23 代辦逐筆（合約 §4.10）；備份裡沒有代辦資料時本來就是 0，不算異常
 UNION ALL SELECT 'labor_agent_items', COUNT(*) FROM dbo.labor_agent_items
 UNION ALL SELECT 'equip_agent_items', COUNT(*) FROM dbo.equip_agent_items;

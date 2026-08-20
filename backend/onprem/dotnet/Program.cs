@@ -344,6 +344,9 @@ static async Task<JsonObject> ReadStores(SqlConnection cn, string? onlySite)
         $"SELECT o.site_id, o.pool, o.value FROM dbo.site_options o JOIN dbo.sites s ON s.site_id=o.site_id{siteFilter} ORDER BY o.option_id", p);
     var binds = await Query(cn,
         $"SELECT b.site_id, b.kind, b.bind_key, b.vendor_code, b.note FROM dbo.site_rate_bindings b JOIN dbo.sites s ON s.site_id=b.site_id{siteFilter}", p);
+    // v24.7 鎖檔區間（合約 §4.2）
+    var locks = await Query(cn,
+        $"SELECT l.* FROM dbo.site_lock_ranges l JOIN dbo.sites s ON s.site_id=l.site_id{siteFilter} ORDER BY l.date_from, l.lock_id", p);
 
     var lab = await Query(cn, $"SELECT r.* FROM dbo.labor_records r JOIN dbo.sites s ON s.site_id=r.site_id{siteFilter}", p);
     var labRep = await Query(cn, $"SELECT rp.* FROM dbo.labor_reports rp JOIN dbo.labor_records r ON r.id=rp.record_id JOIN dbo.sites s ON s.site_id=r.site_id{siteFilter}", p);
@@ -398,6 +401,23 @@ static async Task<JsonObject> ReadStores(SqlConnection cn, string? onlySite)
         }
         if (bl.Count > 0 || be.Count > 0)
             cfg["rateBindings"] = new JsonObject { ["labor"] = bl, ["equipment"] = be };
+
+        /* v24.7 鎖檔區間。**一律輸出這個鍵（可為空陣列）**——前端把「缺鍵」
+           與「空陣列」都當成沒有規則，但空陣列讓設定頁不必再判 undefined。
+           effectiveAt 用本地格式 "yyyy-MM-ddTHH:mm"，與前端 datetime-local 同形狀；
+           走 ToString("o") 或加時區位移都會讓「17:00 生效」錯開 8 小時。 */
+        cfg["lockRanges"] = new JsonArray(locks
+            .Where(l => Convert.ToInt32(l["site_id"]) == sid)
+            .Select(l => (JsonNode)new JsonObject
+            {
+                ["id"] = Str(l["client_id"]) ?? "",
+                ["from"] = DateStr(l["date_from"]) ?? "",
+                ["to"] = DateStr(l["date_to"]) ?? "",
+                ["effectiveAt"] = l["effective_at"] is null or DBNull
+                    ? "" : ((DateTime)l["effective_at"]!).ToString("yyyy-MM-dd'T'HH:mm"),
+                ["enabled"] = Bit(l["is_enabled"]),
+                ["note"] = Str(l["note"]) ?? ""
+            }).ToArray());
 
         var laborArr = new JsonArray();
         foreach (var r in lab.Where(r => Convert.ToInt32(r["site_id"]) == sid))
@@ -500,7 +520,8 @@ static async Task<JsonObject> ReadStores(SqlConnection cn, string? onlySite)
                     {
                         ["date"] = DateStr(l["use_date"]),
                         ["note"] = Str(l["note"]) ?? "",
-                        ["hours"] = Num(l["hours"])
+                        ["hours"] = Num(l["hours"]),
+                        ["signer"] = Str(l["signer"]) ?? ""      // v24.7 當日簽認工程師
                     }).ToArray()),
                     ["signReturnDate"] = DateStr(rp["sign_return_date"]) ?? "",
                     // v23 代辦逐筆（合約 §4.10）；機具綁廠商層級，故無工種欄
@@ -757,6 +778,16 @@ app.MapPost("/api/data", async (HttpContext ctx) =>
     await using var cn = new SqlConnection(ConnStr());
     await cn.OpenAsync();
 
+    /* v24.7 鎖檔（合約 §4.2）——**伺服器端**把關。
+       前端也擋，但前端擋的是誤操作；結算後的資料凍結是實質控制，
+       只靠前端等於「按 F12 就能改已結算的月份」。管理員不受限（就是他設的）。
+       Auth:Mode=Off 時 authz 為 null，維持與其他授權判斷一致的行為（不介入）。 */
+    if (ctx.Items["authz"] is Authz azl && !azl.IsAdmin && (op == "record" || op == "deleteRecord"))
+    {
+        var denied = await LockGuard(cn, body, op);
+        if (denied is not null) return denied;
+    }
+
     switch (op)
     {
         case "master":
@@ -1002,8 +1033,43 @@ static async Task<IResult> OpConfig(SqlConnection cn, JsonObject body)
     }
 
     await WriteRateBindings(cn, tx, sid, cfg["rateBindings"] as JsonObject);
+    await WriteLockRanges(cn, tx, sid, cfg["lockRanges"] as JsonArray);
     await tx.CommitAsync();
     return Results.Json(new { ok = true });
+}
+
+/* datetime-local 字串 → DateTime。
+
+   ⚠ **不可把原字串直接當參數丟給 DATETIME2 欄位**：前端送的是
+   "YYYY-MM-DDTHH:mm"（沒有秒），SQL Server 轉型時會丟
+   「Conversion failed when converting date and/or time from character string」，
+   整個 op:config 交易回滾——症狀是「設定存不起來」而看不出跟鎖檔有關。
+   （同一個坑在 backup-json-to-sql.py 的 dt_sec() 也處理過。） */
+static object? ParseLocalDt(string? s) =>
+    !string.IsNullOrWhiteSpace(s)
+    && DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dt)
+        ? dt : null;
+
+/* 鎖檔區間：整站覆寫（與名單池、費率綁定同一套 delete-then-insert 模式）。
+   ⚠ **cfg 沒帶 lockRanges 鍵時什麼都不做**，不可當成空陣列去清空——
+     舊版前端或第三方工具送出的 config 不含這個鍵，一旦視為「清空」，
+     一次無關的設定儲存就會把整站解鎖，而且沒有任何錯誤訊息。 */
+static async Task WriteLockRanges(SqlConnection cn, SqlTransaction tx, int sid, JsonArray? ranges)
+{
+    if (ranges is null) return;
+    await Exec(cn, tx, "DELETE FROM dbo.site_lock_ranges WHERE site_id = @s", ("@s", sid));
+    foreach (var r in ranges)
+    {
+        var from = Sx(r, "from");
+        var to = Sx(r, "to");
+        if (from is null && to is null) continue;   // 兩側全空＝鎖住所有日期，視為漏填
+        var enabled = r?["enabled"]?.GetValueKind() != JsonValueKind.False;
+        await Exec(cn, tx,
+            @"INSERT INTO dbo.site_lock_ranges (site_id, client_id, date_from, date_to, effective_at, is_enabled, note)
+              VALUES (@s,@c,@f,@t,@e,@b,@n)",
+            ("@s", sid), ("@c", Sx(r, "id")), ("@f", from), ("@t", to),
+            ("@e", ParseLocalDt(Sx(r, "effectiveAt"))), ("@b", enabled), ("@n", Sx(r, "note")));
+    }
 }
 
 /* 費率綁定：labor 的鍵是「廠商|工種」值為 {vendorCode,note}，equipment 的鍵是「廠商」值為字串。
@@ -1165,6 +1231,61 @@ static string? DateGuardError(JsonObject rec, string? storedDate, string? stored
 }
 
 /* ---------- §3.3 op:record ★核心（含樂觀並發） ---------- */
+/* 鎖檔把關：命中就回 403，沒命中回 null。
+
+   ⚠ 修改既有單據時**新舊日期都要查**——只查送進來的新日期的話，
+     把一張 7/15（已鎖）的單改成 9/1 就能整張搬出鎖定區間再任意修改，
+     等於鎖了跟沒鎖一樣。 */
+static async Task<IResult?> LockGuard(SqlConnection cn, JsonObject body, string op)
+{
+    var site = Sx(body, "site");
+    var kind = Sx(body, "kind");
+    if (site is null || (kind != "labor" && kind != "equipment")) return null;   // 形狀錯誤交給各 op 回 400
+    var recT = kind == "labor" ? "labor_records" : "equip_records";
+
+    var sid = await Scalar(cn, null, "SELECT site_id FROM dbo.sites WHERE name=@n", ("@n", site));
+    if (sid is null) return null;
+    var siteId = Convert.ToInt32(sid);
+
+    var dates = new List<string>();
+    if (op == "record" && Sx(body["record"] as JsonObject, "date") is string nd) dates.Add(nd);
+    var id = op == "record" ? Sx(body["record"] as JsonObject, "id") : Sx(body, "id");
+    if (id is not null)
+    {
+        var old = await Scalar(cn, null,
+            $"SELECT work_date FROM dbo.{recT} WHERE id=@id AND site_id=@s", ("@id", id), ("@s", siteId));
+        if (old is DateTime od) dates.Add(od.ToString("yyyy-MM-dd"));
+    }
+    if (dates.Count == 0) return null;
+
+    var legacy = await Scalar(cn, null, "SELECT lock_date FROM dbo.sites WHERE site_id=@s", ("@s", siteId));
+    var rows = await Query(cn,
+        "SELECT date_from, date_to, effective_at, note FROM dbo.site_lock_ranges WHERE site_id=@s AND is_enabled=1",
+        ("@s", siteId));
+
+    var now = DateTime.Now;   // 生效時刻是本地時刻——不可用 UtcNow（會提早 8 小時鎖住）
+    foreach (var d in dates.Distinct())
+    {
+        if (legacy is DateTime ld && string.CompareOrdinal(d, ld.ToString("yyyy-MM-dd")) <= 0)
+            return Lock403($"{ld:yyyy-MM-dd} 含以前");
+        foreach (var r in rows)
+        {
+            if (r["effective_at"] is DateTime ea && now < ea) continue;
+            var from = r["date_from"] is DateTime f ? f.ToString("yyyy-MM-dd") : "0000-01-01";
+            var to = r["date_to"] is DateTime t ? t.ToString("yyyy-MM-dd") : "9999-12-31";
+            if (string.CompareOrdinal(d, from) >= 0 && string.CompareOrdinal(d, to) <= 0)
+            {
+                var note = Str(r["note"]);
+                return Lock403($"{from} ～ {to}" + (string.IsNullOrEmpty(note) ? "" : $"・{note}"));
+            }
+        }
+    }
+    return null;
+
+    static IResult Lock403(string range) => Results.Json(
+        new { error = "locked", message = $"此單日期已鎖檔（{range}），僅限系統管理者異動" }, statusCode: 403);
+}
+
 static async Task<IResult> OpRecord(SqlConnection cn, JsonObject body)
 {
     var site = Sx(body, "site");
@@ -1364,8 +1485,9 @@ static async Task InsertEquip(SqlConnection cn, SqlTransaction tx, int sid, Json
         var ud = Sx(l, "date");
         if (ud is null || !seenDays.Add(ud)) continue;
         await Exec(cn, tx,
-            "INSERT INTO dbo.equip_usage_log (record_id, use_date, note, hours) VALUES (@id,@d,@n,@h)",
-            ("@id", id), ("@d", ud), ("@n", Sx(l, "note")), ("@h", Dx(l, "hours")));
+            "INSERT INTO dbo.equip_usage_log (record_id, use_date, note, hours, signer) VALUES (@id,@d,@n,@h,@g)",
+            ("@id", id), ("@d", ud), ("@n", Sx(l, "note")), ("@h", Dx(l, "hours")),
+            ("@g", Sx(l, "signer") is string g && g.Length > 0 ? Trunc(g, 100) : null));
     }
 }
 

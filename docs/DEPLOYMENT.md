@@ -13,7 +13,7 @@ repo 內含三套等價的執行環境，皆實作同一份 [`API-CONTRACT.md`](
 | 程式位置 | `backend/cloud/` | **`backend/onprem/dotnet/`** | `backend/onprem/server.mjs` |
 | 執行環境 | Netlify | **.NET 8 Runtime ＋ SQL Server** | Node.js 18+（零 npm 依賴） |
 | 靜態檔案 | Netlify CDN | 同服務供應（`STATIC_DIR`） | 內建靜態服務 |
-| 資料儲存 | Netlify Blobs | **SQL Server（17 表 5 VIEW）** | 檔案系統 `DATA_DIR` |
+| 資料儲存 | Netlify Blobs | **SQL Server（19 表 5 VIEW）** | 檔案系統 `DATA_DIR` |
 | 附件本體 | Blobs | 檔案系統（`ATTACH_DIR`） | `DATA_DIR/attachments/` |
 | 個人身分與權限 | ✕（單一共用帳密） | **✓ Windows 驗證＋ERP 角色（§4.5）** | ✕ |
 
@@ -370,7 +370,7 @@ GHSA-8prm-248r-h957），改由主機提供身分，本程式只讀取已驗證�
 
 若 IT 評估後決定不使用 `backend/onprem/server.mjs`，而以公司標準技術（自選語言＋資料庫）重寫後端：
 
-- **資料層起點包已備妥**：[`backend/sql/`](../backend/sql/README.md) 內含經實測的 SQL Server 建表 DDL（17 表＋5 VIEW）、備份 JSON→SQL 遷移工具、逐操作 SQL 對照與並發寫法——**請從 backend/sql/README.md 讀起**，不必從零設計 schema
+- **資料層起點包已備妥**：[`backend/sql/`](../backend/sql/README.md) 內含經實測的 SQL Server 建表 DDL（19 表＋5 VIEW）、備份 JSON→SQL 遷移工具、逐操作 SQL 對照與並發寫法——**請從 backend/sql/README.md 讀起**，不必從零設計 schema
 - **只需實作一份合約**：[`docs/API-CONTRACT.md`](API-CONTRACT.md) 完整定義了前後端唯一接縫（單一端點、11 個操作＋附件下載與費率書讀取、409 並發語意、全部欄位字典、資料表設計建議與驗收方式）。新後端符合該合約，**前端 `app.js` 零修改**
 - **API 路徑可配置**：後端若掛在其他路徑（如 `/kg-audit/api/data`），在 `config.local.js` 加一行 `apiBase: "<路徑>"` 即可，不改程式
 - **驗收**：以現行前端直接跑本文件 §4 驗證清單＋雙瀏覽器並發 409 測試

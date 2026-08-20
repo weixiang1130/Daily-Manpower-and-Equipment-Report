@@ -32,7 +32,7 @@ CREATE TABLE dbo.sites (
     name         NVARCHAR(100) NOT NULL CONSTRAINT UQ_sites_name UNIQUE,
     project_code VARCHAR(10) NULL,      -- ERP 專案代碼；權限過濾用（見 docs/AUTH-PLAN.md §2.2）
                                         -- NULL＝尚未對映，該站不套用 ERP 權限（僅管理員可見）
-    lock_date    DATE NULL,             -- 計價鎖定日（含）以前非管理員不可增修刪
+    lock_date    DATE NULL,             -- 舊版單一鎖定日（含以前）；已由 site_lock_ranges 取代，保留相容
     is_active    BIT NOT NULL CONSTRAINT DF_sites_active DEFAULT 1,  -- 專案退場=0
     sort_order   INT NOT NULL CONSTRAINT DF_sites_sort DEFAULT 0
 );
@@ -349,11 +349,34 @@ CREATE TABLE dbo.equip_usage_log (
     use_date    DATE NOT NULL,
     note        NVARCHAR(MAX) NULL,
     hours       DECIMAL(6,2) NULL,          -- 選填：當日時數（不計價，僅供參考）
+    signer      NVARCHAR(100) NULL,         -- v24.7 當日在簽單上簽名的工程師
+                                            -- 月租整個租期一張單，每天簽的人可能不同，
+                                            -- 單頭的 checker 只是本張單的覆核者
     CONSTRAINT UQ_equip_usage_log UNIQUE (record_id, use_date)   -- 一天一筆
 );
 CREATE INDEX IX_equip_usage_log_record ON dbo.equip_usage_log(record_id);
 
-/* ---------- 17. 全域設定（v23.2；合約 §4.1 master.adminDepartments） ----------
+/* ---------- 17. 鎖檔區間（v24.7；合約 §4.2 config.lockRanges） ----------
+   舊版 sites.lock_date 只有一個切點＝「這天含以前全鎖」。實務上結算是一段一段來的，
+   而且要能**先設定、時間到才生效**（給工地補單的緩衝），所以改成可累積的區間清單。
+
+   ⚠ effective_at 是**本地時刻**（DATETIME2，無時區位移）——前端送的是
+     "YYYY-MM-DDTHH:mm" 本地字串，存成 UTC 會讓「17:00 生效」變成隔天凌晨。
+   ⚠ is_enabled=0 ＝暫時解鎖但保留規則；不要用刪除代替，下個月還要用。 */
+CREATE TABLE dbo.site_lock_ranges (
+    lock_id      INT IDENTITY(1,1) CONSTRAINT PK_site_lock_ranges PRIMARY KEY,
+    site_id      INT NOT NULL CONSTRAINT FK_lock_site REFERENCES dbo.sites(site_id),
+    client_id    VARCHAR(64) NULL,          -- 前端產生的規則 id（合約 §4.2）
+    date_from    DATE NULL,                 -- NULL＝不設下限
+    date_to      DATE NULL,                 -- NULL＝不設上限（兩者皆 NULL 由應用層擋下）
+    effective_at DATETIME2(0) NULL,         -- NULL＝立即生效
+    is_enabled   BIT NOT NULL CONSTRAINT DF_lock_enabled DEFAULT 1,
+    note         NVARCHAR(200) NULL,
+    updated_at   DATETIME2(0) NOT NULL CONSTRAINT DF_lock_upd DEFAULT SYSDATETIME()
+);
+CREATE INDEX IX_site_lock_ranges_site ON dbo.site_lock_ranges(site_id);
+
+/* ---------- 18. 全域設定（v23.2；合約 §4.1 master.adminDepartments） ----------
    目前只放「管理員部門白名單」——讓成控自己在系統後台增減管理員部門，
    不必每次請資訊處改 appsettings 並重啟服務。
 

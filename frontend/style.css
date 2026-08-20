@@ -335,6 +335,56 @@ select option[value="__ADD_NEW__"]{
 .att-fields .ag-note input{width:100%;min-width:140px;text-align:left;font-weight:500;}
 .att-row .tr-name small{font-weight:600;color:var(--ink-500);}
 
+/* ---------- 月租逐日使用紀錄（v24.4／v24.7 版面加寬） ----------
+   「當日做了什麼」是月租單最主要的輸入欄，原本擠在同一行的中間、只有 280px，
+   現場反映不好登打。改成獨立佔滿一整行，其餘控制項留在上一行。 */
+.ulog-add{flex-wrap:wrap;}
+.ulog-add .ulog-h{max-width:120px;}
+.ulog-add .ulog-signer{min-width:190px;}
+.ulog-add .ulog-note-in{
+  flex:1 1 100%;
+  padding:9px 11px;border:1.5px solid var(--line);border-radius:4px;
+  font-size:14px;font-family:inherit;
+}
+.ulog-add .ulog-note-in:focus{outline:none;border-color:var(--teal-500);}
+/* 逐日列：內容欄吃滿剩餘寬度，時數與簽認人固定寬。
+   ⚠ .att-fields 預設是 flex:0 1 auto（只佔內容寬），列尾會空一大片而內容欄擠成
+   兩百來 px——要讓它 grow，內容欄的 flex-grow 才有東西可分。 */
+.ulog-row .att-fields{flex:1 1 auto;min-width:0;}
+.att-fields .ulog-note-wrap{flex:1 1 240px;min-width:0;}
+.att-fields .ulog-note-wrap .ulog-note{width:100%;min-width:0;text-align:left;font-weight:500;}
+.att-fields .ulog-signer-in{width:100px;text-align:left;font-weight:500;}
+/* 窄視窗：.att-fields 預設 nowrap，三個欄位擠在一列會把內容欄壓到十幾 px。
+   改成換行，內容欄自成一整行（與新增列的處理同一個道理）。 */
+@media (max-width:900px){
+  .ulog-row .att-fields{flex-wrap:wrap;}
+  .att-fields .ulog-note-wrap{flex:1 1 100%;}
+}
+/* ---------- 鎖檔區間（v24.7） ---------- */
+.lock-add{flex-wrap:wrap;}
+.lock-add .lk-sep{color:var(--ink-600);font-weight:700;}
+.lock-add .lk-note-in{min-width:170px;}
+.lock-actions{margin-top:8px;}
+/* 三種狀態各有專屬左邊條：鎖定中（紅）／預約中（琥珀）／已停用（灰）。
+   ⚠ 顏色不是唯一線索——每列都直接寫出狀態文字。 */
+.lk-row{border-left:4px solid var(--ink-400);}
+.lk-row.on{border-left-color:var(--red-500);}
+.lk-row.pending{border-left-color:var(--amber-600);}
+.lk-state{font-size:12px;font-weight:700;}
+.lk-row.on .lk-state{color:var(--red-500);}
+.lk-row.pending .lk-state{color:var(--amber-600);}
+.lk-row.off .lk-state{color:var(--ink-400);}
+.lk-note{font-size:12px;color:var(--ink-600);}
+.lk-toggle{
+  border:1px solid var(--line);background:#fff;color:var(--ink-600);
+  border-radius:4px;padding:4px 10px;font-size:12px;font-weight:700;cursor:pointer;
+}
+.lk-toggle:hover{border-color:var(--teal-500);color:var(--teal-700);}
+
+/* 欄位下方的補充說明（例：月租的簽單責任工程師語意） */
+.field-note{font-size:12px;color:var(--ink-600);line-height:1.45;}
+.field-note:empty{display:none;}
+
 /* 工地納管候選列（v23.3） */
 .cand-cnt{
   font-size:12.5px;font-weight:700;color:var(--ink-600,var(--fg-secondary));

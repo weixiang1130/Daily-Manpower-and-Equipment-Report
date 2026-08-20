@@ -175,7 +175,22 @@
 | people | string[] | 工程師名單（申請人/簽單責任工程師） |
 | workers | string[] | 點工人員名單（**v11 起前端不再使用**，保留相容） |
 | laborTypes | string[] | 出工工種（v11 新增；**v17.1 起前端不再自動補預設**——各工地自行建立，空陣列即為空） |
-| lockDate | string("YYYY-MM-DD")\|"" | 計價鎖定日期；該日（含）以前單據前端禁止非管理員增修刪 |
+| lockDate | string("YYYY-MM-DD")\|"" | **舊版單一鎖定日**（v24.7 起由 `lockRanges` 取代，保留讀取相容）：該日（含）以前禁止非管理員增修刪 |
+| lockRanges | object[] | **v24.7 鎖檔區間**，元素見下表。可累積多段、可預約生效、可個別停用；未帶此鍵時後端**不得清空既有規則**（舊版前端送出的 config 不含此鍵） |
+
+**`lockRanges[]` 元素**
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| id | string | 前端產生的規則 id（`uid()`）；僅供辨識，判定不依賴它 |
+| from | "YYYY-MM-DD"\|"" | 鎖定起日（**出工日期**，含）；空＝不設下限 |
+| to | "YYYY-MM-DD"\|"" | 鎖定迄日（含）；空＝不設上限。**`from` 與 `to` 同時為空的規則一律略過**（等同鎖住所有日期，實務上必為漏填） |
+| effectiveAt | "YYYY-MM-DDTHH:mm"\|"" | 生效時刻，**本地時間**（與 `<input type="datetime-local">` 同形狀）。空＝立即生效。⚠ 落庫成 DATETIME2 前必須補到秒（`:00`），否則 SQL Server 轉型失敗；⚠ 不可換算成 UTC，否則「17:00 起鎖」會差 8 小時 |
+| enabled | boolean | false＝暫時解鎖但保留規則（下次結算再打開）。缺省視為 true |
+| note | string | 說明（例：8月結算），顯示於鎖檔提示訊息 |
+
+**判定**：某出工日期被鎖 ⟺ 存在一條 `enabled` 且已過 `effectiveAt` 的規則，其 `[from, to]` 涵蓋該日期（或 `lockDate` 涵蓋）。管理員不受限。
+**強制點**：前端在申請/回報的新增、修改、刪除共 9 處攔截；**地端後端於 `op:record`／`op:deleteRecord` 再擋一次**（回 403 `{"error":"locked"}`），修改既有單據時**新舊日期都要查**——只查新日期的話，把單的日期改出鎖定區間就能繞過。雲端無身分機制，僅前端管控。
 
 ### 4.3 點工紀錄（kind=labor）
 父層（申請）：
@@ -231,6 +246,8 @@
 | contracted | "是"\|"否" | 是否為合約廠商 |
 | locations | string[] | 工作地點 |
 | content | string | 工作內容（申請時的預計內容） |
+| billing | "日租"\|"月租" | **v24.4 計費方式**。舊單缺此鍵一律視為「日租」；後端 NOT NULL 欄位須補上預設值 |
+| rentFrom / rentTo | "YYYY-MM-DD"\|null | **v24.4 租期起訖**（月租單專用，含兩端）。簽單繳回期限自 `rentTo` 起算（見 §4.7） |
 | vendor | string | 機具廠商。**v22.6 起申請表單不再填**——工地統一叫車後才配車，廠商於回報時填。舊單保留原值，新單為空字串 |
 
 子層 `report`：
@@ -248,6 +265,8 @@
 | zeroUse | boolean | 0 使用確認 |
 | signReturnDate | string\|"" | 簽單繳回日。**v22.7 起強制 `date ≤ signReturnDate ≤ date + 20 天`**（見 §4.7 日期防呆） |
 | 自辦/代辦六欄 | 同 4.3 | |
+| usageLog | {date,note,hours,signer}[] | **v24.4 月租逐日使用紀錄**（日租單為空陣列）。`date`＝使用日（一天一筆，重複日期取首見）、`note`＝當日工作內容、`hours`＝當日時數（選填，可 null）、`signer`＝**v24.7 當日簽認工程師**（選填）。月租整個租期一張單，每天簽名的人可能不同，故逐日各記一位；單頭的 `checker` 是該張單的覆核者，不是每日簽認人 |
+| onSiteDays | number\|null | **v24.4 在場天數**＝`usageLog` 的筆數，供廠商排名與日租的「出工天數」同口徑比較。日租單為 null |
 | agentItems | {vendor,qty,note}[] | **v23 代辦逐筆**：一張單可代辦多家。`vendor`＝責任歸屬廠商、`qty`＝歸屬該廠商的數量。**`qty` 的單位由主品項的 `chargeType` 決定**（全天→天、時租→小時），與 §4.9 的計價數量同源。空陣列＝全數自辦。詳見 §4.10 |
 
 > **有效廠商（計價與報表分組依據）＝ `report.vendor || vendor`**。

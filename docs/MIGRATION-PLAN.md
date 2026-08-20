@@ -26,7 +26,7 @@
       │ SQL           │ 檔案系統
 ┌─────┴──────┐  ┌─────┴──────────────┐
 │ SQL Server │  │ 附件目錄（照片/掃描檔） │
-│ 17 表 5 VIEW│  │ 依 attachments.file_path │
+│ 19 表 5 VIEW│  │ 依 attachments.file_path │
 └────────────┘  └────────────────────┘
 ```
 
@@ -37,7 +37,7 @@
 | 項目 | 負責 | 狀態 |
 |---|---|---|
 | 前端程式 | 成控（已完成） | ✅ 現行版本即可直接使用 |
-| 資料表 DDL（17 表 5 VIEW） | 成控（已完成） | ✅ `backend/sql/DB-SCHEMA.sql`，本機 Express 實建並以正式資料對帳通過 |
+| 資料表 DDL（19 表 5 VIEW） | 成控（已完成） | ✅ `backend/sql/DB-SCHEMA.sql`，本機 Express 實建並以正式資料對帳通過 |
 | 資料移轉工具 | 成控（已完成） | ✅ `backend/sql/backup-json-to-sql.py`，含髒資料防護與對帳 |
 | API 合約規格 | 成控（已完成） | ✅ `docs/API-CONTRACT.md`（11 個操作、409 併發語意、欄位字典） |
 | **.NET 8 API 服務** | **資訊處**（或成控先交付參考實作供審查） | ⬜ **唯一未完成項** |
@@ -71,7 +71,7 @@
 ## 5. 三階段時程
 
 ### 階段一：API 開發（測試環境）
-1. 資訊處配置 SQL Server 測試資料庫 → 執行 `DB-SCHEMA.sql`（一次建好 17 表 5 VIEW）
+1. 資訊處配置 SQL Server 測試資料庫 → 執行 `DB-SCHEMA.sql`（一次建好 19 表 5 VIEW）
 2. 依 `API-CONTRACT.md` 與 `sql/README.md`（逐操作 SQL 對照、409 寫法）開發 .NET 8 服務
 3. 掛上現行前端（設定 `apiBase`）自我驗收
 

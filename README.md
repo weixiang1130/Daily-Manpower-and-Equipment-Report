@@ -33,7 +33,7 @@ docs/              ← 文件（規格、計畫、手冊、迭代紀錄）
 |---|---|---|
 | `cloud/` | Netlify Functions（`functions/api.mjs` 資料 API）＋ Edge Function（`edge-functions/auth.ts` 整站 Basic Auth） | **現行運作中**（過渡期） |
 | `onprem/` | `server.mjs` 零依賴可攜式伺服器（同一 API 合約＋靜態服務＋Basic Auth）、`import-backup.mjs` 資料移轉 | 參考實作／備援 |
-| `sql/` | `DB-SCHEMA.sql`（17 表 5 VIEW）、`backup-json-to-sql.py` 移轉工具、`README.md` 逐操作 SQL 對照 | 已交付 IT，本機實測對帳通過 |
+| `sql/` | `DB-SCHEMA.sql`（19 表 5 VIEW）、`backup-json-to-sql.py` 移轉工具、`README.md` 逐操作 SQL 對照 | 已交付 IT，本機實測對帳通過 |
 
 > 地端正式方案為 **.NET 8 API**（資訊處開發中）。`onprem/server.mjs` 是行為對照組，不是最終方案。
 
@@ -77,7 +77,7 @@ docs/              ← 文件（規格、計畫、手冊、迭代紀錄）
 | 前端 | 原生 HTML / CSS / JavaScript（無框架、無建置） |
 | 介接 | 單一 REST 端點 `/api/data`（JSON）；位址可由 `config.local.js` 的 `apiBase` 覆寫 |
 | 後端（現行） | Netlify Functions ＋ Netlify Blobs |
-| 後端（目標） | .NET 8 ＋ SQL Server（17 表 5 VIEW） |
+| 後端（目標） | .NET 8 ＋ SQL Server（19 表 5 VIEW） |
 | 認證（現行） | 整站 Basic Auth |
 | 認證（目標） | 公司 SSO ＋ ERP 專案權限 |
 

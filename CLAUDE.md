@@ -26,7 +26,7 @@ backend/cloud/functions/api.mjs        資料 API（函式內二次驗證同一�
 | Key | 內容 |
 |---|---|
 | `master` | `{ sites: [...] }` 全域工地清單 |
-| `cfg2:<b64url(工地)>` | 該工地基礎資料：vendors/locations/categories/equipTypes/people/workers/laborTypes 陣列 ＋ `lockDate` 字串（**v17 起各站自建，新工地全部名單池皆空**；workers 為 v11 起棄用的舊池，僅相容保留） |
+| `cfg2:<b64url(工地)>` | 該工地基礎資料：vendors/locations/categories/equipTypes/people/workers/laborTypes 陣列 ＋ 鎖檔設定（v24.7 `lockRanges` 陣列；舊 `lockDate` 字串保留相容）（**v17 起各站自建，新工地全部名單池皆空**；workers 為 v11 起棄用的舊池，僅相容保留） |
 | `rec2:<b64url(工地)>:<labor\|equipment>:<id>` | 單筆紀錄（父單含子層 `report`、`audits[]`、`attachments[]`） |
 | `att2:<b64url(工地)>:<附件id>` | **附件檔案本體**（二進位＋name/type metadata；v14）——不進單據 JSON，JSON 備份亦不含 |
 | `rates:<labor\|equipment>` | **行情通報費率書**（v22.8）：季別陣列，以 `effectiveFrom` 為唯一鍵、上限 12 季。**一個 kind 一把 key**——同放一把時兩種同時匯入會互相覆蓋。**刻意不進 `scope=all`**（一季 1,500 列會拖慢每個人開站），走獨立端點 `GET ?rates=1`。工地的綁定存在各站 config 的 `rateBindings` |
@@ -40,7 +40,7 @@ backend/cloud/functions/api.mjs        資料 API（函式內二次驗證同一�
 
 - 無 localStorage 業務資料；記憶體快取 `SITE_CACHE` ＋ sessionStorage（`dm_site` 本分頁工地、`dm_admin` 管理員狀態）。
 - 寫入 await-first：雲端成功才清表單；失敗保留輸入提示重試；409 顯示「已被他人修改」並重載。
-- 防呆：開站選工地攔截頁（每 session 必選）、表單常駐工地徽章、申請送出前 confirm 工地、0 必須勾「0 工/0 使用確認」、出工×加班異常警告（可確認後送出）、鎖單（`config.lockDate` 含以前非管理員不可增修刪）、已回報單刪除限管理員。
+- 防呆：開站選工地攔截頁（每 session 必選）、表單常駐工地徽章、申請送出前 confirm 工地、0 必須勾「0 工/0 使用確認」、出工×加班異常警告（可確認後送出）、鎖檔（v24.7 `config.lockRanges` 區間清單：可多段、可預約生效時刻、可停用解鎖，各站獨立、管理員限定；判定唯一入口 `isLockedDate()`／訊息 `lockReason()`，**新增攔截點別自己重寫判定**。舊 `lockDate` 保留相容。**地端後端於 `op:record`／`op:deleteRecord` 再擋一次**，修改時新舊日期都查）、已回報單刪除限管理員。
 - 日期一律 `localDate()`（本地時區）——不可用 `toISOString().slice(0,10)`（UTC 會把 UTC+8 早上記成前一天，影響計價月份）。
 - 管理員模式為前端層級防誤觸（adminPin 比對），非資安防線；真正權限需後端登入（未做）。
 
@@ -69,7 +69,7 @@ backend/
   cloud/edge-functions/auth.ts 整站 Basic Auth
   onprem/server.mjs            可攜式伺服器（零依賴 Node 18+；同一 API 合約＋靜態服務＋Basic Auth）
   onprem/import-backup.mjs     資料遷移（備份 JSON → 地端資料目錄；**不含附件本體**）
-  sql/                         SQL 交付包：DB-SCHEMA.sql 17表5VIEW＋backup-json-to-sql.py＋README
+  sql/                         SQL 交付包：DB-SCHEMA.sql 19表5VIEW＋backup-json-to-sql.py＋README
                                （已於 LocalDB 以正式資料實測對帳）
 
 docs/

@@ -24,6 +24,14 @@
 """
 import argparse, base64, hashlib, json, os, sys, time, urllib.error, urllib.parse, urllib.request
 
+# 中文版 Windows 主控台預設 cp950，編不出「⚠」「✓」這類符號會丟 UnicodeEncodeError；
+# 進度訊息炸掉會讓長時間的附件下載看起來像失敗。改 UTF-8 輸出並容錯。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 def api(base, auth, query):
     req = urllib.request.Request(base.rstrip("/") + "/api/data?" + query)
     req.add_header("Authorization", "Basic " + auth)

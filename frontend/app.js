@@ -147,10 +147,57 @@ async function refetchSite(site){
   sortRecords(SITE_CACHE[site]);
 }
 
-/* 鎖單：config.lockDate（含）以前的單據，非管理員不可增修刪 */
+/* 本地日期時間字串 "YYYY-MM-DDTHH:mm"——與 <input type="datetime-local"> 同格式。
+   ⚠ 與 localDate() 同一條紀律：不可走 toISOString（UTC 位移會讓生效時刻整整差 8 小時，
+   設定「今天 17:00 生效」會變成隔天凌晨 1 點才生效）。 */
+function localDateTime(d = new Date()){
+  const p = n => String(n).padStart(2, "0");
+  return `${localDate(d)}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/* ==========================================================
+   鎖檔（v24.7；合約 §4.2 lockRanges）
+
+   舊版只有 `lockDate` 一個切點＝「這天含以前全鎖」。實務上結算是一段一段來的：
+   八月結算要鎖的是「7/1～8/17」，而且要**先設定、時間到才生效**（例如 8/20 17:00
+   起鎖），好讓工地在期限前把單補完。所以改成可累積的區間清單：
+
+     lockRanges: [{ id, from, to, effectiveAt, enabled, note }]
+
+   • from/to      鎖定的**出工日期**區間（含兩端）；留空＝該側不設限
+   • effectiveAt  本地生效時刻 "YYYY-MM-DDTHH:mm"；留空＝存檔即生效
+   • enabled      隨時可關（解鎖不必刪規則，下個月要再鎖直接打開）
+   • note         給人看的說明（例：8 月結算）
+
+   各工地獨立設定（存在該站 config）。管理員一律不受限——鎖的是工地端誤改。
+   `lockDate` 保留讀取相容（等同一條 to=lockDate 的規則），舊資料不會突然解鎖。 */
+function lockRangesOf(cfg){
+  return Array.isArray(cfg && cfg.lockRanges) ? cfg.lockRanges : [];
+}
+
+/* 這條規則此刻是否已生效（enabled 且過了 effectiveAt） */
+function lockRuleActive(r, nowTs){
+  if(!r || r.enabled === false) return false;
+  return !(r.effectiveAt && (nowTs || localDateTime()) < r.effectiveAt);
+}
+
+/* 傳回命中的規則描述字串；沒鎖到回空字串。**不含管理員判斷**——
+   管理員也要能看見「這張單落在哪個鎖檔區間」，判斷由 isLockedDate() 負責。 */
+function lockReason(dateStr){
+  const cfg = cur() && cur().config;
+  if(!cfg || !dateStr) return "";
+  if(cfg.lockDate && dateStr <= cfg.lockDate) return `${cfg.lockDate} 含以前`;
+  const now = localDateTime();
+  const hit = lockRangesOf(cfg).find(r=>
+    lockRuleActive(r, now)
+    && dateStr >= (r.from || "0000-01-01")
+    && dateStr <= (r.to   || "9999-12-31"));
+  if(!hit) return "";
+  return `${hit.from || "最早"} ～ ${hit.to || "最晚"}${hit.note ? `・${hit.note}` : ""}`;
+}
+
 function isLockedDate(dateStr){
-  const lock = cur() && cur().config.lockDate;
-  return !!(lock && dateStr && dateStr <= lock && !isAdmin());
+  return !isAdmin() && !!lockReason(dateStr);
 }
 
 function sortRecords(store){
@@ -160,6 +207,8 @@ function sortRecords(store){
   // v17.1：各工地名單一律自建，不再自動補預設工種（原 v11 相容邏輯移除）；
   // 僅確保欄位存在為陣列，避免舊資料缺鍵造成 render 出錯
   if(store.config && !Array.isArray(store.config.laborTypes)) store.config.laborTypes = [];
+  // 舊工地的 config 沒有這個鍵；補成陣列，設定頁與判定才不必到處防 undefined
+  if(store.config && !Array.isArray(store.config.lockRanges)) store.config.lockRanges = [];
 }
 
 /* 各工地獨立管理名單（v17／v17.1）：新建工地一律不帶任何種子名單——
@@ -175,7 +224,8 @@ function defaultSiteConfig(){
     people: [],
     workers: [],
     laborTypes: [],
-    lockDate: ""
+    lockDate: "",      // 舊版單一切點（保留相容；新設定一律走 lockRanges）
+    lockRanges: []     // v24.7 鎖檔區間
   };
 }
 function cur(){ return SITE_CACHE[MASTER.currentSite]; }
@@ -216,7 +266,7 @@ const COL_W = new Map([
   /* 日期：實測「2026-08-02」要 118px 才不會斷成兩行（欄寬含左右各 10px 內距） */
   ["出工日期",120], ["簽單繳回日",120], ["日期",120], ["稽核日期",150],
   /* 自由文字：字多，給足寬度讓它折成幾行就好 */
-  ["現場查核回饋",220], ["出工明細(工種)",150], ["機具使用明細",150],
+  ["現場查核回饋",220], ["出工明細(工種)",150], ["機具使用明細",150], ["逐日使用紀錄(月租)",260],
   ["工作內容",120], ["實際工作內容",180], ["申請備註",150],
   ["工作地點",120], ["機具類型",110], ["類型",110],
   ["根基自辦備註",100], ["廠商代辦備註",100], ["代辦明細(廠商)",190],
@@ -957,7 +1007,7 @@ function initLaborApplyForm(){
     const date = document.getElementById("l_date").value;
 
     if(isLockedDate(date)){
-      toast(`此日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員操作`);
+      toast(`此日期已鎖檔（${lockReason(date)}），僅限管理員操作`);
       return;
     }
 
@@ -1037,7 +1087,7 @@ async function loadLaborApplyRecord(id){
     rec = cur().labor.find(r=>r.id===id);
   }
   if(!rec){ toast("此紀錄已被其他人刪除"); renderAll(); return; }
-  if(isLockedDate(rec.date)){ toast(`此單日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員修改`); renderLaborList(); return; }
+  if(isLockedDate(rec.date)){ toast(`此單日期已鎖檔（${lockReason(rec.date)}），僅限管理員修改`); renderLaborList(); return; }
   editingLaborApplyId = id;
   editingLaborApplyBaseV = rec.v || 0;   // v18：版本快照，送出以此為 baseV
 
@@ -1526,7 +1576,7 @@ async function loadLaborReportRecord(id){
     rec = cur().labor.find(r=>r.id===id);
   }
   if(!rec){ toast("此紀錄已被其他人刪除"); renderAll(); return; }
-  if(isLockedDate(rec.date)){ toast(`此單日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員修改`); renderLaborList(); return; }
+  if(isLockedDate(rec.date)){ toast(`此單日期已鎖檔（${lockReason(rec.date)}），僅限管理員修改`); renderLaborList(); return; }
   editingLaborReportId = id;
   editingLaborReportBaseV = rec.v || 0;   // v18：版本快照，送出以此為 baseV
   // v24.2：附件改由回報端維護——載入單據上既有的，讓人可檢視/刪除/續傳
@@ -1584,7 +1634,7 @@ async function deleteLaborRecord(id){
     return;
   }
   if(rec && isLockedDate(rec.date)){
-    toast(`此單日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員刪除`);
+    toast(`此單日期已鎖檔（${lockReason(rec.date)}），僅限管理員刪除`);
     return;
   }
   if(!confirm("確定要刪除這筆點工紀錄（含其回報）嗎？此操作影響所有使用者且無法復原。")) return;
@@ -1757,7 +1807,7 @@ function initEquipApplyForm(){
     const date = document.getElementById("e_date").value;
 
     if(isLockedDate(date)){
-      toast(`此日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員操作`);
+      toast(`此日期已鎖檔（${lockReason(date)}），僅限管理員操作`);
       return;
     }
 
@@ -1860,7 +1910,7 @@ async function loadEquipApplyRecord(id){
     rec = cur().equipment.find(r=>r.id===id);
   }
   if(!rec){ toast("此紀錄已被其他人刪除"); renderAll(); return; }
-  if(isLockedDate(rec.date)){ toast(`此單日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員修改`); renderEquipList(); return; }
+  if(isLockedDate(rec.date)){ toast(`此單日期已鎖檔（${lockReason(rec.date)}），僅限管理員修改`); renderEquipList(); return; }
   editingEquipApplyId = id;
   editingEquipApplyBaseV = rec.v || 0;   // v18：版本快照，送出以此為 baseV
 
@@ -1907,7 +1957,7 @@ let editingEquipReportId = null;
 let editingEquipReportBaseV = 0;
 let usageState = [];
 
-let usageLogState = [];   // v24.4 月租的逐日使用紀錄 [{date, note, hours}]
+let usageLogState = [];   // v24.4 月租的逐日使用紀錄 [{date, note, hours, signer}]
 
 function renderUsageLog(){
   const box = document.getElementById("e_usageLogRows");
@@ -1917,11 +1967,12 @@ function renderUsageLog(){
     box.innerHTML = '<div class="empty-row">尚無使用紀錄——每天做完在上方加一筆即可，不必另開新單</div>';
   }else{
     box.innerHTML = usageLogState.map((u,i)=>`
-      <div class="att-row present">
+      <div class="att-row present ulog-row">
         <span class="tr-name">${esc(u.date)}</span>
         <div class="att-fields">
-          <label class="ag-note">內容<input type="text" class="ulog-note" data-i="${i}" value="${esc(u.note||"")}"></label>
+          <label class="ulog-note-wrap">內容<input type="text" class="ulog-note" data-i="${i}" value="${esc(u.note||"")}" placeholder="當日做了什麼"></label>
           <label>時數<input type="number" class="ulog-hours" data-i="${i}" step="0.5" min="0" value="${u.hours ?? ""}" placeholder="選填"></label>
+          <label title="當天在簽單上簽名的工程師；月租單每天可能不同人，逐日填才對得起來">簽認<input type="text" class="ulog-signer-in" data-i="${i}" list="e_logSignerList" value="${esc(u.signer||"")}" placeholder="選填"></label>
         </div>
         <button type="button" class="att-remove" data-i="${i}" title="移除此筆">×</button>
       </div>`).join("");
@@ -1929,10 +1980,21 @@ function renderUsageLog(){
   if(hint){
     const days = usageLogState.length;
     const hrs = usageLogState.reduce((t,u)=>t+(Number(u.hours)||0),0);
+    const signers = [...new Set(usageLogState.map(u=>(u.signer||"").trim()).filter(Boolean))];
     hint.innerHTML = `<strong>在場天數 ${days} 天</strong>（由筆數自動統計，供廠商排名使用）`
       + (hrs ? `｜累計時數 ${fmt(hrs)} 小時` : "")
-      + "。本區只記施工軌跡與在場天數。";
+      + (signers.length ? `｜當日簽認：${esc(signers.join("、"))}` : "")
+      + "。當日工作內容填這裡即可，下方「實際工作內容」是整張單的摘要，月租可留空。";
   }
+}
+
+/* 日期字串 +1 天。用 Date 的本地建構子再取本地欄位——不可走 toISOString（UTC 位移）。 */
+function nextDay(dateStr){
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr || "");
+  if(!m) return "";
+  const d = new Date(+m[1], +m[2]-1, +m[3]);
+  d.setDate(d.getDate() + 1);
+  return localDate(d);
 }
 
 function addUsageLogRow(){
@@ -1940,6 +2002,7 @@ function addUsageLogRow(){
   const d = document.getElementById("e_logDate").value;
   const note = document.getElementById("e_logNote").value.trim();
   const hours = document.getElementById("e_logHours").value;
+  const signer = document.getElementById("e_logSigner").value.trim();
   if(!d){ toast("請先選擇使用日期"); return; }
   const rec = cur().equipment.find(r=>r.id===editingEquipReportId);
   // 落在租期外的日期多半是選錯——擋下比事後對帳才發現好
@@ -1947,11 +2010,17 @@ function addUsageLogRow(){
     toast(`${d} 不在租期（${rec.rentFrom} ～ ${rec.rentTo}）內`); return;
   }
   if(usageLogState.some(u=>u.date === d)){ toast(`${d} 已有紀錄，請直接修改該列`); return; }
-  usageLogState.push({ date: d, note, hours: hours === "" ? null : (parseFloat(hours)||0) });
+  usageLogState.push({ date: d, note, hours: hours === "" ? null : (parseFloat(hours)||0), signer });
   usageLogState.sort((a,b)=> a.date.localeCompare(b.date));
   document.getElementById("e_logNote").value = "";
   document.getElementById("e_logHours").value = "";
+  /* 簽認人**刻意不清空**：連續數日常是同一位，逐日重打很煩；換人時直接改掉即可。
+     日期自動往後推一天（不超過租期），讓「打內容→Enter」可以一路連著登打。 */
+  const nd = nextDay(d);
+  const lg = document.getElementById("e_logDate");
+  if(lg && nd && !(lg.max && nd > lg.max)) lg.value = nd;
   renderUsageLog();
+  document.getElementById("e_logNote").focus();
 }
 
 /* 月租：改用逐日紀錄，隱藏「到場覆核／0 使用確認／出工天數／差異」
@@ -1966,9 +2035,19 @@ function applyEquipBillingView(rec){
   if(dayField) dayField.hidden = monthly;
   const diffField = document.getElementById("e_diff") && document.getElementById("e_diff").closest(".field");
   if(diffField) diffField.hidden = monthly;
+  /* 月租的「簽單責任工程師」語意與日租不同：日租一天一單、簽的人就是那位；
+     月租整個租期一張單，每天簽名的人可能不同——單頭那格填**本張單的覆核工程師**
+     （負責彙整、對帳的人），實際逐日簽名記在逐日紀錄的「簽認」欄。 */
+  const ckHint = document.getElementById("e_checkerHint");
+  if(ckHint) ckHint.textContent = monthly
+    ? "月租：此處填本張單的覆核工程師（彙整對帳者，限一位）；每日實際簽名的工程師請填在下方逐日紀錄的「簽認」欄。"
+    : "";
   if(monthly && rec){
     const lg = document.getElementById("e_logDate");
     if(lg){ lg.min = rec.rentFrom || ""; lg.max = rec.rentTo || ""; if(!lg.value) lg.value = rec.rentFrom || ""; }
+    const dl = document.getElementById("e_logSignerList");
+    if(dl) dl.innerHTML = ((cur() && cur().config.people) || [])
+      .map(p=>`<option value="${esc(p)}"></option>`).join("");
   }
 }
 
@@ -1989,7 +2068,7 @@ function bindEnterToAdd(inputIds, addFn){
 
 function initEquipReportForm(){
   document.getElementById("e_logAddBtn").addEventListener("click", addUsageLogRow);
-  bindEnterToAdd(["e_logDate","e_logNote","e_logHours"], addUsageLogRow);
+  bindEnterToAdd(["e_logDate","e_logNote","e_logHours","e_logSigner"], addUsageLogRow);
   bindEnterToAdd(["e_agentVendor"], addEquipAgentRow);
   const logBox = document.getElementById("e_usageLogRows");
   logBox.addEventListener("input", e=>{
@@ -1998,6 +2077,7 @@ function initEquipReportForm(){
     if(e.target.classList.contains("ulog-note")) usageLogState[i].note = e.target.value;
     if(e.target.classList.contains("ulog-hours"))
       usageLogState[i].hours = e.target.value.trim()==="" ? null : (parseFloat(e.target.value)||0);
+    if(e.target.classList.contains("ulog-signer-in")) usageLogState[i].signer = e.target.value;
   });
   logBox.addEventListener("click", e=>{
     const btn = e.target.closest(".att-remove");
@@ -2181,7 +2261,7 @@ function initEquipReportForm(){
         vendor,      // 實際配到的車行；計價分組走 recVendor()
         days,        // 出工天數（0.5／1／2…）；月租單改看 usageLog 的筆數
         // v24.4 月租：逐日使用紀錄（施工軌跡）＋在場天數（排名用）
-        usageLog: isMonthly(rec) ? usageLogState.slice() : [],
+        usageLog: isMonthly(rec) ? usageLogState.map(u=>({date:u.date, note:u.note||"", hours:u.hours ?? null, signer:(u.signer||"").trim()})) : [],
         onSiteDays: isMonthly(rec) ? usageLogState.length : null,
         otHours,     // 加班時數（單一欄，機具不分段）
         workContent: document.getElementById("e_workContent").value.trim(),
@@ -2438,7 +2518,7 @@ async function loadEquipReportRecord(id){
     rec = cur().equipment.find(r=>r.id===id);
   }
   if(!rec){ toast("此紀錄已被其他人刪除"); renderAll(); return; }
-  if(isLockedDate(rec.date)){ toast(`此單日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員修改`); renderEquipList(); return; }
+  if(isLockedDate(rec.date)){ toast(`此單日期已鎖檔（${lockReason(rec.date)}），僅限管理員修改`); renderEquipList(); return; }
   editingEquipReportId = id;
   editingEquipReportBaseV = rec.v || 0;
   // v24.2：附件改由回報端維護（理由同點工端）
@@ -2447,7 +2527,7 @@ async function loadEquipReportRecord(id){
   renderAttBox(equipAtt, "e_attachBox");
   // v24.4 月租：載入逐日使用紀錄並切換版面
   usageLogState = ((rec.report && rec.report.usageLog) || [])
-    .map(u=>({ date:u.date, note:u.note||"", hours: u.hours ?? null }));
+    .map(u=>({ date:u.date, note:u.note||"", hours: u.hours ?? null, signer: u.signer||"" }));
   applyEquipBillingView(rec);
   renderUsageLog();
 
@@ -2507,7 +2587,7 @@ async function deleteEquipRecord(id){
     return;
   }
   if(rec && isLockedDate(rec.date)){
-    toast(`此單日期已在計價鎖定期間（${cur().config.lockDate} 含以前），僅限管理員刪除`);
+    toast(`此單日期已鎖檔（${lockReason(rec.date)}），僅限管理員刪除`);
     return;
   }
   if(!confirm("確定要刪除這筆機具紀錄（含其回報）嗎？此操作影響所有使用者且無法復原。")) return;
@@ -2931,7 +3011,7 @@ const REPORT_DEFS = {
        - 新增：預定使用時數／申請備註／出工天數／加班時數／實際工作內容 */
     headers:["出工日期","機具廠商","機具類型","型號","工作內容","工作地點","需求數量(台)","預定使用時數","申請備註","申請人","狀態","簽單繳回日","機具實際工作使用時數","差異","出工天數","加班時數","實際工作內容",
       ...(PRICING_UI ? ["計價品項","加班費率品項","計價金額","計價組成"] : []),
-      "0使用確認","機具使用明細","簽單責任工程師","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註","代辦明細(廠商)"],
+      "0使用確認","機具使用明細","逐日使用紀錄(月租)","簽單責任工程師","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註","代辦明細(廠商)"],
     records: ()=>cur().equipment.filter(x=>inReportRange(x.date) && matchReportVendor(x) && matchReportCat(x,"equipment") && matchReportEngineer(x,"equipment")),
     rows(recs){ return (recs || this.records()).map(x=>{
       const rep = x.report || {};
@@ -2953,6 +3033,10 @@ const REPORT_DEFS = {
             ? [rep.rateItem||"", rep.rateOtItem||"", ...(reported ? amountCells(equipAmount(x)) : ["", ""])]
             : []),
         rep.zeroUse?"V":"", usageDetail,
+        // 月租的施工軌跡與逐日簽認：日租單為空
+        (rep.usageLog||[]).map(u=>
+          `${u.date}${u.hours!=null?`(${fmt(u.hours)}h)`:""}${u.signer?`[${u.signer}]`:""}${u.note?` ${u.note}`:""}`
+        ).join("；"),
         rep.checker||""
       ].concat(doneCols(rep, "equipment"));
     }); }
@@ -5385,6 +5469,15 @@ function applyAdminUI(){
     document.getElementById(id).readOnly = !admin;
   });
   document.getElementById("cfg_lockDate").disabled = !admin;
+  // v24.7 鎖檔：非管理員可看見規則（知道為什麼不能改單），但不能新增/開關/刪除
+  ["lk_from","lk_to","lk_eff","lk_note"].forEach(id=>{
+    const el = document.getElementById(id); if(el) el.disabled = !admin;
+  });
+  ["lk_addBtn","lk_applyAllBtn"].forEach(id=>{
+    const el = document.getElementById(id); if(el) el.style.display = admin ? "" : "none";
+  });
+  document.querySelectorAll("#lockRangeRows .lk-toggle, #lockRangeRows .att-remove")
+    .forEach(b=>{ b.style.display = admin ? "" : "none"; });
   document.getElementById("saveSettings").style.display = admin ? "" : "none";
   document.getElementById("resetSettings").style.display = admin ? "" : "none";
   document.getElementById("dangerZone").style.display = admin ? "" : "none";
@@ -5424,6 +5517,11 @@ function renderSettings(){
     document.getElementById(id).value = (c[key]||[]).join("\n");
   });
   document.getElementById("cfg_lockDate").value = c.lockDate || "";
+  /* 舊版單一鎖定日：只有本來就設過的工地才顯示這格，避免與新的鎖檔區間並存造成混淆 */
+  const legacy = document.getElementById("legacyLockField");
+  if(legacy) legacy.hidden = !c.lockDate;
+  lockDraft = lockRangesOf(c).map(r=>({...r}));
+  renderLockRanges();
   applyAdminUI();
 }
 
@@ -5510,6 +5608,116 @@ function initAdoptUI(){
   });
 }
 
+/* ==========================================================
+   鎖檔區間設定（v24.7；管理員限定）
+
+   與設定頁其他欄位同樣是「草稿 → 按儲存設定才寫回」：加入/移除/開關都只動
+   lockDraft，離開設定頁不儲存就等於沒發生。這樣三個動作的心智模型一致，
+   也避免誤點「停用」就即時把整段資料解鎖。
+   ========================================================== */
+let lockDraft = [];
+
+function lockStateOf(r){
+  if(r.enabled === false) return { cls:"off", text:"已停用（未鎖定）" };
+  if(r.effectiveAt && localDateTime() < r.effectiveAt)
+    return { cls:"pending", text:`預約中・${r.effectiveAt.replace("T"," ")} 起鎖定` };
+  return { cls:"on", text:"鎖定中" };
+}
+
+function renderLockRanges(){
+  const box  = document.getElementById("lockRangeRows");
+  const hint = document.getElementById("lockRangeHint");
+  if(!box) return;
+  if(!lockDraft.length){
+    box.innerHTML = '<div class="empty-row">尚未設定鎖檔區間——本工地所有日期皆可申請/回報</div>';
+  }else{
+    box.innerHTML = lockDraft.map((r,i)=>{
+      const st = lockStateOf(r);
+      return `
+      <div class="att-row lk-row ${st.cls}">
+        <span class="tr-name">${esc(r.from||"最早")} ～ ${esc(r.to||"最晚")}</span>
+        <div class="att-fields">
+          <span class="lk-state">${esc(st.text)}</span>
+          ${r.note ? `<span class="lk-note">${esc(r.note)}</span>` : ""}
+        </div>
+        <button type="button" class="lk-toggle" data-i="${i}">${r.enabled === false ? "啟用（鎖定）" : "停用（解鎖）"}</button>
+        <button type="button" class="att-remove" data-i="${i}" title="刪除此規則">×</button>
+      </div>`;
+    }).join("");
+  }
+  if(hint){
+    const on = lockDraft.filter(r=>lockStateOf(r).cls === "on").length;
+    const pd = lockDraft.filter(r=>lockStateOf(r).cls === "pending").length;
+    hint.innerHTML = `目前 <strong>${on}</strong> 段鎖定中`
+      + (pd ? `、<strong>${pd}</strong> 段預約中` : "")
+      + "。鎖定期間內的單據，工地端不可申請、回報、修改或刪除（管理員不受限）。"
+      + "<strong>異動後請按下方「儲存設定」才會生效。</strong>";
+  }
+}
+
+function addLockRange(){
+  if(!isAdmin()){ toast("僅限管理員操作"); return; }
+  const from = document.getElementById("lk_from").value;
+  const to   = document.getElementById("lk_to").value;
+  const eff  = document.getElementById("lk_eff").value;
+  const note = document.getElementById("lk_note").value.trim();
+  // 兩側全空＝鎖住所有日期，幾乎都是漏填而不是本意——擋下
+  if(!from && !to){ toast("請至少填寫鎖定起日或迄日"); return; }
+  if(from && to && from > to){ toast("鎖定起日不可晚於迄日"); return; }
+  lockDraft.push({ id: uid(), from, to, effectiveAt: eff, enabled: true, note });
+  lockDraft.sort((a,b)=> String(a.from||"").localeCompare(String(b.from||"")));
+  ["lk_from","lk_to","lk_eff","lk_note"].forEach(id=>{ document.getElementById(id).value = ""; });
+  renderLockRanges();
+  toast("已加入鎖檔區間，請按「儲存設定」生效");
+}
+
+function initLockRangeUI(){
+  const add = document.getElementById("lk_addBtn");
+  if(!add) return;
+  add.addEventListener("click", addLockRange);
+  bindEnterToAdd(["lk_from","lk_to","lk_eff","lk_note"], addLockRange);
+
+  document.getElementById("lockRangeRows").addEventListener("click", e=>{
+    if(!isAdmin()){ toast("僅限管理員操作"); return; }
+    const tg = e.target.closest(".lk-toggle");
+    if(tg){
+      const r = lockDraft[parseInt(tg.dataset.i,10)];
+      if(r) r.enabled = (r.enabled === false);
+      renderLockRanges();
+      return;
+    }
+    const rm = e.target.closest(".att-remove");
+    if(rm){
+      lockDraft.splice(parseInt(rm.dataset.i,10), 1);
+      renderLockRanges();
+    }
+  });
+
+  /* 結算是全公司同時做的，16 個工地逐一切換設定既慢又容易漏。
+     這個按鈕把目前工地的規則複製到所有工地——**覆蓋**而非合併，
+     所以要明確確認。仍走「儲存設定」的同一條寫入路徑。 */
+  document.getElementById("lk_applyAllBtn").addEventListener("click", async ()=>{
+    if(!isAdmin()){ toast("僅限管理員操作"); return; }
+    if(!confirm(`將目前工地的 ${lockDraft.length} 段鎖檔規則「覆蓋」到全部 ${MASTER.sites.length} 個工地？
+各站原本的鎖檔設定會被取代（其他基礎資料不受影響）。`)) return;
+    const snapshot = lockDraft.map(r=>({...r}));
+    try{
+      const jobs = [];
+      for(const site of MASTER.sites){
+        if(!SITE_CACHE[site]) SITE_CACHE[site] = { config: defaultSiteConfig(), labor: [], equipment: [] };
+        SITE_CACHE[site].config.lockRanges = snapshot.map(r=>({...r, id: uid()}));
+        jobs.push(apiSaveConfig(site));
+      }
+      await Promise.all(jobs);
+    }catch(err){
+      toast("⚠ 套用失敗，請檢查網路後再試（部分工地可能已寫入，請重新整理確認）");
+      return;
+    }
+    toast(`已套用到 ${MASTER.sites.length} 個工地`);
+    renderAll();
+  });
+}
+
 function initSettings(){
   document.getElementById("saveSettings").addEventListener("click", async ()=>{
     if(!isAdmin()){ toast("僅限管理員操作"); return; }
@@ -5535,6 +5743,15 @@ function initSettings(){
       c[key] = Array.from(new Set(lines));
     });
     c.lockDate = document.getElementById("cfg_lockDate").value || "";
+    // v24.7 鎖檔區間：草稿寫回（存進去的是純資料，不帶 UI 狀態）
+    c.lockRanges = lockDraft.map(r=>({
+      id: r.id || uid(),
+      from: r.from || "",
+      to: r.to || "",
+      effectiveAt: r.effectiveAt || "",
+      enabled: r.enabled !== false,
+      note: r.note || ""
+    }));
 
     try{
       const jobs = [apiSaveMaster(), apiSaveConfig(MASTER.currentSite)];
@@ -5746,6 +5963,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
   initAudit();
   initAdmin();
   initSettings();
+  initLockRangeUI();
   initRatesPanel();      // v22.8 行情通報匯入與綁定
   initAdoptUI();         // v23.3 工地納管
   /* v23.1：計價呈現開關。用 class 收起而非把元素移出 DOM——

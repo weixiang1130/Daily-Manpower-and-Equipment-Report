@@ -2598,6 +2598,19 @@ function daysBetween(a, b){
   return Math.round((Date.UTC(pb[0], pb[1]-1, pb[2]) - Date.UTC(pa[0], pa[1]-1, pa[2])) / 86400000);
 }
 
+/* 戰情室的追蹤起算日（v24.6）。
+   系統剛上線那陣子機制還沒完善，留下一批**永遠不會有人去回報／補簽單**的舊單
+   （線上實測：逾期未回報 199 筆最舊到 7/1、待繳回簽單 46 筆最舊到 6/25）。
+   它們長期卡在清單最上方（依逾期天數排序），把真正該追的近期單擠到看不見，
+   等於讓整個追蹤面板失效。
+
+   ⚠ 這是**畫面層的追蹤起算點，不是刪資料**——歷程報表、匯出、排名一律不受影響，
+     舊單查得到也算得到。要往前或往後調整，改這一個常數即可。 */
+const DASH_TRACK_SINCE = "2026-08-01";
+
+/* 出工日是否落在追蹤範圍內。無日期的單一律不追（沒有日期就無從判斷逾期幾天）。 */
+const inTrackRange = d => !!d && d >= DASH_TRACK_SINCE;
+
 function renderDashboard(){
   if(!READY) return;
   let allLabor = [], allEquip = [];
@@ -2612,7 +2625,9 @@ function renderDashboard(){
   const abnormal = reportedThisMonth.filter(({r})=>r.report.diff!==0);
   const laborPending = allLabor.filter(({r})=>r.status!=="已回報");
   const equipPending = allEquip.filter(({x})=>x.status!=="已回報");
-  const pendingSign = allLabor.filter(({r})=>r.status==="已回報" && r.report && !r.report.signReturnDate);
+  // v24.6：只追 DASH_TRACK_SINCE 起的單（卡片與下方清單同一份，數字才不會打架）
+  const pendingSign = allLabor.filter(({r})=>
+    r.status==="已回報" && r.report && !r.report.signReturnDate && inTrackRange(r.date));
 
   /* 戰情室：逾期未回報＝出工日已過、卻仍停在「待回報」的單（跨工地）。
      只算「出工日 < 今天」——當天的單還沒到回報時機，不是逾期。
@@ -2620,12 +2635,12 @@ function renderDashboard(){
   const today = localDate();
   const overdue = [];
   allLabor.forEach(({site, r})=>{
-    if(r.status !== "已回報" && r.date && r.date < today)
+    if(r.status !== "已回報" && inTrackRange(r.date) && r.date < today)
       overdue.push({ site, kind:"點工", date:r.date, vendor:r.vendor || "—",
                      who:r.applicant || "—", days: daysBetween(r.date, today) });
   });
   allEquip.forEach(({site, x})=>{
-    if(x.status !== "已回報" && x.date && x.date < today)
+    if(x.status !== "已回報" && inTrackRange(x.date) && x.date < today)
       overdue.push({ site, kind:"機具", date:x.date, vendor:recVendor(x) || "—",
                      who:x.applicant || "—", days: daysBetween(x.date, today) });
   });
@@ -2750,7 +2765,9 @@ function renderSiteBreakdown(){
     const ePending = s.equipment.filter(x=>x.status!=="已回報").length;
     const reportedM = s.labor.filter(r=>r.status==="已回報" && r.report && isThisMonth(r.report.reportedAt));
     const abnormalM = reportedM.filter(r=>r.report.diff!==0).length;
-    const pendingSign = s.labor.filter(r=>r.status==="已回報" && r.report && !r.report.signReturnDate).length;
+    // v24.6：與上方卡片同一個追蹤起算日，否則各站加總會對不上卡片數字
+    const pendingSign = s.labor.filter(r=>
+      r.status==="已回報" && r.report && !r.report.signReturnDate && inTrackRange(r.date)).length;
     const total = s.labor.length + s.equipment.length;
     return {site, lPending, ePending, reportedCount:reportedM.length, abnormalM, pendingSign, total};
   });

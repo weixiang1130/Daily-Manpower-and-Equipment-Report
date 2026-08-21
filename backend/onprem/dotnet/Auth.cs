@@ -57,6 +57,16 @@ public sealed record UserIdentity(string Account, string EmpId, string Name, str
 
 public sealed record Authz(Role Role, IReadOnlySet<string> Sites, bool AllSites)
 {
+    /* ERP 權限檢視表回給這個人的專案代碼，以及其中**換不出工地名**的那些。
+       **僅供 /whoami 診斷，不參與任何判定。**
+
+       ⚠ 沒有這兩個值就分不出「ERP 根本沒給他這個專案」與「給了、但該工地的
+         sites.project_code 還沒填」——兩者的畫面表現一模一樣（少一個工地），
+         查修方向卻完全相反：一個要找 ERP 管理者，一個是我們自己的設定沒做完。
+         UAT 期間實際踩到：某位主任在 ERP 有 5 個專案，只有 1 個對映得到工地。 */
+    public IReadOnlySet<string>? ErpProjects { get; init; }
+    public IReadOnlySet<string>? UnmappedProjects { get; init; }
+
     public bool CanSee(string site) => AllSites || Sites.Contains(site);
     /// 破壞性操作與全域設定限系統管理者——一併解決「伺服器端無權限分級」的安審遺留
     public bool IsAdmin => Role == Role.Admin;
@@ -382,6 +392,7 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
         if (!isLead && !roles.Overlaps(opt.SiteUserRoles)) return null;   // 規則 6：拒絕
 
         var sites = new HashSet<string>(StringComparer.Ordinal);
+        var mapped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         await using (var cn = appDb())
         {
             await cn.OpenAsync();
@@ -389,12 +400,19 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
                 "SELECT name, project_code FROM dbo.sites WHERE project_code IS NOT NULL AND is_active = 1", cn);
             await using var rd = await cmd.ExecuteReaderAsync();
             while (await rd.ReadAsync())
-                if (projects.Contains(rd.GetString(1).Trim())) sites.Add(rd.GetString(0));
+            {
+                var code = rd.GetString(1).Trim();
+                if (!projects.Contains(code)) continue;
+                sites.Add(rd.GetString(0));
+                mapped.Add(code);
+            }
         }
 
         /* 有工地角色但一個站都對不上：多半是該站的 project_code 還沒填。
            回空清單而不是拒絕登入——使用者會看到「沒有可用工地」的引導訊息，
            比直接擋在門外容易查出是設定沒做完。 */
-        return new Authz(isLead ? Role.SiteLead : Role.SiteUser, sites, false);
+        var unmapped = new HashSet<string>(projects.Where(p => !mapped.Contains(p)), StringComparer.OrdinalIgnoreCase);
+        return new Authz(isLead ? Role.SiteLead : Role.SiteUser, sites, false)
+            { ErpProjects = projects, UnmappedProjects = unmapped };
     }
 }

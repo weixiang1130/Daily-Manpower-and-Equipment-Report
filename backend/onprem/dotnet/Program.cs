@@ -1038,6 +1038,25 @@ app.MapGet("/whoami", async (HttpContext ctx) =>
     o["sites"] = new JsonArray(az.Sites.Select(s => (JsonNode)JsonValue.Create(s)!).ToArray());
     o["canSeeAudits"] = az.CanSeeAudits;
     o["isAdmin"] = az.IsAdmin;
+
+    /* ⚠ 工地角色**看得到幾個工地**這件事，只給結果是不夠的。
+       「少一個工地」有兩種完全不同的成因，畫面上一模一樣：
+         ① ERP 沒有把那個專案給這個人 → 要找 ERP 管理者
+         ② ERP 給了，但該工地的 sites.project_code 還沒填 → 是我們的設定沒做完
+       把 ERP 回的專案代碼、以及其中換不出工地名的那些一起攤開，
+       一眼就分得出來（UAT 期間就是卡在 ②，只靠 sites 清單查不出）。 */
+    if (!az.AllSites && az.ErpProjects is not null)
+    {
+        o["erpProjects"] = new JsonArray(az.ErpProjects.OrderBy(x => x, StringComparer.Ordinal)
+            .Select(x => (JsonNode)JsonValue.Create(x)!).ToArray());
+        var un = az.UnmappedProjects ?? (IReadOnlySet<string>)new HashSet<string>();
+        o["unmappedProjects"] = new JsonArray(un.OrderBy(x => x, StringComparer.Ordinal)
+            .Select(x => (JsonNode)JsonValue.Create(x)!).ToArray());
+        if (un.Count > 0)
+            o["hint"] = $"ERP 已授權 {az.ErpProjects.Count} 個專案，其中 {un.Count} 個換不出工地"
+                      + "——這些專案代碼在 dbo.sites 裡沒有對應且啟用中的列（多半是 project_code 尚未填）。"
+                      + "請跑資料匯入包的 02-set-project-code.sql，或於系統設定頁以「工地納管」補上。";
+    }
     return Results.Content(o.ToJsonString(Wr.JsonOpts), "application/json; charset=utf-8");
 });
 

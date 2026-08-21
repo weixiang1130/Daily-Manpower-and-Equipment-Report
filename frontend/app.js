@@ -3195,9 +3195,16 @@ function populateReportFilters(key){
   if(engineers.includes(reportEngineer)) engSel.value = reportEngineer; else { reportEngineer = ""; engSel.value = ""; }
 }
 
-/* 明細與計價彙總共用；欄寬走上方 COL_W（共用表格工具） */
+/* 明細與計價彙總共用；欄寬走上方 COL_W（共用表格工具）
+
+   ⚠ 儲存格內容包一層 .cellbox 並在 CSS 限高。理由（實測 2,201 張點工＋1,042 張機具）：
+   固定欄寬下長文字只能往下折，而同一列的高度由最長那一欄決定——
+   「逐日使用紀錄(月租)」單格最長 1,446 字，在 260px 欄寬要 85 行，
+   整列就變成 85 行高，旁邊 27 欄各只有一行字，整張表完全沒法掃讀。
+   限高後每列高度一致、表格可掃，超長的那格自己內捲。
+   **不改欄寬也不改內容**——匯出仍是全量全文（計價紅線 3）。 */
 function reportTableHTML(headers, rows){
-  const cell = v=>`<td>${cellHTML(v)}</td>`;
+  const cell = v=>`<td><div class="cellbox">${cellHTML(v)}</div></td>`;
   return fixedTableOpen(headers)
     + `<tbody>${rows.map(r=>`<tr>${r.map(cell).join("")}</tr>`).join("")}</tbody></table>`;
 }
@@ -3266,6 +3273,226 @@ function renderPricingSummary(key){
    - 檔名消毒：工地名與篩選標籤屬自由文字，含 / \ : 等非法字元時各瀏覽器行為不一
    - anchor 先掛進 DOM、revoke 延後：iOS Safari 的下載是非同步取用 blob URL，
      同步 revoke 會間歇拿到空檔（桌機 Chrome 不會重現） */
+/* 匯入說明：與 backend/sql/export-cloud-bundle.py 的 GUIDE **逐字同源**——
+   兩條匯出路徑（前端一鍵／後端腳本）交給資訊處的說明必須一致，
+   否則同一份步驟會有兩種版本。改動請兩邊一起改。 */
+const BUNDLE_GUIDE = `# 遷移包匯入說明（給資訊處）
+
+本包是切換日由雲端匯出的**完整資料**，含三部分：單據、費率書、附件本體。
+請依序執行，三步驟都完成才算銜接完畢。
+
+| 檔案／目錄 | 內容 |
+|---|---|
+| \`data.json\` | 工地清單、各站名單池、全部點工／機具單據（含回報與稽核） |
+| \`rates.json\` | 行情通報費率書 |
+| \`attachments/\` | 附件本體，**檔名即 \`attachment_id\`** |
+| \`MANIFEST.json\` | 筆數、附件數與大小、逐檔 SHA256（驗收用） |
+
+---
+
+## 步驟 1：建立資料庫
+
+\`\`\`
+sqlcmd -S <伺服器> -x -b -C -Q "CREATE DATABASE KG_AUDIT;"
+sqlcmd -S <伺服器> -d KG_AUDIT -f 65001 -x -b -C -i DB-SCHEMA.sql
+\`\`\`
+
+> 若貴部門**已依舊版建過資料庫**，不要重跑 \`DB-SCHEMA.sql\`，改成**依序**執行三支升級腳本：
+>
+> \`\`\`
+> sqlcmd -S <伺服器> -d KG_AUDIT -f 65001 -x -b -C -i ALTER-v24-work-precision.sql
+> sqlcmd -S <伺服器> -d KG_AUDIT -f 65001 -x -b -C -i ALTER-v244-monthly-rental.sql
+> sqlcmd -S <伺服器> -d KG_AUDIT -f 65001 -x -b -C -i ALTER-v247-lock-ranges.sql
+> \`\`\`
+>
+> | 腳本 | 不跑會怎樣 |
+> |---|---|
+> | \`ALTER-v24-work-precision.sql\` | 工數 0.625 被存成 **0.63**，×8 反推 5.04 小時，計價對不回來 |
+> | \`ALTER-v244-monthly-rental.sql\` | 缺 \`equip_usage_log\` 等物件，**下一步匯入會整批失敗** |
+> | \`ALTER-v247-lock-ranges.sql\` | 缺 \`site_lock_ranges\` 與逐日簽認欄，同樣**匯入失敗** |
+>
+> 三支都只做新增、可線上執行、重複執行安全。全新建庫則三支都不必跑。
+
+## 步驟 2：匯入單據
+
+\`\`\`
+python backup-json-to-sql.py data.json import.sql
+sqlcmd -S <伺服器> -d KG_AUDIT -f 65001 -x -b -C -i import.sql
+\`\`\`
+
+> ⚠ 轉換工具吃**兩個參數**（來源、輸出），不是用 \`>\` 導向——寫成 \`> import.sql\`
+> 只會得到一行用法說明，接著 sqlcmd 會報語法錯誤。
+
+轉換工具會一併寫入 \`attachments\` 的 \`file_path\`（值即 \`attachment_id\`），
+因此**只要步驟 3 把檔案放到正確目錄，附件即可直接下載**，不需要再回頭更新資料庫。
+
+## 步驟 3：放置附件
+
+把本包 \`attachments/\` 底下的**所有檔案**複製到服務的附件根目錄，**檔名不要更動**。
+該目錄由 \`appsettings.json\` 的 **\`App:AttachDir\`** 指定（v24.8 起；亦可用環境變數
+\`ATTACH_DIR\` 覆寫）。
+
+\`\`\`
+xcopy /E /I attachments <App:AttachDir 所指的目錄>
+\`\`\`
+
+> 服務啟動時若該目錄不存在或服務帳號沒有寫入權，**會直接啟動失敗**並指名
+> \`App:AttachDir\`——所以先把目錄與權限備妥再啟動。
+
+## 驗收
+
+- [ ] \`GET /health\` 回傳的工地數與 \`MANIFEST.json\` 的「工地數」相符
+- [ ] 各表筆數與 \`MANIFEST.json\` 的點工／機具單數相符
+- [ ] 隨機開啟數張含附件的單據，縮圖與稽核照片都打得開
+- [ ] 機具清單看得到「日租／月租」，月租單的逐日使用紀錄與簽認工程師都在
+- [ ] 設定頁（管理員）看得到「鎖檔區間」區塊
+
+### 關於費率書（\`rates.json\`）
+
+**目前系統不使用它，銜接時不必匯入。** 計價模組已於 v24.5 全面下架
+（前端 \`PRICING_UI = false\`），設定頁的費率匯入介面是隱藏的，
+報表也不再顯示任何計價欄位——所以**不會**出現「查無費率」。
+
+本包仍把它抓出來保存，是為了日後若要重新啟用計價：屆時把前端的
+\`PRICING_UI\` 改回 \`true\`，再由系統管理員於設定頁匯入 \`rates.json\`，
+或依 \`backend/sql/README.md\` 的費率書章節直接寫入資料表。
+`;
+
+/* ==========================================================
+   切換日遷移包（v24.9）—— 一鍵把雲端資料打包成可直接交給資訊處的 zip
+
+   為什麼要有這個：
+     設定頁的「資料備份（JSON）」依合約**不含附件本體與費率書**。切換日只帶那份
+     過去，地端會變成「附件描述都在、檔案全部打不開」。附件動輒數百個、上百 MB，
+     不可能請人逐一另存新檔。
+
+   為什麼自己寫 ZIP：
+     本專案零依賴，且 CSP 是 `script-src 'self'`——不能載入任何外部壓縮函式庫。
+     這裡用**儲存法（stored，不壓縮）**：附件幾乎都是 JPEG／PDF，本來就壓過了，
+     再壓一次省不到空間卻要多寫一套 DEFLATE。
+
+   ⚠ 產出的目錄結構**必須與 backend/sql/export-cloud-bundle.py 一致**——
+     資訊處那邊的匯入步驟、backup-json-to-sql.py 寫入的 file_path 都依賴它。
+     改這裡就要同步改那支與其產出的匯入說明。
+   ========================================================== */
+
+/* 逐檔 SHA-256，寫進 MANIFEST 供資訊處驗收（比對檔案有沒有在傳輸中損壞）。
+   ⚠ crypto.subtle 只在安全來源（HTTPS 或 localhost）可用。純 HTTP 的內網測試站
+     拿不到——那不是錯誤，回空字串即可，MANIFEST 其餘欄位仍可對帳。 */
+async function sha256Hex(bytes){
+  if (!(window.crypto && window.crypto.subtle)) return "";
+  const buf = await window.crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+/* 逐一取回附件本體。**每個附件用它自己的工地名**——attUrl() 走的是
+   MASTER.currentSite，對全量匯出是錯的（別站的附件會查無）。 */
+async function fetchAttachment(site, id){
+  const url = API_BASE + "?" + new URLSearchParams({ site, attachment: id }).toString();
+  const res = await fetch(url);
+  if (!res.ok){ const e = new Error("HTTP " + res.status); e.status = res.status; throw e; }
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+function bundleProgress(msg){
+  const el = document.getElementById("bundleProgress");
+  if (el){ el.hidden = false; el.textContent = msg; }
+}
+
+async function buildMigrationBundle(){
+  if (!isAdmin()){ toast("僅限管理員操作"); return; }
+  const btn = document.getElementById("bundleBtn");
+  if (btn) btn.disabled = true;
+  try{
+    bundleProgress("① 下載單據與名單池…");
+    const data = await api("GET", null, { scope: "all" });
+    const stores = data.stores || {};
+
+    bundleProgress("② 下載行情通報費率書…");
+    let rates = {};
+    try{ rates = await api("GET", null, { rates: "1" }); }
+    catch(e){ rates = {}; }   // 未曾匯入過費率＝空的，不是錯誤
+
+    /* 附件清單：單據本身與稽核紀錄底下的都要，且要記住各自的工地 */
+    const todo = [];
+    for (const [site, st] of Object.entries(stores)){
+      for (const kind of ["labor", "equipment"]){
+        for (const rec of st[kind] || []){
+          const atts = [...(rec.attachments || [])];
+          for (const au of rec.audits || []) atts.push(...(au.attachments || []));
+          for (const at of atts) if (at && at.id) todo.push({ site, id: at.id, name: at.name || "" });
+        }
+      }
+    }
+
+    const entries = [];
+    const files = [];
+    const missing = [];      // 雲端查無（孤兒描述資料），重跑也不會有
+    const failed = [];       // 其他錯誤，可重試
+    let done = 0;
+
+    for (const a of todo){
+      done++;
+      if (done % 5 === 1 || done === todo.length)
+        bundleProgress(`③ 下載附件 ${done}/${todo.length}…（勿關閉本頁）`);
+      let bytes;
+      try{
+        bytes = await fetchAttachment(a.site, a.id);
+      }catch(err){
+        /* 404＝雲端根本沒有這個檔（描述資料成了孤兒），重跑也不會有，與可重試的
+           失敗分開列——否則資訊處會一直重跑想補齊那幾個永遠補不到的。 */
+        (err.status === 404 ? missing : failed).push(
+          { id: a.id, name: a.name, reason: "HTTP " + (err.status || "?") });
+        continue;
+      }
+      entries.push({ name: `attachments/${a.id}`, data: bytes });
+      /* ⚠ 雜湊只是驗收用的附加資訊。算不出來**不可**讓這個附件被記成失敗——
+         檔案已經在包裡了，記成失敗會讓人以為要重跑，且 exported 與實際內容不符。 */
+      let sha = "";
+      try{ sha = await sha256Hex(bytes); }catch(e){ /* 留空，不影響搬遷 */ }
+      files.push({ id: a.id, name: a.name, size: bytes.length, sha256: sha });
+    }
+
+    bundleProgress("④ 打包中…");
+    const nLabor = Object.values(stores).reduce((n, s) => n + (s.labor || []).length, 0);
+    const nEquip = Object.values(stores).reduce((n, s) => n + (s.equipment || []).length, 0);
+    const manifest = {
+      producedAt: new Date().toISOString(),
+      producedBy: "前端一鍵匯出（設定頁 → 資料管理）",
+      sites: Object.keys(stores).length,
+      laborRecords: nLabor,
+      equipRecords: nEquip,
+      attachments: { expected: todo.length, exported: files.length, missing, failed },
+      totalAttachmentBytes: files.reduce((n, f) => n + f.size, 0),
+      files
+    };
+
+    /* 這四份放最前面，解壓後一眼就看得到說明與驗收清單 */
+    entries.unshift(
+      { name: "data.json",           data: JSON.stringify(data, null, 1) },
+      { name: "rates.json",          data: JSON.stringify(rates, null, 1) },
+      { name: "MANIFEST.json",       data: JSON.stringify(manifest, null, 1) },
+      { name: "匯入說明_給資訊處.md", data: BUNDLE_GUIDE }
+    );
+
+    const blob = zipStore(entries, "application/zip");
+    const mb = (blob.size / 1024 / 1024).toFixed(1);
+    downloadBlob(blob, `點工機具_切換日遷移包_${localDate()}.zip`,
+      `遷移包已下載（${mb} MB／附件 ${files.length} 個）`);
+
+    let summary = `完成：工地 ${manifest.sites}／點工 ${nLabor} 張／機具 ${nEquip} 張／`
+                + `附件 ${files.length} 個（${mb} MB）`;
+    if (missing.length) summary += `｜雲端查無 ${missing.length} 個（孤兒描述資料，屬已知情況）`;
+    if (failed.length)  summary += `｜⚠ 失敗 ${failed.length} 個，請重跑一次補齊`;
+    bundleProgress(summary);
+  }catch(e){
+    bundleProgress("⚠ 匯出失敗：" + (e && e.message ? e.message : "請檢查網路後重試"));
+    toast("⚠ 遷移包匯出失敗");
+  }finally{
+    if (btn) btn.disabled = false;
+  }
+}
+
 function downloadBlob(blob, filename, msg){
   const safe = String(filename).replace(/[\\/:*?"<>|\x00-\x1F]/g, "-");
   const url = URL.createObjectURL(blob);
@@ -4377,7 +4604,10 @@ function crc32(u8){
   for(let i = 0; i < u8.length; i++) c = CRC32_TABLE[(c ^ u8[i]) & 0xFF] ^ (c >>> 8);
   return (c ^ 0xFFFFFFFF) >>> 0;
 }
-/* entries: [{name, data:字串}] → Blob（ZIP，STORED 不壓縮） */
+/* entries: [{name, data}] → Blob（ZIP，STORED 不壓縮）
+   `data` 可為字串（xlsx 的 XML）或 Uint8Array（v24.9 遷移包的附件本體）。
+   ⚠ 二進位一定要原樣寫入——先轉字串再 TextEncoder 會把非 UTF-8 位元組
+     換成 U+FFFD，JPEG/PDF 會整個壞掉。 */
 function zipStore(entries, mime){
   const enc = new TextEncoder();
   const d = new Date();
@@ -4386,7 +4616,9 @@ function zipStore(entries, mime){
   const local = [], central = [];
   let offset = 0;
   entries.forEach(e => {
-    const name = enc.encode(e.name), data = enc.encode(e.data), crc = crc32(data);
+    const name = enc.encode(e.name);
+    const data = (e.data instanceof Uint8Array) ? e.data : enc.encode(e.data);
+    const crc = crc32(data);
     const lh = new DataView(new ArrayBuffer(30));
     lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true);
     lh.setUint16(6, 0x0800, true);          // 檔名為 UTF-8
@@ -5817,6 +6049,8 @@ function initSettings(){
       toast("⚠ 備份下載失敗，請檢查網路");
     }
   });
+
+  document.getElementById("bundleBtn").addEventListener("click", buildMigrationBundle);
 
   document.getElementById("clearAllData").addEventListener("click", async ()=>{
     if(!isAdmin()){ toast("僅限管理員操作"); return; }

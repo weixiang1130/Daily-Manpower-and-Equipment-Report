@@ -1000,6 +1000,21 @@ app.MapGet("/whoami", async (HttpContext ctx) =>
     o["empId"] = user.EmpId; o["name"] = user.Name;
     o["deptName"] = user.DeptName; o["onJob"] = user.OnJob;
 
+    /* ⚠ 在職判定不通過時**要單獨講**，不可讓它掉進下面的「③ 無任何權限」。
+       ResolveAsync 第一行就是 `if (!user.OnJob) return null;`——根本沒走到
+       部門比對與 ERP 查詢，卻回報「部門不在管理員清單」，會把人帶去比對
+       部門字串這條死路（UAT 首次部署就是這樣被誤導的）。
+       一併附上人資 API 的原始值，才分得出「真的離職」與「欄位格式不如預期」。 */
+    if (!user.OnJob)
+    {
+        o["stoppedAt"] = "②-b 在職判定不通過——人資 API 顯示非在職，於權限判定前即拒絕";
+        o["hrIsOnJob"] = user.RawIsOnJob ?? "(缺這個欄位)";
+        o["hrLeaveDate"] = user.RawLeaveDate ?? "(空)";
+        o["hint"] = "若此人確實在職，請比對上方兩個原始值：isOnJob 需為 1／true／Y，"
+                  + "且 leaveDate 需為空。兩者任一不符即判定離職（刻意 fail-closed）。";
+        return Results.Content(o.ToJsonString(Wr.JsonOpts), "application/json; charset=utf-8");
+    }
+
     // ④ 授權：角色與可見工地
     Authz? az = null;
     try { az = await authorizer.ResolveAsync(user); }

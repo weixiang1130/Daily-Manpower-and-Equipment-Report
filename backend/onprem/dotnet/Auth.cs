@@ -46,7 +46,13 @@ public enum Role
     SiteUser
 }
 
-public sealed record UserIdentity(string Account, string EmpId, string Name, string DeptName, bool OnJob);
+public sealed record UserIdentity(string Account, string EmpId, string Name, string DeptName, bool OnJob)
+{
+    /* 人資 API 回的原始值，**僅供 /whoami 診斷**，不參與任何判定。
+       在職判定為 false 時，沒有這兩個值就分不出「真的離職」與「欄位格式不如預期」。 */
+    public string? RawIsOnJob { get; init; }
+    public string? RawLeaveDate { get; init; }
+}
 
 public sealed record Authz(Role Role, IReadOnlySet<string> Sites, bool AllSites)
 {
@@ -160,8 +166,26 @@ public sealed class ConfigEmployeeDirectory(AuthOptions opt) : IEmployeeDirector
 public sealed class HrApiEmployeeDirectory(HrApiOptions opt, HttpClient http) : IEmployeeDirectory
 {
     // JsonNode 讀字串：欄位可能是 null 或非字串，安全取值避免 GetValue 丟例外
-    static string? S(JsonObject o, string k) =>
-        o[k] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+    /* JSON 純量 → 字串。
+
+       ⚠ **不可只接受 JSON 字串**。人資 API 的 `isOnJob` 實測回的是布林／數字
+         而不是字串 "1"，只認字串會讓 S() 回 null、在職判定一律 false，
+         於是**每一個人都被當成離職者拒絕**——UAT 首次部署就踩到：
+         `userName`／`deptName` 正常（本來就是字串），只有 `isOnJob` 壞掉，
+         症狀是身分鏈看起來全通、卻所有人都沒有權限。 */
+    static string? S(JsonObject o, string k)
+    {
+        if (o[k] is not JsonValue v) return null;
+        if (v.TryGetValue<string>(out var s)) return s;
+        return v.ToJsonString().Trim('"');      // true／false／1／0 …
+    }
+
+    /* 在職欄位的真值判定。**放寬的是表示法，不是語意**——
+       未知值一律當成「不在職」而拒絕（fail-closed，離職者不得放行）。 */
+    internal static bool OnJobTruthy(string? v) =>
+        v is not null && (v == "1"
+                       || v.Equals("true", StringComparison.OrdinalIgnoreCase)
+                       || v.Equals("Y", StringComparison.OrdinalIgnoreCase));
 
     public async Task<UserIdentity?> LookupAsync(string account)
     {
@@ -191,10 +215,15 @@ public sealed class HrApiEmployeeDirectory(HrApiOptions opt, HttpClient http) : 
         var empId = S(row, "userId")?.Trim();
         if (string.IsNullOrEmpty(empId)) return null;
 
-        // isOnJob=="1" 且無離職日 才算在職；兩者取交集，任一顯示離職即拒絕
-        var onJob = S(row, "isOnJob") == "1" && string.IsNullOrWhiteSpace(S(row, "leaveDate"));
+        /* 在職＝isOnJob 為真 且 無離職日；兩者取交集，任一顯示離職即拒絕。
+           原始值一併帶出來供 /whoami 診斷——判定結果是 false 時，
+           不看原始值根本查不出是「真的離職」還是「欄位格式不如預期」。 */
+        var rawOnJob = S(row, "isOnJob");
+        var rawLeave = S(row, "leaveDate");
+        var onJob = OnJobTruthy(rawOnJob) && string.IsNullOrWhiteSpace(rawLeave);
         return new UserIdentity(account, empId,
-            S(row, "userName") ?? account, S(row, "deptName") ?? "", onJob);
+            S(row, "userName") ?? account, S(row, "deptName") ?? "", onJob)
+            { RawIsOnJob = rawOnJob, RawLeaveDate = rawLeave };
     }
 }
 

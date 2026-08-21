@@ -1010,8 +1010,12 @@ app.MapGet("/whoami", async (HttpContext ctx) =>
         o["stoppedAt"] = "②-b 在職判定不通過——人資 API 顯示非在職，於權限判定前即拒絕";
         o["hrIsOnJob"] = user.RawIsOnJob ?? "(缺這個欄位)";
         o["hrLeaveDate"] = user.RawLeaveDate ?? "(空)";
-        o["hint"] = "若此人確實在職，請比對上方兩個原始值：isOnJob 需為 1／true／Y，"
-                  + "且 leaveDate 需為空。兩者任一不符即判定離職（刻意 fail-closed）。";
+        /* 把兩個條件各自的判讀攤開——只給原始值，讀的人還是要自己推敲哪一個不成立 */
+        o["isOnJobAccepted"] = HrApiEmployeeDirectory.OnJobTruthy(user.RawIsOnJob);
+        o["leaveDateEffective"] = HrApiEmployeeDirectory.LeaveDateEffective(user.RawLeaveDate, DateTime.Now);
+        o["hint"] = "isOnJob 需為 1／true／Y；leaveDate 僅在『解析得出且已過今天』時才推翻在職"
+                  + "（哨兵值如 1900-01-01、未來的預告離職日皆不影響）。"
+                  + "上方 isOnJobAccepted／leaveDateEffective 直接標示兩個條件的判讀結果。";
         return Results.Content(o.ToJsonString(Wr.JsonOpts), "application/json; charset=utf-8");
     }
 

@@ -15,6 +15,7 @@
      所有人看得到全部工地）。權限隨地端正式上線才由資訊處在設定檔開啟，
      不會因為部署了新版就突然把人擋在外面。
    ========================================================================== */
+using System.Globalization;
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -187,6 +188,27 @@ public sealed class HrApiEmployeeDirectory(HrApiOptions opt, HttpClient http) : 
                        || v.Equals("true", StringComparison.OrdinalIgnoreCase)
                        || v.Equals("Y", StringComparison.OrdinalIgnoreCase));
 
+    /* 離職日是否**真的已經生效**。
+
+       原本的判定是「`leaveDate` 非空即視為離職」，那會誤擋兩種在職者：
+         ① **哨兵值**——人資系統常以 `1900-01-01`／`0001-01-01` 這類預設值填未離職者
+         ② **預告離職**——已提辭呈但還在職到下個月末日，那段期間仍應可以使用系統
+
+       改成只有「解析得出的日期 ≤ 今天」才算離職。`isOnJob` 仍是權威欄位
+       （它為 false 時一律拒絕），這裡只決定 `leaveDate` 要不要**推翻**在職。
+
+       ⚠ 解析不出來時回 false（不推翻）——看不懂的值不該把人擋在門外，
+         而是交給 `isOnJob` 決定；原始值會出現在 /whoami 供判讀。
+       ⚠ 年份門檻 1990：早於此的日期不可能是現職員工的真實離職日，一律視為哨兵值。 */
+    internal static bool LeaveDateEffective(string? v, DateTime today)
+    {
+        if (string.IsNullOrWhiteSpace(v)) return false;
+        if (!DateTime.TryParse(v, CultureInfo.InvariantCulture,
+                               DateTimeStyles.None, out var d)) return false;
+        if (d.Year < 1990) return false;                 // 哨兵／預設值
+        return d.Date <= today.Date;                     // 未來日＝預告離職，尚未生效
+    }
+
     public async Task<UserIdentity?> LookupAsync(string account)
     {
         if (string.IsNullOrWhiteSpace(opt.Url))
@@ -215,12 +237,12 @@ public sealed class HrApiEmployeeDirectory(HrApiOptions opt, HttpClient http) : 
         var empId = S(row, "userId")?.Trim();
         if (string.IsNullOrEmpty(empId)) return null;
 
-        /* 在職＝isOnJob 為真 且 無離職日；兩者取交集，任一顯示離職即拒絕。
+        /* 在職＝`isOnJob` 為真，且沒有**已生效**的離職日（見 LeaveDateEffective）。
            原始值一併帶出來供 /whoami 診斷——判定結果是 false 時，
            不看原始值根本查不出是「真的離職」還是「欄位格式不如預期」。 */
         var rawOnJob = S(row, "isOnJob");
         var rawLeave = S(row, "leaveDate");
-        var onJob = OnJobTruthy(rawOnJob) && string.IsNullOrWhiteSpace(rawLeave);
+        var onJob = OnJobTruthy(rawOnJob) && !LeaveDateEffective(rawLeave, DateTime.Now);
         return new UserIdentity(account, empId,
             S(row, "userName") ?? account, S(row, "deptName") ?? "", onJob)
             { RawIsOnJob = rawOnJob, RawLeaveDate = rawLeave };

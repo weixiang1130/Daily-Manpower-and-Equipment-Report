@@ -86,3 +86,43 @@ attachment_id**——兩邊對齊之後，資訊處只要把 `attachments/` 複�
    以 UTF-8 呼叫即 6/6 正常，**與系統無關**，一併記在此以免日後重蹈。
 
 > 測試全程使用拋棄式資料庫 `KG_MIGTEST`，驗畢已刪除；既有的 `KG_AUDIT_STAGING` 未受影響。
+
+---
+
+## 補強二：切換流程改寫、補上名單檔的交付說明（2026-08-21）
+
+工具做好了，但 **`DEPLOYMENT.md` §4 的切換流程沒跟著改**——仍寫著
+「下載 JSON → 依 `attachments[].id` 逐一下載附件 → 另外匯出費率書」，
+那正是這個節點做工具要取代的東西。照舊文件做的人會去手工搬 831 個附件。
+
+§4 已改寫為五階段：
+
+| 階段 | 誰做 | 內容 |
+|---|---|---|
+| ① | 成本管理部 | 先鎖檔（全站鎖到今天、立即生效），再按設定頁的「📦 切換日遷移包」 |
+| ② | 資訊處 | 建庫／升級 → 轉檔匯入 → 複製 `attachments/` 到 `App:AttachDir` |
+| ③ | 成本管理部 | **另行遞交 `config.local.js`**（見下） |
+| ④ | 雙方 | 驗證清單 |
+| ⑤ | 雙方 | 切換入口、舊站退場 |
+
+### ⚠ 新增：`config.local.js` 的交付說明
+
+這個檔含真實工地名、分包商、工程師名單與管理員密碼，`.gitignore` 排除，
+**因此不在原始碼交付包、也不在任何更新包裡**。雲端是建置時由環境變數
+`LOCAL_CONFIG_JS` 產生；**地端沒有這個機制，必須人工遞交並放到 `App:StaticDir`**。
+
+缺席時的行為特別容易漏掉：
+
+```html
+<script src="config.local.js"></script>   <!-- 404 -->
+```
+
+```js
+const LOCAL = window.LOCAL_CONFIG ? window.LOCAL_CONFIG : {};
+const ADMIN_PIN = (LOCAL.adminPin != null) ? String(LOCAL.adminPin) : "0000";
+```
+
+→ **畫面照樣開得起來、不報錯**，但管理員密碼退回程式碼裡的預設值
+（那個值寫在 public repo，任何人看得到），各工地名單池也是空的。
+
+部署後請以 F12 → Network 確認 `config.local.js` 為 **200 而非 404**。

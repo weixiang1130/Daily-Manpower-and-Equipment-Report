@@ -5809,7 +5809,10 @@ function initSettings(){
     try{
       const data = await api("GET", null, { scope: "all" });
       const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
-      downloadBlob(blob, `點工機具_完整備份_${localDate()}.json`, "備份已下載，請妥善保存");
+      /* 檔名刻意標明「不含附件」——這份 JSON 依合約不含附件本體與費率書，
+         切換日誤把它當成搬家用的完整備份，附件會整批遺失（見 docs/milestones/48）。 */
+      downloadBlob(blob, `點工機具_資料備份_不含附件_${localDate()}.json`,
+        "備份已下載（僅單據與名單池，不含附件檔案）");
     }catch(e){
       toast("⚠ 備份下載失敗，請檢查網路");
     }

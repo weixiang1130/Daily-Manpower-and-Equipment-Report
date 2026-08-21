@@ -176,8 +176,21 @@ sqlcmd -S <伺服器> -x -b -C -Q "CREATE DATABASE KG_AUDIT;"
 sqlcmd -S <伺服器> -d KG_AUDIT -f 65001 -x -b -C -i DB-SCHEMA.sql
 ```
 
-> 若貴部門**已依舊版建過資料庫**，請改先執行 `ALTER-v24-work-precision.sql`
-> （工數欄位精度，未升級會讓 0.625 工被存成 0.63）。
+> 若貴部門**已依舊版建過資料庫**，不要重跑 `DB-SCHEMA.sql`，改成**依序**執行三支升級腳本：
+>
+> ```
+> sqlcmd -S <伺服器> -d KG_AUDIT -f 65001 -x -b -C -i ALTER-v24-work-precision.sql
+> sqlcmd -S <伺服器> -d KG_AUDIT -f 65001 -x -b -C -i ALTER-v244-monthly-rental.sql
+> sqlcmd -S <伺服器> -d KG_AUDIT -f 65001 -x -b -C -i ALTER-v247-lock-ranges.sql
+> ```
+>
+> | 腳本 | 不跑會怎樣 |
+> |---|---|
+> | `ALTER-v24-work-precision.sql` | 工數 0.625 被存成 **0.63**，×8 反推 5.04 小時，計價對不回來 |
+> | `ALTER-v244-monthly-rental.sql` | 缺 `equip_usage_log` 等物件，**下一步匯入會整批失敗** |
+> | `ALTER-v247-lock-ranges.sql` | 缺 `site_lock_ranges` 與逐日簽認欄，同樣**匯入失敗** |
+>
+> 三支都只做新增、可線上執行、重複執行安全。全新建庫則三支都不必跑。
 
 ## 步驟 2：匯入單據
 
@@ -194,22 +207,34 @@ sqlcmd -S <伺服器> -d KG_AUDIT -f 65001 -x -b -C -i import.sql
 
 ## 步驟 3：放置附件
 
-把本包 `attachments/` 底下的**所有檔案**複製到服務的附件根目錄
-（環境變數 `ATTACH_DIR` 所指的目錄，檔名不要更動）。
+把本包 `attachments/` 底下的**所有檔案**複製到服務的附件根目錄，**檔名不要更動**。
+該目錄由 `appsettings.json` 的 **`App:AttachDir`** 指定（v24.8 起；亦可用環境變數
+`ATTACH_DIR` 覆寫）。
 
 ```
-xcopy /E /I attachments <ATTACH_DIR>
+xcopy /E /I attachments <App:AttachDir 所指的目錄>
 ```
+
+> 服務啟動時若該目錄不存在或服務帳號沒有寫入權，**會直接啟動失敗**並指名
+> `App:AttachDir`——所以先把目錄與權限備妥再啟動。
 
 ## 驗收
 
 - [ ] `GET /health` 回傳的工地數與 `MANIFEST.json` 的「工地數」相符
 - [ ] 各表筆數與 `MANIFEST.json` 的點工／機具單數相符
 - [ ] 隨機開啟數張含附件的單據，縮圖與稽核照片都打得開
-- [ ] 報表的計價欄位不是「查無費率」（代表 `rates.json` 已匯入）
+- [ ] 機具清單看得到「日租／月租」，月租單的逐日使用紀錄與簽認工程師都在
+- [ ] 設定頁（管理員）看得到「鎖檔區間」區塊
 
-> ⚠ 費率書（`rates.json`）需由系統管理員於設定頁重新匯入，或依
-> `backend/sql/README.md` 的費率書章節寫入資料表——它不在 `data.json` 內。
+### 關於費率書（`rates.json`）
+
+**目前系統不使用它，銜接時不必匯入。** 計價模組已於 v24.5 全面下架
+（前端 `PRICING_UI = false`），設定頁的費率匯入介面是隱藏的，
+報表也不再顯示任何計價欄位——所以**不會**出現「查無費率」。
+
+本包仍把它抓出來保存，是為了日後若要重新啟用計價：屆時把前端的
+`PRICING_UI` 改回 `true`，再由系統管理員於設定頁匯入 `rates.json`，
+或依 `backend/sql/README.md` 的費率書章節直接寫入資料表。
 """
 
 if __name__ == "__main__":

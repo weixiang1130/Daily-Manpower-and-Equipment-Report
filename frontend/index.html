@@ -772,8 +772,11 @@
     <div class="panel danger-zone" id="dangerZone">
       <div class="panel-head"><h2>資料管理<span class="admin-only-badge">管理員</span></h2></div>
       <p class="hint">⚠ 本系統資料存於「共用資料庫」（Netlify Blobs），清空操作會影響<strong>所有使用者</strong>看到的資料且無法復原，請格外謹慎。</p>
+      <p class="hint">📦 <strong>下方的備份只含單據與名單池，不含附件檔案本體</strong>（簽單掃描檔、稽核照片）。
+        它適合留存與抽查，<strong>但不足以搬家</strong>——切換到地端時請改由成本管理部執行「切換日遷移包」匯出，
+        那份才會把附件一起抓齊。</p>
       <div class="actions">
-        <button id="backupBtn" class="btn-secondary btn-sm">下載完整備份（JSON）</button>
+        <button id="backupBtn" class="btn-secondary btn-sm" title="單據、回報、稽核紀錄與各站名單池；不含附件檔案本體與費率書">下載資料備份（JSON・不含附件）</button>
         <button id="clearSiteData" class="btn-danger btn-danger-sm">清空目前工地的紀錄</button>
         <button id="clearAllData" class="btn-danger btn-danger-sm">清空全部工地資料</button>
       </div>

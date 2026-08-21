@@ -21,9 +21,14 @@
    若日後有尚未實作的分支，一律回 501，**不可默默回 200**——前端的 await-first
    紀律會把 200 當成寫入成功而清掉表單，資料就真的不見了。
 
-   環境變數：KGAUDIT_CONNECTION（連線字串）、KGAUDIT_ERP_CONNECTION（ERP 權限檢視表）、
-             ATTACH_DIR（附件根目錄）、STATIC_DIR（前端靜態根）、
-             SITE_AUTH_USER/PASS（Basic Auth）、Auth__Mode（Off／Windows／Dev）
+   設定：**一律以 appsettings.json 為主**（v24.8 起；理由見下方 Cfg 區塊）。
+     ConnectionStrings:KgAudit ／ ConnectionStrings:KgAuditErp
+     App:Urls ／ App:StaticDir ／ App:AttachDir
+     App:BasicAuthUser ／ App:BasicAuthPassword
+     App:UseHttpSys ／ App:AllowInsecureConfig
+     Auth:Mode ／ Auth:Directory ／ Auth:HrApi:*
+   環境變數僅為**選用覆寫**（不設也能完整部署），對應名稱見 Cfg 的各呼叫點與
+   docs/DEPLOYMENT.md §③；監聽位址的覆寫走框架原生的 ASPNETCORE_URLS／--urls。
    ========================================================================== */
 using System.Data;
 using System.Globalization;
@@ -102,30 +107,57 @@ var authOpt = builder.Configuration.GetSection("Auth").Get<AuthOptions>() ?? new
    用獨立鍵名後優先權與其他設定一致：**--urls ＞ ASPNETCORE_URLS ＞ App:Urls ＞ 預設**。
    （此時 Configuration["urls"] 只會含命令列或環境變數的值。） */
 if (string.IsNullOrWhiteSpace(builder.Configuration["urls"]))
-    builder.Configuration["urls"] = Cfg.Str(envName: "KGAUDIT_URLS", key: "App:Urls")
-                                    ?? "http://localhost:8080";
+    builder.Configuration["urls"] = Cfg.Str(envName: null, key: "App:Urls") ?? "http://localhost:8080";
 
 var app = builder.Build();
 
 /* 只綁在本機位址的話，除了這台機器誰都連不上——**而且不會有任何錯誤訊息**，
    看起來服務好好的、就是沒人連得進來。開發環境不提醒（本來就該只綁本機）。
-   IIS／HTTP.sys 託管時位址由主機指派、不會是 loopback，因此不會誤報；
-   若反向代理與本服務在同一台機器上，只綁本機是正確設定，訊息本身也講明可忽略。 */
+
+   ⚠ **IIS 承載時一律跳過**。先前註解寫「IIS 託管位址由主機指派、不會是 loopback」是錯的：
+     out-of-process 模式下 ANCM 才是對外的那一端，本程序的 Kestrel **依設計只綁
+     127.0.0.1**，全部都是 loopback——照舊邏輯會在每次啟動誤報，還叫人去改 App:Urls，
+     照做反而會拆掉 ANCM 的交握。判定方式與框架自己一致（見 HostedByIis）。 */
+/* ⚠ 用 `Uri.IsLoopback` 而不是自己比對字串。字串包含法會把
+     `http://localhost.corp.example.com:8080` 這種**真的對外**的主機名判成 loopback
+     （它含有 "localhost"），於是在正確設定的機器上誤報。
+   萬用位址 `http://*:8080`／`http://+:8080` 不是合法 Uri，TryCreate 會失敗 →
+   視為非 loopback → 不警告，正是要的行為。 */
+static bool IsLoopbackAddr(string a) =>
+    Uri.TryCreate(a, UriKind.Absolute, out var u) && u.IsLoopback;
+
+/* 由 IIS 的 ASP.NET Core Module 承載？
+     • in-process    ：伺服器實作是 IISHttpServer，ANCM 另會設定 ASPNETCORE_IIS_* 變數
+     • out-of-process：ANCM 以 ASPNETCORE_PORT ＋ ASPNETCORE_TOKEN 啟動本程序，
+       UseIISIntegration() 也正是靠這兩個變數決定要不要接手——沿用同一個判準。
+   ⚠ 型別名稱比對是**字串比對**，框架改名就會靜默失效、退回誤報；
+     所以另外並列 ANCM 的環境變數作保險，任一命中即視為 IIS 承載。 */
+static bool HasEnv(string name) => !string.IsNullOrEmpty(Environment.GetEnvironmentVariable(name));
+
+static bool HostedByIis(IServer? server) =>
+    server?.GetType().Name == "IISHttpServer"
+    || HasEnv("ASPNETCORE_IIS_HTTPAUTH")                       // in-process
+    || HasEnv("ASPNETCORE_IIS_PHYSICAL_PATH")                  // in-process
+    || (HasEnv("ASPNETCORE_PORT") && HasEnv("ASPNETCORE_TOKEN"));   // out-of-process
+
+/* 建議值由**實際監聽位址**推導，不可寫死 8080——對方若用 8096，照著改會連埠都被換掉。
+   以 Uri 重組而非字串替換：帶路徑或結尾斜線（HTTP.sys 的前綴格式）也能給出乾淨的值。 */
+static string OpenToNetwork(string addr) =>
+    Uri.TryCreate(addr, UriKind.Absolute, out var u) ? $"{u.Scheme}://*:{u.Port}" : addr;
+
 app.Lifetime.ApplicationStarted.Register(() =>
 {
     if (app.Environment.IsDevelopment()) return;
-    var addrs = app.Services.GetService<IServer>()?.Features.Get<IServerAddressesFeature>()?.Addresses;
+    var server = app.Services.GetService<IServer>();
+    if (HostedByIis(server)) return;
+    var addrs = server?.Features.Get<IServerAddressesFeature>()?.Addresses;
     if (addrs is null || addrs.Count == 0) return;
-    static bool IsLoopback(string a) =>
-        a.Contains("localhost", StringComparison.OrdinalIgnoreCase)
-        || a.Contains("127.0.0.1", StringComparison.Ordinal)
-        || a.Contains("[::1]", StringComparison.Ordinal);
-    if (!addrs.All(IsLoopback)) return;
+    if (!addrs.All(IsLoopbackAddr)) return;
     app.Logger.LogWarning(
         "【上線組態警告】目前只監聽本機位址（{Addrs}）——這台機器以外一律連不上，且不會有錯誤訊息。"
-      + "本服務若直接對外，請把 appsettings.json 的 App:Urls 改成 http://*:8080；"
-      + "若前置 IIS／nginx 反向代理且代理就在同一台機器上，這是正確設定，可忽略本則。",
-        string.Join(", ", addrs));
+      + "本服務若直接對外，請把 appsettings.json 的 App:Urls 改成 {Suggest}；"
+      + "若前置 nginx 等反向代理且代理就在同一台機器上，這是正確設定，可忽略本則。",
+        string.Join(", ", addrs), string.Join(", ", addrs.Select(OpenToNetwork).Distinct()));
 });
 
 /* ---------- 上線組態守衛（防「一個字設錯就靜默破功」） ----------
@@ -141,7 +173,12 @@ app.Lifetime.ApplicationStarted.Register(() =>
 
    開發／測試機要沿用 Mode=Off 時，用 .NET 慣例把環境設為 Development
    （本專案已附 Properties/launchSettings.json，`dotnet run` 即為 Development）；
-   若確實要在正式環境跑過渡期組態，需**明確**設 KGAUDIT_ALLOW_INSECURE=1 承擔風險、降為警告放行。 */
+   若確實要在正式環境跑過渡期組態，需**明確**開啟逃生口承擔風險、降為警告放行。 */
+
+/* 連線字串**在此解析一次**，守衛與 ConnStr() 共用同一個值。
+   先前守衛自己再讀一次同一組鍵，等於同一個設定散在兩處——改了鍵名而漏改其中一處，
+   守衛就會安靜地檢查錯的東西。理由同 Basic Auth 帳密的提前解析。 */
+var connectionString = Cfg.Str("KGAUDIT_CONNECTION", "ConnectionStrings:KgAudit");
 {
     var basicPass = Cfg.Str("SITE_AUTH_PASS", "App:BasicAuthPassword") ?? "";
     var fatal = new List<string>();
@@ -150,8 +187,7 @@ app.Lifetime.ApplicationStarted.Register(() =>
     /* 交付包附的連線字串是本機 LocalDB 的開發預設。忘了改的話服務**照樣啟動**，
        要等第一個請求打進資料庫才失敗（或更糟：真的連上某台開發機而寫錯地方）。
        與「靜態根設錯只記一行 Warning」同一類——設定沒改而不會被擋下。 */
-    var connNow = Cfg.Str("KGAUDIT_CONNECTION", "ConnectionStrings:KgAudit") ?? "";
-    if (connNow.Contains("(localdb)", StringComparison.OrdinalIgnoreCase))
+    if ((connectionString ?? "").Contains("(localdb)", StringComparison.OrdinalIgnoreCase))
         warn.Add("ConnectionStrings:KgAudit 仍指向本機 LocalDB（交付包的開發預設值）"
                + "——正式環境請改成實際的 SQL Server 連線字串");
     if (string.IsNullOrWhiteSpace(Cfg.Str("ATTACH_DIR", "App:AttachDir")))
@@ -188,7 +224,17 @@ app.Lifetime.ApplicationStarted.Register(() =>
     if (fatal.Count > 0)
     {
         foreach (var f in fatal) app.Logger.LogWarning("【上線組態警告】{F}", f);
+        /* 逃生口。**從 appsettings 開啟時要額外大聲講一次**——appsettings 是資訊處
+           手動維護、跨版本沿用的檔案，一旦在試裝期間設成 true 就會被一路帶到正式環境，
+           之後任何致命組態都只會降級成警告而照常啟動，且沒有任何跡象。
+           環境變數是一次性的、不會跟著檔案走，所以只有 appsettings 這條路要特別點名。 */
+        var allowFromSettings = Cfg.FlagInSettings("App:AllowInsecureConfig");
         var allowInsecure = Cfg.Flag("KGAUDIT_ALLOW_INSECURE", "App:AllowInsecureConfig");
+        if (allowInsecure && allowFromSettings)
+            app.Logger.LogWarning(
+                "【上線組態警告】appsettings.json 的 App:AllowInsecureConfig=true —— "
+              + "上線組態守衛已被停用（上方致命項全部降為警告放行）。"
+              + "此值會隨 appsettings 一路沿用到正式環境，請確認這是刻意的；正式環境應改回 false。");
         // 「非 Development」而非 IsProduction()：IsProduction() 只認字面 "Production"，
         // "Prod"／"Staging" 等名稱會漏接而帶著不安全組態啟動（見檔首註解）。
         if (!app.Environment.IsDevelopment() && !allowInsecure)
@@ -198,12 +244,28 @@ app.Lifetime.ApplicationStarted.Register(() =>
               + "· 正式內網部署：設 Auth:Mode=Windows、Auth:Directory=hrapi，"
               + "並在主機層（IIS／HTTP.sys）啟用 Windows 驗證且停用匿名。\n"
               + "· 開發／測試機要沿用此組態：設環境變數 ASPNETCORE_ENVIRONMENT=Development（或用 dotnet run）。\n"
-              + "· 明確承擔風險的過渡期：設 KGAUDIT_ALLOW_INSECURE=1 降為警告放行。";
+              + "· 明確承擔風險的過渡期：把 appsettings.json 的 App:AllowInsecureConfig 設為 true"
+              + "（或設環境變數 KGAUDIT_ALLOW_INSECURE=1）降為警告放行。"
+              + "⚠ 設在 appsettings 會隨檔案沿用到正式環境，過渡期結束請改回 false。";
             app.Logger.LogCritical("{Guide}", guide);
             // 拋出而非 Environment.Exit：確保訊息確實寫出、結束碼非零，服務管理員偵測得到失敗啟動
             throw new InvalidOperationException(guide);
         }
     }
+}
+
+/* 附件根目錄**在啟動時就解析一次**。`Wr.AttachRoot` 是靜態欄位初始化，不主動碰它的話
+   要等第一個附件請求才跑——兩個後果都不好：
+     ① 路徑打錯或服務帳號沒有寫入權，要等有人上傳簽單才爆成 500
+     ② 若日後有人把讀設定的程式挪到 `Cfg.Root` 指派之前，會在請求中丟
+        TypeInitializationException（泛用 500、查不出原因），而不是啟動就失敗
+   主動觸發後兩者都變成啟動階段的明確錯誤。 */
+try { _ = Wr.AttachRoot; }
+catch (Exception ex)
+{
+    app.Logger.LogCritical(ex,
+        "附件根目錄無法建立或存取（appsettings 的 App:AttachDir）——請確認路徑正確且服務帳號有寫入權限");
+    throw;
 }
 
 /* ---------- 靜態前端 ----------
@@ -216,7 +278,7 @@ var staticRoot = Cfg.Str("STATIC_DIR", "App:StaticDir")
     ?? Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "..", "frontend"));
 
 string ConnStr() =>
-    Cfg.Str("KGAUDIT_CONNECTION", "ConnectionStrings:KgAudit")
+    connectionString
     ?? throw new InvalidOperationException(
         "未設定連線字串：請填 appsettings.json 的 ConnectionStrings:KgAudit"
       + "（或設環境變數 KGAUDIT_CONNECTION 覆寫）");
@@ -272,11 +334,9 @@ var basicUser = Cfg.Str("SITE_AUTH_USER", "App:BasicAuthUser") ?? "kg";
 var basicPassword = Cfg.Str("SITE_AUTH_PASS", "App:BasicAuthPassword") ?? "";
 app.Use(async (ctx, next) =>
 {
-    var user = basicUser;
-    var pass = basicPassword;
-    if (pass.Length == 0) { await next(); return; }
+    if (basicPassword.Length == 0) { await next(); return; }
 
-    var expected = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes($"{user}:{pass}"));
+    var expected = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes($"{basicUser}:{basicPassword}"));
     if (ctx.Request.Headers.Authorization.ToString() != expected)
     {
         ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
@@ -1794,7 +1854,7 @@ static async Task<IResult> GetCandidates(SqlConnection cn, Func<SqlConnection>? 
     if (erpDb is null)
         // 不是錯誤：雲端本來就沒有 ERP 連線。回空清單＋原因，讓畫面能說明而不是顯示失敗
         return Results.Json(new { candidates = Array.Empty<object>(),
-            reason = "此環境未設定 ERP 權限檢視表連線（KGAUDIT_ERP_CONNECTION），無法列出候選工地" });
+            reason = "此環境未設定 ERP 權限檢視表連線（appsettings 的 ConnectionStrings:KgAuditErp），無法列出候選工地" });
 
     // 已被使用的專案代碼——在應用程式端相減，因為兩者在不同連線／資料庫
     var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -2121,25 +2181,50 @@ static async Task<IResult> OpClear(SqlConnection cn, JsonObject body, bool all)
 /* top-level statements 不能宣告靜態欄位，常數集中放這個類別 */
 static class Cfg
 {
-    public static IConfiguration? Root;   // 由檔首 CreateBuilder 之後立即指派
+    static IConfiguration? _root;
 
-    /// 字串設定：環境變數 → appsettings 鍵 → 預設值。空字串一律視為未設定。
-    public static string? Str(string envName, string key, string? fallback = null)
+    /// 由檔首 CreateBuilder 之後立即指派。
+    public static IConfiguration Root
     {
-        var v = Environment.GetEnvironmentVariable(envName);
-        if (!string.IsNullOrWhiteSpace(v)) return v;
-        v = Root?[key];
-        return string.IsNullOrWhiteSpace(v) ? fallback : v;
+        /* ⚠ 讀不到就**丟例外，不要回 null 靜默略過**。
+           回 null 的版本會讓附件目錄安靜地落到執行檔旁的預設路徑、整個程序都錯，
+           而且不會有任何訊息。
+           ⚠ 但光靠這個 getter 還不夠「大聲」：`Wr.AttachRoot` 是靜態欄位初始化，
+             第一次碰到 Wr 的任何成員才會跑，而那些成員全在請求處理路徑上——
+             例外會變成第一個 API 請求回泛用 500。因此檔首另有一段在啟動時
+             主動觸發 `Wr.AttachRoot`，讓順序錯誤在啟動階段就現形。 */
+        get => _root ?? throw new InvalidOperationException(
+            "設定尚未初始化：有程式在 Cfg.Root = builder.Configuration 之前就讀取設定，"
+          + "請把該段移到檔首的指派之後。");
+        set => _root = value;
     }
 
-    /// 布林設定：環境變數用 "1"／"true"（大小寫不拘），appsettings 用 JSON 的 true/false。
+    /// 字串設定：環境變數 → appsettings 鍵。空白一律視為未設定，回 null 交由呼叫端 `??` 給預設。
+    /// `envName` 傳 null＝這一項沒有環境變數覆寫（例如監聽位址走框架原生的 ASPNETCORE_URLS）。
+    public static string? Str(string? envName, string key)
+    {
+        if (envName is not null)
+        {
+            var env = Environment.GetEnvironmentVariable(envName);
+            if (!string.IsNullOrWhiteSpace(env)) return env;
+        }
+        var v = Root[key];
+        return string.IsNullOrWhiteSpace(v) ? null : v;
+    }
+
+    /// 布林設定。**兩個來源接受同一組寫法**（"1"／"true"／JSON 的 true）——
+    /// 否則把 `KGAUDIT_HTTPSYS=1` 照抄成 `"UseHttpSys": "1"` 會靜默失效。
     public static bool Flag(string envName, string key)
     {
-        var v = Environment.GetEnvironmentVariable(envName);
-        if (!string.IsNullOrWhiteSpace(v))
-            return v == "1" || string.Equals(v, "true", StringComparison.OrdinalIgnoreCase);
-        return string.Equals(Root?[key], "true", StringComparison.OrdinalIgnoreCase);
+        var env = Environment.GetEnvironmentVariable(envName);
+        return !string.IsNullOrWhiteSpace(env) ? Truthy(env) : FlagInSettings(key);
     }
+
+    /// 只看 appsettings（不看環境變數）——供「這個值是不是從設定檔來的」這類判斷使用。
+    public static bool FlagInSettings(string key) => Truthy(Root[key]);
+
+    static bool Truthy(string? v) =>
+        v == "1" || string.Equals(v, "true", StringComparison.OrdinalIgnoreCase);
 }
 
 static class Wr

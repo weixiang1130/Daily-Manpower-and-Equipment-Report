@@ -156,12 +156,14 @@ dotnet publish backend/onprem/dotnet/KgAudit.Api.csproj -c Release -o /opt/kg-au
 | `App:Urls` | **是** | 監聽位址。預設 `http://localhost:8080` **只接受本機連線**——要讓其他電腦連得到須改 `http://*:8080`；走 IIS／nginx 反向代理且代理在同一台機器則維持 localhost 即可 | `ASPNETCORE_URLS`（命令列 `--urls` 最優先） |
 | `App:BasicAuthUser` / `App:BasicAuthPassword` | **是** | 整站 Basic Auth。⚠ **密碼留空＝完全不啟用驗證**；走 Windows 驗證時應留空以停用本層 | `SITE_AUTH_USER` / `SITE_AUTH_PASS` |
 | `App:UseHttpSys` | 視情況 | `true`＝以 HTTP.sys 承載並啟用 Negotiate/NTLM（Windows 服務自主控管時的 Windows 驗證做法）。**IIS 託管不需要開** | `KGAUDIT_HTTPSYS=1` |
-| `App:AllowInsecureConfig` | 否 | `true`＝上線組態守衛降為警告放行。**正式環境維持 `false`** | `KGAUDIT_ALLOW_INSECURE=1` |
+| `App:AllowInsecureConfig` | 否 | `true`＝上線組態守衛降為警告放行。**正式環境維持 `false`**；設成 `true` 時啟動會另印一則警告點名（見 §4.5） | `KGAUDIT_ALLOW_INSECURE=1` |
 | `Auth:*`、`ConnectionStrings:KgAuditErp` | 啟用權限時 | 見 §4.5 | `Auth__Mode` 等 |
 
 > **⚠ `App:Urls` 只綁本機的症狀**：服務起得來、這台機器上測都正常，**其他電腦一律連不上且沒有任何錯誤訊息**。
 > 服務啟動時若偵測到只綁在 loopback（且非開發環境），日誌會主動發出
-> 「【上線組態警告】目前只監聽本機位址」提醒，請留意這一行。
+> 「【上線組態警告】目前只監聽本機位址」提醒，並依實際設定給出建議值，請留意這一行。
+> **以 IIS（ASP.NET Core Module）承載時不會發出這一則**——out-of-process 模式下
+> ANCM 才是對外的那一端，本程序只綁 `127.0.0.1` 是正確狀態。
 >
 > **⚠ 不要改用根層的 `"Urls"` 或 `Kestrel:Endpoints`**：
 > 根層 `"Urls"` 屬於應用組態、載入順序**晚於** `ASPNETCORE_URLS`，會把環境變數靜默蓋掉
@@ -258,8 +260,14 @@ dotnet publish backend/onprem/dotnet/KgAudit.Api.csproj -c Release -o /opt/kg-au
 > 解法：
 > - **正式內網部署**：把 appsettings 的 `Auth:Mode` 設為 `Windows`、`Auth:Directory` 設為 `hrapi`（見下），服務即正常啟動。
 > - **開發／測試機**要沿用 `Mode=Off`：設 `ASPNETCORE_ENVIRONMENT=Development`（`dotnet run` 已內建）。
-> - **明確承擔風險的過渡期**（例如切換日先以 Basic Auth 對帳）：設 `KGAUDIT_ALLOW_INSECURE=1`，
->   守衛降為警告放行——但這段期間沒有物件層級授權與稽核隔離，請限時且知情。
+> - **明確承擔風險的過渡期**（例如切換日先以 Basic Auth 對帳）：把 `App:AllowInsecureConfig`
+>   設為 `true`（或設環境變數 `KGAUDIT_ALLOW_INSECURE=1`），守衛降為警告放行——
+>   但這段期間沒有物件層級授權與稽核隔離，請限時且知情。
+>
+> ⚠ **從 appsettings 開啟這個逃生口時，服務啟動會另外印一則警告點名它。**
+>   因為 `appsettings.json` 是貴部門手動維護、跨版本沿用的檔案：試裝期間設成 `true`
+>   很容易被一路帶進正式環境，之後任何致命組態都只會降級成警告而照常啟動、毫無跡象。
+>   **過渡期結束請務必改回 `false`**；只想臨時放行一次，用環境變數比較安全（不會跟著檔案走）。
 >
 > ⚠ 用「非 `Development`」而非「等於 `Production`」判定，是因為 `IsProduction()` 只認字面
 > `Production`——把環境命名為 `Prod`／`Staging` 會整個繞過守衛。

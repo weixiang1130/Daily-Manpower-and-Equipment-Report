@@ -294,7 +294,8 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
 
         if (erpDb is null)
             throw new InvalidOperationException(
-                "未設定 ERP 權限連線（KGAUDIT_ERP_CONNECTION）——權限模式已啟用但無法查詢授權來源");
+                "未設定 ERP 權限連線：請填 appsettings.json 的 ConnectionStrings:KgAuditErp"
+              + "（或設環境變數 KGAUDIT_ERP_CONNECTION 覆寫）——權限模式已啟用但無法查詢授權來源");
 
         var roles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var projects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

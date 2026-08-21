@@ -6,7 +6,10 @@
 - **地端首次以 `Auth:Mode=Windows`＋`hrapi` 部署，所有人都沒有權限**。`/whoami` 顯示主機層驗證通過、
   人資 API 也查到工號／姓名／部門，**只有 `onJob` 是 false**——而該員在職、部門就在管理員清單裡
 - **根因**：`Auth.cs` 的 JSON 取值函式只接受**字串**（`v.TryGetValue<string>`），而人資 API 的
-  `isOnJob` 回的是**布林／數字**，於是回 `null`、`null == "1"` 為 false，**在職判定一律 false**。
+  `isOnJob` 若回的**不是字串**（布林／數字）就會得到 `null`、`null == "1"` 為 false，**在職判定一律 false**。
+  ⚠ **當下無法斷定是哪個條件不成立**——那版 `/whoami` 只輸出 `onJob`，沒帶原始值；在職＝
+  `isOnJob 為真` **且** `leaveDate 為空`，兩者任一不符都會 false。我方最初把原因歸給前者是**推論非實證**
+  （資訊處就此提出質疑，是對的）。不論哪一個，`S()` 只接受字串本身就是缺陷；原始值輸出即為定案用
   `ResolveAsync` 第一行就是 `if (!user.OnJob) return null;`——**每個人都在權限判定之前就被拒絕**
 - ⚠ **特別難查的原因**：`userName`／`deptName` 完全正常（本來就是字串），只有非字串那個欄位壞掉。
   症狀是「身分查得到、就是沒權限」，很自然會往部門字串或 ERP 權限的方向找

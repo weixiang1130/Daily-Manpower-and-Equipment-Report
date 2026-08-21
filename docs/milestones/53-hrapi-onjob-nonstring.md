@@ -25,8 +25,20 @@ static string? S(JsonObject o, string k) =>
     o[k] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;   // 舊
 ```
 
-人資 API 的 `isOnJob` 回的是**布林／數字**而非字串 `"1"`，於是 `S()` 回 `null`、
+若人資 API 的 `isOnJob` 回的**不是字串**（布林 `true` 或數字 `1`），`S()` 就回 `null`、
 `null == "1"` 為 false，**在職判定一律 false**。
+
+> ⚠ **哪一個條件實際不成立，當下無法斷定**——那一版的 `/whoami` 只輸出 `onJob`，
+> 沒有帶出原始值。在職判定是兩個條件的交集：
+>
+> ```csharp
+> onJob = S("isOnJob") == "1" && string.IsNullOrWhiteSpace(S("leaveDate"));
+> ```
+>
+> 所以 (a)「`isOnJob` 非字串」與 (b)「`leaveDate` 有值」**都會**得到 false。
+> 我方一開始把原因歸給 (a)，那是**推論不是實證**（資訊處也就此提出質疑，是對的）。
+> 不論是哪一個，`S()` 只接受字串本身就是缺陷、該修；而新增的原始值輸出正是
+> 為了讓下一次能一眼判定。**待資訊處重新部署後的 `/whoami` 才能定案。**
 
 而 `ResolveAsync` 的第一行就是：
 
@@ -83,6 +95,24 @@ if (!user.OnJob) return null;   // 離職者即使 ERP 權限資料未清理也�
 | 在職 ＋ 部門不在清單 | `③ 無任何權限`（這才是 ③ 該出現的時機） |
 
 `dotnet build` 0 警告 0 錯誤。
+
+## 空資料庫的實測（回應資訊處的提問）
+
+資訊處問：「有沒有試著建一個沒有資料的 DB 測一遍？」——已補測，**兩種「沒有資料」結果完全不同**：
+
+| 情境 | `/health` | `/api/data?scope=all` | 服務 |
+|---|---|---|---|
+| **有表、無資料**（跑過 `DB-SCHEMA.sql`） | `200 {"ok":true,"sites":0}` | `200 {"master":{"sites":[]},"stores":{}}` | 正常 |
+| **有 DB、未建表**（沒跑 DDL） | **500** | **500** | **照樣啟動** |
+
+第二種的服務日誌是 `SqlException: Invalid object name 'dbo.sites'`，
+與 UAT 當時「所有端點都 500」的症狀一致。
+
+兩個要記住的點：
+
+- **空資料庫不會造成 500**——建好表、一筆資料都沒有時，前端會正常進到選擇工地的畫面（清單為空）
+- **未建表時服務仍會啟動**：本服務不會自我檢查 schema，要等第一個查詢才失敗。
+  因此「服務起得來」不代表資料層沒問題，判斷一律以 `/health` 為準
 
 ## 給資訊處的動作
 

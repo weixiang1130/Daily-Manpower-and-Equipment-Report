@@ -29,6 +29,8 @@ using System.Data;
 using System.Globalization;
 using System.Text;
 using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Server.HttpSys;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -36,6 +38,25 @@ using KgAudit.Api;
 using Microsoft.Data.SqlClient;
 
 var builder = WebApplication.CreateBuilder(args);
+
+/* ==========================================================
+   設定來源（2026-08-21 依資訊處要求調整）
+
+   **appsettings.json 是唯一必要的設定處**——所有部署參數都能寫在裡面，
+   環境變數只是「選用的覆寫」，不設也能完整部署。
+
+   資訊處的理由（採納）：多系統共存時環境變數名稱會互相打架、還得逐一改名；
+   環境變數也墊高部署複雜度（服務帳號、工作排程、IIS 應用程式集區各有一套繼承規則，
+   少設一處就會出現「同一台機器上有時吃得到有時吃不到」的難查問題）。
+
+   優先權一律是 **環境變數 ＞ appsettings ＞ 程式預設**。
+   保留環境變數覆寫是為了兩件事：① 既有以環境變數部署者不會壞掉
+   ② 資安政策要求密碼不落檔時，可只把密碼那一項移到環境變數。
+
+   ⚠ **新增設定請一併登記在此區塊與 appsettings.json**——散在各處直接呼叫
+     GetEnvironmentVariable 的寫法，正是這次要改掉的東西。
+   ========================================================== */
+Cfg.Root = builder.Configuration;
 
 /* ---------- Windows 整合驗證的主機層（v23.4；opt-in） ----------
    身分一律由**主機層**提供，本程式只讀已驗證的 HttpContext.User
@@ -47,8 +68,7 @@ var builder = WebApplication.CreateBuilder(args);
    ⚠ 先前 DEPLOYMENT §4.5 就是這樣寫給資訊處的，但程式沒有這個設定點，
      照文件做會找不到地方設。**預設關閉**，不設環境變數則行為完全不變。
    ⚠ HttpSys 僅 Windows 可用；非 Windows 設了也會略過，不讓服務起不來。 */
-if (OperatingSystem.IsWindows()
-    && Environment.GetEnvironmentVariable("KGAUDIT_HTTPSYS") == "1")
+if (OperatingSystem.IsWindows() && Cfg.Flag("KGAUDIT_HTTPSYS", "App:UseHttpSys"))
 {
     builder.WebHost.UseHttpSys(o =>
     {
@@ -70,7 +90,43 @@ builder.Services.ConfigureHttpJsonOptions(o =>
    預設 Mode=Off：**不設定就完全維持現行行為**，部署新版不會突然把人擋在外面。 */
 var authOpt = builder.Configuration.GetSection("Auth").Get<AuthOptions>() ?? new AuthOptions();
 
+/* ---------- 監聽位址（App:Urls） ----------
+   設定處是 appsettings 的 **`App:Urls`**，不是根層的 `"Urls"`。
+
+   ⚠ 為什麼不用根層的 `"Urls"`：那個鍵屬於「應用組態」，載入順序**晚於**
+     `ASPNETCORE_URLS`（主機組態），會把環境變數靜默蓋掉——與本檔其他設定
+     「環境變數優先」的規則剛好相反，同一份文件裡兩套優先權是災難。
+     實測（發佈版 exe）：根層有 `Urls` 時，設 `ASPNETCORE_URLS=http://*:8099`
+     仍然監聽 `localhost:8080`，完全不報錯。
+
+   用獨立鍵名後優先權與其他設定一致：**--urls ＞ ASPNETCORE_URLS ＞ App:Urls ＞ 預設**。
+   （此時 Configuration["urls"] 只會含命令列或環境變數的值。） */
+if (string.IsNullOrWhiteSpace(builder.Configuration["urls"]))
+    builder.Configuration["urls"] = Cfg.Str(envName: "KGAUDIT_URLS", key: "App:Urls")
+                                    ?? "http://localhost:8080";
+
 var app = builder.Build();
+
+/* 只綁在本機位址的話，除了這台機器誰都連不上——**而且不會有任何錯誤訊息**，
+   看起來服務好好的、就是沒人連得進來。開發環境不提醒（本來就該只綁本機）。
+   IIS／HTTP.sys 託管時位址由主機指派、不會是 loopback，因此不會誤報；
+   若反向代理與本服務在同一台機器上，只綁本機是正確設定，訊息本身也講明可忽略。 */
+app.Lifetime.ApplicationStarted.Register(() =>
+{
+    if (app.Environment.IsDevelopment()) return;
+    var addrs = app.Services.GetService<IServer>()?.Features.Get<IServerAddressesFeature>()?.Addresses;
+    if (addrs is null || addrs.Count == 0) return;
+    static bool IsLoopback(string a) =>
+        a.Contains("localhost", StringComparison.OrdinalIgnoreCase)
+        || a.Contains("127.0.0.1", StringComparison.Ordinal)
+        || a.Contains("[::1]", StringComparison.Ordinal);
+    if (!addrs.All(IsLoopback)) return;
+    app.Logger.LogWarning(
+        "【上線組態警告】目前只監聽本機位址（{Addrs}）——這台機器以外一律連不上，且不會有錯誤訊息。"
+      + "本服務若直接對外，請把 appsettings.json 的 App:Urls 改成 http://*:8080；"
+      + "若前置 IIS／nginx 反向代理且代理就在同一台機器上，這是正確設定，可忽略本則。",
+        string.Join(", ", addrs));
+});
 
 /* ---------- 上線組態守衛（防「一個字設錯就靜默破功」） ----------
    本系統的整層授權繫於幾個組態值，而它們設錯**都不會報錯**：
@@ -87,9 +143,20 @@ var app = builder.Build();
    （本專案已附 Properties/launchSettings.json，`dotnet run` 即為 Development）；
    若確實要在正式環境跑過渡期組態，需**明確**設 KGAUDIT_ALLOW_INSECURE=1 承擔風險、降為警告放行。 */
 {
-    var basicPass = Environment.GetEnvironmentVariable("SITE_AUTH_PASS") ?? "";
+    var basicPass = Cfg.Str("SITE_AUTH_PASS", "App:BasicAuthPassword") ?? "";
     var fatal = new List<string>();
     var warn = new List<string>();
+
+    /* 交付包附的連線字串是本機 LocalDB 的開發預設。忘了改的話服務**照樣啟動**，
+       要等第一個請求打進資料庫才失敗（或更糟：真的連上某台開發機而寫錯地方）。
+       與「靜態根設錯只記一行 Warning」同一類——設定沒改而不會被擋下。 */
+    var connNow = Cfg.Str("KGAUDIT_CONNECTION", "ConnectionStrings:KgAudit") ?? "";
+    if (connNow.Contains("(localdb)", StringComparison.OrdinalIgnoreCase))
+        warn.Add("ConnectionStrings:KgAudit 仍指向本機 LocalDB（交付包的開發預設值）"
+               + "——正式環境請改成實際的 SQL Server 連線字串");
+    if (string.IsNullOrWhiteSpace(Cfg.Str("ATTACH_DIR", "App:AttachDir")))
+        warn.Add("App:AttachDir 未設定，附件將寫入執行檔旁的預設路徑"
+               + "——改版重新部署時若覆蓋整個目錄，簽單掃描檔會一併消失，請顯式指定");
 
     switch (authOpt.Mode)
     {
@@ -99,7 +166,7 @@ var app = builder.Build();
         case AuthMode.Off:
             fatal.Add("Auth:Mode=Off —— 未啟用個人身分與物件層級授權：所有人可見全部工地、"
                     + "稽核未隔離，且 clearAll 等破壞性操作無管理者限制"
-                    + (basicPass.Length == 0 ? "；且未設 SITE_AUTH_PASS＝完全無任何認證" : ""));
+                    + (basicPass.Length == 0 ? "；且未填 App:BasicAuthPassword＝完全無任何認證" : ""));
             break;
         case AuthMode.Windows:
             /* Windows 模式下用設定檔假名單＝沒有真實身分來源：正式環境每個 AD 帳號都會
@@ -111,7 +178,7 @@ var app = builder.Build();
                         + "否則所有人（含管理員）都會查無員工資料而被鎖在門外");
             // 內網限定的定案：Windows 驗證應為唯一入口，共用帳密要退場
             if (basicPass.Length > 0)
-                warn.Add("已啟用 Windows 驗證但仍設著 SITE_AUTH_PASS（共用帳密）——建議移除，"
+                warn.Add("已啟用 Windows 驗證但仍填著 App:BasicAuthPassword（共用帳密）——建議清空，"
                        + "讓 Windows 驗證成為唯一入口（否則使用者被雙重挑戰，且弱共用密碼仍在）");
             break;
     }
@@ -121,7 +188,7 @@ var app = builder.Build();
     if (fatal.Count > 0)
     {
         foreach (var f in fatal) app.Logger.LogWarning("【上線組態警告】{F}", f);
-        var allowInsecure = Environment.GetEnvironmentVariable("KGAUDIT_ALLOW_INSECURE") == "1";
+        var allowInsecure = Cfg.Flag("KGAUDIT_ALLOW_INSECURE", "App:AllowInsecureConfig");
         // 「非 Development」而非 IsProduction()：IsProduction() 只認字面 "Production"，
         // "Prod"／"Staging" 等名稱會漏接而帶著不安全組態啟動（見檔首註解）。
         if (!app.Environment.IsDevelopment() && !allowInsecure)
@@ -144,15 +211,15 @@ var app = builder.Build();
    前端因此是同源呼叫，不需要 CORS。
    ⚠ 靜態根必須是 frontend/，**不可指向 repo 根或 backend/**
      ——那會把後端原始碼與 SQL DDL 一併對外提供下載。 */
-var staticRoot = Environment.GetEnvironmentVariable("STATIC_DIR")
+var staticRoot = Cfg.Str("STATIC_DIR", "App:StaticDir")
     // bin/Debug/net8.0 → dotnet → onprem → backend → repo 根（六層），再進 frontend
     ?? Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "..", "frontend"));
 
 string ConnStr() =>
-    Environment.GetEnvironmentVariable("KGAUDIT_CONNECTION")
-    ?? app.Configuration.GetConnectionString("KgAudit")
+    Cfg.Str("KGAUDIT_CONNECTION", "ConnectionStrings:KgAudit")
     ?? throw new InvalidOperationException(
-        "未設定連線字串：請設環境變數 KGAUDIT_CONNECTION 或 appsettings 的 ConnectionStrings:KgAudit");
+        "未設定連線字串：請填 appsettings.json 的 ConnectionStrings:KgAudit"
+      + "（或設環境變數 KGAUDIT_CONNECTION 覆寫）");
 
 /* ---------- 統一的例外出口（必須掛在最前面才攔得到後面全部中介層） ----------
    沒有這一層時：Production 回一個空白 500，維運從回應完全查不到原因；
@@ -197,11 +264,16 @@ app.Use(async (ctx, next) =>
 });
 
 /* ---------- Basic Auth（與 auth.ts／api.mjs 同一邏輯） ----------
-   未設定密碼＝不啟用（僅限本機開發；正式環境務必設定）。 */
+   未設定密碼＝不啟用（僅限本機開發；正式環境務必設定）。
+   ⚠ 帳密**在此處解析一次**，不要放進 middleware 委派裡逐請求重讀——
+     那等於每一個請求都做兩次設定查詢，且設定值在執行期間並不會變。
+   ⚠ 走 Windows 驗證時本層應停用（把密碼留空），否則使用者被雙重挑戰。 */
+var basicUser = Cfg.Str("SITE_AUTH_USER", "App:BasicAuthUser") ?? "kg";
+var basicPassword = Cfg.Str("SITE_AUTH_PASS", "App:BasicAuthPassword") ?? "";
 app.Use(async (ctx, next) =>
 {
-    var user = Environment.GetEnvironmentVariable("SITE_AUTH_USER") ?? "kg";
-    var pass = Environment.GetEnvironmentVariable("SITE_AUTH_PASS") ?? "";
+    var user = basicUser;
+    var pass = basicPassword;
     if (pass.Length == 0) { await next(); return; }
 
     var expected = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes($"{user}:{pass}"));
@@ -570,8 +642,7 @@ static async Task<JsonObject> ReadStores(SqlConnection cn, string? onlySite)
 /* ---------- 權限中介層（階段 D） ----------
    只擋 /api：靜態前端一律放行，否則使用者連「你沒有權限」的畫面都載不出來。 */
 Func<SqlConnection>? erpDb = null;
-var erpConn = Environment.GetEnvironmentVariable("KGAUDIT_ERP_CONNECTION")
-              ?? app.Configuration.GetConnectionString("KgAuditErp");
+var erpConn = Cfg.Str("KGAUDIT_ERP_CONNECTION", "ConnectionStrings:KgAuditErp");
 if (!string.IsNullOrWhiteSpace(erpConn)) erpDb = () => new SqlConnection(erpConn);
 
 IIdentitySource? identitySource = authOpt.Mode switch
@@ -658,7 +729,7 @@ if (Directory.Exists(staticRoot))
 else
 {
     // 靜態根找不到就明講，不要讓使用者對著 404 猜路徑
-    app.Logger.LogWarning("靜態前端目錄不存在，只提供 API：{Root}（可用環境變數 STATIC_DIR 指定）", staticRoot);
+    app.Logger.LogWarning("靜態前端目錄不存在，只提供 API：{Root}（請填 appsettings 的 App:StaticDir）", staticRoot);
 }
 
 /* ---------- 端點 ---------- */
@@ -2048,6 +2119,29 @@ static async Task<IResult> OpClear(SqlConnection cn, JsonObject body, bool all)
 
 
 /* top-level statements 不能宣告靜態欄位，常數集中放這個類別 */
+static class Cfg
+{
+    public static IConfiguration? Root;   // 由檔首 CreateBuilder 之後立即指派
+
+    /// 字串設定：環境變數 → appsettings 鍵 → 預設值。空字串一律視為未設定。
+    public static string? Str(string envName, string key, string? fallback = null)
+    {
+        var v = Environment.GetEnvironmentVariable(envName);
+        if (!string.IsNullOrWhiteSpace(v)) return v;
+        v = Root?[key];
+        return string.IsNullOrWhiteSpace(v) ? fallback : v;
+    }
+
+    /// 布林設定：環境變數用 "1"／"true"（大小寫不拘），appsettings 用 JSON 的 true/false。
+    public static bool Flag(string envName, string key)
+    {
+        var v = Environment.GetEnvironmentVariable(envName);
+        if (!string.IsNullOrWhiteSpace(v))
+            return v == "1" || string.Equals(v, "true", StringComparison.OrdinalIgnoreCase);
+        return string.Equals(Root?[key], "true", StringComparison.OrdinalIgnoreCase);
+    }
+}
+
 static class Wr
 {
     public static readonly System.Text.RegularExpressions.Regex IdRe =
@@ -2120,7 +2214,7 @@ static class Wr
 
     static string InitAttachRoot()
     {
-        var dir = Environment.GetEnvironmentVariable("ATTACH_DIR")
+        var dir = Cfg.Str("ATTACH_DIR", "App:AttachDir")
             ?? Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "data", "attachments");
         dir = Path.GetFullPath(dir);
         Directory.CreateDirectory(dir);

@@ -12,9 +12,9 @@ repo 內含三套等價的執行環境，皆實作同一份 [`API-CONTRACT.md`](
 |---|---|---|---|
 | 程式位置 | `backend/cloud/` | **`backend/onprem/dotnet/`** | `backend/onprem/server.mjs` |
 | 執行環境 | Netlify | **.NET 8 Runtime ＋ SQL Server** | Node.js 18+（零 npm 依賴） |
-| 靜態檔案 | Netlify CDN | 同服務供應（`STATIC_DIR`） | 內建靜態服務 |
+| 靜態檔案 | Netlify CDN | 同服務供應（`App:StaticDir`） | 內建靜態服務 |
 | 資料儲存 | Netlify Blobs | **SQL Server（19 表 5 VIEW）** | 檔案系統 `DATA_DIR` |
-| 附件本體 | Blobs | 檔案系統（`ATTACH_DIR`） | `DATA_DIR/attachments/` |
+| 附件本體 | Blobs | 檔案系統（`App:AttachDir`） | `DATA_DIR/attachments/` |
 | 個人身分與權限 | ✕（單一共用帳密） | **✓ Windows 驗證＋ERP 角色（§4.5）** | ✕ |
 
 前端 `app.js` 對三種形態**完全無感**——只呼叫 `/api/data`。
@@ -116,8 +116,8 @@ GRANT SELECT ON dbo.vw_Acumatica_Permission TO [<服務帳號>];
 
 | 目錄 | 需要的權限 |
 |---|---|
-| `ATTACH_DIR`（附件） | **讀取＋寫入＋建立**（程式啟動時會自動建目錄） |
-| `STATIC_DIR`（前端靜態檔） | 唯讀 |
+| `App:AttachDir`（附件） | **讀取＋寫入＋建立**（程式啟動時會自動建目錄） |
+| `App:StaticDir`（前端靜態檔） | 唯讀 |
 | 日誌輸出目的地 | 寫入 |
 
 **網路**：本系統 → SQL Server（預設 1433）、→ ERP SQL 執行個體、
@@ -140,24 +140,53 @@ sqlcmd -S <伺服器> -d KG_AUDIT -f 65001 -x -b -C -i backend/sql/DB-SCHEMA.sql
 dotnet publish backend/onprem/dotnet/KgAudit.Api.csproj -c Release -o /opt/kg-audit
 ```
 
-### ③ 環境變數
+### ③ 設定（全部寫在 `appsettings.json`）
 
-| 變數 | 必填 | 說明 |
-|---|---|---|
-| `KGAUDIT_CONNECTION` | **是** | 本系統資料庫連線字串。未設定且 `appsettings` 也沒有 → **啟動即失敗**（刻意的） |
-| `ATTACH_DIR` | **是** | 附件本體根目錄。預設值是相對於執行檔往上數層的開發用路徑，**發行後幾乎必然要顯式指定** |
-| `STATIC_DIR` | **是** | 前端靜態根，指向 `frontend/`。同上，預設值是為 `bin/Debug` 佈局設計的；發行後層級不同 |
-| `ASPNETCORE_URLS` | 建議 | 監聽位址。`appsettings` 預設 `http://localhost:8080` **只接受本機連線**——要讓其他電腦連得到須設 `http://*:8080`（走 IIS 反向代理則不受影響） |
-| `SITE_AUTH_USER` / `SITE_AUTH_PASS` | **是** | 整站 Basic Auth。⚠ **`SITE_AUTH_PASS` 未設定＝完全不啟用驗證且不會有任何警告** |
+> **設定原則（2026-08-21 依資訊處要求調整）：`appsettings.json` 是唯一必要的設定處，
+> 不需要設定任何環境變數就能完整部署。**
+> 環境變數僅保留為**選用覆寫**——既有以環境變數部署者不會壞掉；
+> 若資安政策要求密碼不落檔，也可以只把密碼那一項移到環境變數。
+> 優先權一律是 **環境變數 ＞ appsettings ＞ 程式預設**。
 
-> **⚠ `STATIC_DIR` 設錯的症狀**：服務照樣起得來、API 也正常，但使用者看到**空白頁**——
+| appsettings 鍵 | 必填 | 說明 | 環境變數覆寫 |
+|---|---|---|---|
+| `ConnectionStrings:KgAudit` | **是** | 本系統資料庫連線字串。沒填 → **啟動即失敗**（刻意的） | `KGAUDIT_CONNECTION` |
+| `App:AttachDir` | **是** | 附件本體根目錄。預設值是相對於執行檔往上數層的開發用路徑，**發行後幾乎必然要顯式指定**；服務帳號需有讀寫權限 | `ATTACH_DIR` |
+| `App:StaticDir` | **是** | 前端靜態根，指向 `frontend/`。同上，預設值是為 `bin/Debug` 佈局設計的，發行後層級不同 | `STATIC_DIR` |
+| `App:Urls` | **是** | 監聽位址。預設 `http://localhost:8080` **只接受本機連線**——要讓其他電腦連得到須改 `http://*:8080`；走 IIS／nginx 反向代理且代理在同一台機器則維持 localhost 即可 | `ASPNETCORE_URLS`（命令列 `--urls` 最優先） |
+| `App:BasicAuthUser` / `App:BasicAuthPassword` | **是** | 整站 Basic Auth。⚠ **密碼留空＝完全不啟用驗證**；走 Windows 驗證時應留空以停用本層 | `SITE_AUTH_USER` / `SITE_AUTH_PASS` |
+| `App:UseHttpSys` | 視情況 | `true`＝以 HTTP.sys 承載並啟用 Negotiate/NTLM（Windows 服務自主控管時的 Windows 驗證做法）。**IIS 託管不需要開** | `KGAUDIT_HTTPSYS=1` |
+| `App:AllowInsecureConfig` | 否 | `true`＝上線組態守衛降為警告放行。**正式環境維持 `false`** | `KGAUDIT_ALLOW_INSECURE=1` |
+| `Auth:*`、`ConnectionStrings:KgAuditErp` | 啟用權限時 | 見 §4.5 | `Auth__Mode` 等 |
+
+> **⚠ `App:Urls` 只綁本機的症狀**：服務起得來、這台機器上測都正常，**其他電腦一律連不上且沒有任何錯誤訊息**。
+> 服務啟動時若偵測到只綁在 loopback（且非開發環境），日誌會主動發出
+> 「【上線組態警告】目前只監聽本機位址」提醒，請留意這一行。
+>
+> **⚠ 不要改用根層的 `"Urls"` 或 `Kestrel:Endpoints`**：
+> 根層 `"Urls"` 屬於應用組態、載入順序**晚於** `ASPNETCORE_URLS`，會把環境變數靜默蓋掉
+> （與本頁其他設定「環境變數優先」的規則相反，實測確認）；
+> `Kestrel:Endpoints` 的優先權則高於命令列 `--urls`，設了之後 `--urls` 會靜默失效。
+> 監聽位址請一律用 `App:Urls`。
+>
+> **⚠ `App:StaticDir` 設錯的症狀**：服務照樣起得來、API 也正常，但使用者看到**空白頁**——
 > 程式只會在日誌記一行 Warning 就繼續只跑 API。部署後請先用瀏覽器開首頁確認，不要只測 API。
+>
+> **⚠ 底線前綴的鍵（`_KgAuditErp`、`_App`、`_Urls`…）是註解、不是設定**，不會被讀取。
+> ERP 連線請填 `ConnectionStrings:KgAuditErp`（無底線）。填錯位置不會有錯誤訊息，
+> 會在啟用權限後變成全員 503。
 
-啟用權限（§4.5）時另需 `Auth__Mode`、`Auth__Directory`、`Auth__HrApi__*`、`KGAUDIT_ERP_CONNECTION`。
+#### `appsettings.json` 的維護方式
 
-> **⚠ `appsettings.json` 裡的 `_KgAuditErp` 是註解、不是設定。** 底線前綴的鍵不會被讀取。
-> ERP 連線請填 `ConnectionStrings:KgAuditErp`（無底線）或設環境變數 `KGAUDIT_ERP_CONNECTION`。
-> 填錯位置不會有錯誤訊息，會在啟用權限後變成全員 503。
+本檔**手動維護**：升版時請**只比對差異、逐項補上新增的鍵**，
+不要整檔覆蓋（會沖掉貴部門已填的連線字串與密碼）。
+每次改版若有 appsettings 異動，都會列在下面這張表與該版的更新說明裡。
+
+| 版本 | 異動 | 動作 |
+|---|---|---|
+| v24.8（2026-08-21） | 新增 `App` 節點：`Urls`／`StaticDir`／`AttachDir`／`BasicAuthUser`／`BasicAuthPassword`／`UseHttpSys`／`AllowInsecureConfig` | **新增**整個 `App` 節點（可直接從交付包的 `appsettings.json` 複製） |
+| v24.8（2026-08-21） | 新增 `ConnectionStrings:KgAuditErp` 實際鍵（原本只有 `_KgAuditErp` 註解） | **新增**一行；不啟用權限可留空字串 |
+| v24.8（2026-08-21） | 移除根層 `"Urls"` | **刪除**該行，改用 `App:Urls`（理由見上方警告） |
 
 ### ④ 啟動與常駐
 
@@ -166,15 +195,20 @@ dotnet publish backend/onprem/dotnet/KgAudit.Api.csproj -c Release -o /opt/kg-au
 ```
 
 - **IIS**：以 ASP.NET Core Module 託管（同時也是啟用 Windows 驗證的建議方式，見 §4.5）
-- **Windows 服務**：`sc create` 或 NSSM 包裝；環境變數設在服務層級
-- **Linux**：systemd unit，`Restart=always`，環境變數寫在 `Environment=` 或 `EnvironmentFile=`
+- **Windows 服務**：`sc create` 或 NSSM 包裝
+- **Linux**：systemd unit，`Restart=always`
+
+> 三種託管方式**都不需要設定環境變數**——設定全部讀 `appsettings.json`（與執行檔同目錄）。
+> 服務帳號只需對 `App:AttachDir` 有讀寫權限、對 `App:StaticDir` 有讀取權限。
 
 ### ⑤ 上線前檢查
 
-- [ ] 瀏覽器開首頁**看得到畫面**（不是只有 API 通）→ 驗證 `STATIC_DIR`
-- [ ] 上傳一張附件並重新下載 → 驗證 `ATTACH_DIR` 與權限
+- [ ] 瀏覽器開首頁**看得到畫面**（不是只有 API 通）→ 驗證 `App:StaticDir`
+- [ ] **從別台電腦**連得到（不是只在伺服器本機測）→ 驗證 `App:Urls`；
+      並確認啟動日誌沒有「目前只監聽本機位址」那則警告
+- [ ] 上傳一張附件並重新下載 → 驗證 `App:AttachDir` 與權限
 - [ ] `GET /health` 回 `{"ok":true,"sites":N}`，N 與預期工地數相符
-- [ ] 未帶帳密存取會跳出登入視窗 → 驗證 `SITE_AUTH_PASS` 確實生效
+- [ ] 未帶帳密存取會跳出登入視窗 → 驗證 `App:BasicAuthPassword` 確實生效
 - [ ] 日誌裡有一行「管理員部門」清單 → 與人資系統的部門名稱**逐字**核對（見 §4.5）
 
 ### ⑥ 前端的計價功能開關（v23.1）
@@ -222,14 +256,14 @@ dotnet publish backend/onprem/dotnet/KgAudit.Api.csproj -c Release -o /opt/kg-au
 > - **`Auth:Mode=Windows` 但 `Auth:Directory` 非 `hrapi`**（用假名單，正式環境會全員查無資料被鎖在門外）
 >
 > 解法：
-> - **正式內網部署**：設 `Auth__Mode=Windows`、`Auth__Directory=hrapi`（見下），服務即正常啟動。
+> - **正式內網部署**：把 appsettings 的 `Auth:Mode` 設為 `Windows`、`Auth:Directory` 設為 `hrapi`（見下），服務即正常啟動。
 > - **開發／測試機**要沿用 `Mode=Off`：設 `ASPNETCORE_ENVIRONMENT=Development`（`dotnet run` 已內建）。
 > - **明確承擔風險的過渡期**（例如切換日先以 Basic Auth 對帳）：設 `KGAUDIT_ALLOW_INSECURE=1`，
 >   守衛降為警告放行——但這段期間沒有物件層級授權與稽核隔離，請限時且知情。
 >
 > ⚠ 用「非 `Development`」而非「等於 `Production`」判定，是因為 `IsProduction()` 只認字面
 > `Production`——把環境命名為 `Prod`／`Staging` 會整個繞過守衛。
-> 仍設著 `SITE_AUTH_PASS`（Windows 驗證下應移除的共用帳密）只會**警告**不擋啟動（見日誌 `【上線組態警告】`）。
+> 仍填著 `App:BasicAuthPassword`（Windows 驗證下應清空的共用帳密）只會**警告**不擋啟動（見日誌 `【上線組態警告】`）。
 
 **① 主機層開啟 Windows 驗證。**
 本程式**刻意不引** `Microsoft.AspNetCore.Authentication.Negotiate` 套件
@@ -239,7 +273,7 @@ GHSA-8prm-248r-h957），改由主機提供身分，本程式只讀取已驗證�
 | 主機 | 設定 | 程式需要做什麼 |
 |---|---|---|
 | **IIS** | 網站 → 驗證 → **啟用「Windows 驗證」、停用「匿名驗證」** | 不需要——ASP.NET Core Module 會把已驗證的身分帶進來 |
-| **HTTP.sys**（Windows 服務／自主控管） | — | 設環境變數 **`KGAUDIT_HTTPSYS=1`**，程式即以 `Negotiate\|NTLM` 監聽並停用匿名 |
+| **HTTP.sys**（Windows 服務／自主控管） | — | 把 appsettings 的 **`App:UseHttpSys` 設為 `true`**，程式即以 `Negotiate\|NTLM` 監聽並停用匿名 |
 
 > `KGAUDIT_HTTPSYS` **預設關閉**，不設就完全維持原本的 Kestrel 行為。
 > 僅 Windows 有效（非 Windows 設了會略過，不會讓服務起不來）。
@@ -270,7 +304,7 @@ GHSA-8prm-248r-h957），改由主機提供身分，本程式只讀取已驗證�
 "Auth": {
   "Mode": "Windows",           // Off（預設）／Windows／Dev
   "Directory": "hrapi",        // hrapi＝呼叫人資 API 換工號＋部門；config＝設定檔假名單（測試）
-  "HrApi": {                   // 實值改用環境變數帶入，不寫進版控檔（見下）
+  "HrApi": {                   // 實值直接填在這裡即可；ApiKey 若不便落檔可改走環境變數（見下）
     "Url": "", "System": "", "ApiKey": ""
   }
 },
@@ -299,17 +333,25 @@ GHSA-8prm-248r-h957），改由主機提供身分，本程式只讀取已驗證�
 > GRANT SELECT ON dbo.vw_Acumatica_Permission TO [<服務帳號>];
 > ```
 >
-> 若 ERP 與本系統在**不同執行個體**，`KGAUDIT_ERP_CONNECTION` 要指向 ERP 那台。
+> 若 ERP 與本系統在**不同執行個體**，`ConnectionStrings:KgAuditErp` 要指向 ERP 那台。
 
-**機密一律走環境變數**（不寫進進版控的檔案）：
+**機密的存放位置。** 交付包裡的 `appsettings.json` **不含任何實值**（連線字串是本機
+LocalDB 的開發預設、密碼與金鑰皆為空字串），貴部門填入實值後的那一份是**部署產物、
+不進版控**，因此機密直接填在 `appsettings.json` 即可，不需要設定環境變數。
 
-| 環境變數 | 用途 |
-|---|---|
-| `KGAUDIT_CONNECTION` | 本系統資料庫連線 |
-| `KGAUDIT_ERP_CONNECTION` | ERP 權限檢視表（唯讀）連線 |
-| `Auth__HrApi__Url` | 人資 API `GetEmployeeByAD` 端點 |
-| `Auth__HrApi__System` | 呼叫端系統識別名（資訊處配發） |
-| `Auth__HrApi__ApiKey` | 人資 API 金鑰（資訊處配發） |
+若組織政策要求特定機密不得落於設定檔，可**逐項**改用環境變數覆寫（不必全部搬）：
+
+| 設定鍵（appsettings） | 環境變數覆寫 | 用途 |
+|---|---|---|
+| `ConnectionStrings:KgAudit` | `KGAUDIT_CONNECTION` | 本系統資料庫連線 |
+| `ConnectionStrings:KgAuditErp` | `KGAUDIT_ERP_CONNECTION` | ERP 權限檢視表（唯讀）連線 |
+| `Auth:HrApi:Url` | `Auth__HrApi__Url` | 人資 API `GetEmployeeByAD` 端點 |
+| `Auth:HrApi:System` | `Auth__HrApi__System` | 呼叫端系統識別名（資訊處配發） |
+| `Auth:HrApi:ApiKey` | `Auth__HrApi__ApiKey` | 人資 API 金鑰（資訊處配發） |
+| `App:BasicAuthPassword` | `SITE_AUTH_PASS` | 整站共用密碼 |
+
+> 環境變數的階層分隔是**雙底線** `__`（不是冒號）——`Auth:HrApi:ApiKey` 對應
+> `Auth__HrApi__ApiKey`。寫成單底線或冒號不會報錯，只是**不會生效**。
 
 **身分鏈**：主機層 Windows 驗證取得 AD 帳號 → `GetEmployeeByAD` 換工號＋部門 →
 以工號查 ERP 權限檢視表決定角色與可見工地。人資 API 只能由後端呼叫（金鑰不落地前端）。
@@ -349,7 +391,7 @@ GHSA-8prm-248r-h957），改由主機提供身分，本程式只讀取已驗證�
 
 | 項目 | 建議 |
 |---|---|
-| 備份（.NET 版） | **兩份都要**：① SQL Server 資料庫的例行備份 ② **`ATTACH_DIR` 的附件檔案**——附件本體**不在資料庫裡**（刻意的：幾百 MB 的照片塞進 DB 會讓備份與還原又慢又大）。只備份資料庫＝所有簽單照片與稽核照片都沒被備份到 |
+| 備份（.NET 版） | **兩份都要**：① SQL Server 資料庫的例行備份 ② **`App:AttachDir` 的附件檔案**——附件本體**不在資料庫裡**（刻意的：幾百 MB 的照片塞進 DB 會讓備份與還原又慢又大）。只備份資料庫＝所有簽單照片與稽核照片都沒被備份到 |
 | 備份（Node 版） | 每日排程壓縮整個 `DATA_DIR`（含 JSON 檔與 `attachments/` 子目錄的附件二進位——**備份規則勿只挑 .json**）；另保留管理員手動 JSON 備份於月結時點 |
 | 監控 | 服務存活（`GET /health` 回 `{"ok":true,"sites":N}`）＋磁碟空間（**含 `ATTACH_DIR`**）。<br>⚠ **啟用 Windows 驗證後，探測也必須帶網域認證**——`AllowAnonymous=false` 是在 HTTP.sys／IIS 層生效，**整台服務每個路徑**（含 `/health` 與首頁）都要求認證。不帶認證的探測會拿到 **401**，監控會把健康的服務報成死掉、甚至觸發自動重啟。請以網域服務帳號執行探測，或在 IIS 對 `/health` 單獨放行匿名 |
 | 密碼輪替 | 人員異動時更換 `SITE_AUTH_PASS` 並重啟服務 |

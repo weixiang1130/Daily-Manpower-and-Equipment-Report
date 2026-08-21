@@ -18,6 +18,13 @@ backend/cloud/functions/api.mjs        資料 API（函式內二次驗證同一�
   └─ Netlify Blobs store "audit-data"（strong consistency）
 ```
 
+- **地端設定（v24.8）**：`backend/onprem/dotnet/appsettings.json` 是**唯一必要的設定處**，
+  零環境變數即可完整部署（資訊處要求：多系統共存時環境變數會撞名、墊高部署複雜度）。
+  程式一律走 `Cfg.Str()`／`Cfg.Flag()`，優先權 **環境變數 ＞ appsettings ＞ 程式預設**——
+  **新增設定請登記在 `Cfg` 區塊與 appsettings，不要再直接呼叫 `GetEnvironmentVariable`**。
+  ⚠ 監聽位址用 **`App:Urls`**，不可改回根層 `"Urls"`（載入順序晚於 `ASPNETCORE_URLS`、會靜默蓋掉它）
+  或 `Kestrel:Endpoints`（優先權高於 `--urls`、會讓它靜默失效）。
+  ⚠ appsettings 為資訊處**手動維護**，改版若動到設定要在 `docs/DEPLOYMENT.md` §③ 條列異動。
 - **部署**：Git 連動 main 自動建置。`netlify.toml` build command 執行 `scripts/build-config.mjs`，從環境變數 `LOCAL_CONFIG_JS` 產生 `config.local.js`（真實名單不進 repo；變數未設定時站台用 `app.js` 內建範例值）。
 - **本機**：純靜態伺服器無 /api → 前端顯示「無法連線」畫面（設計行為）。完整本機測試需 `netlify dev`；純前端邏輯可在 console 注入 `MASTER`/`SITE_CACHE`/`READY=true` 後 `renderAll()` 驗證。
 

@@ -2,6 +2,29 @@
 
 版本異動摘要。完整背景與設計決策請見 [`docs/milestones/`](docs/milestones/README.md)。
 
+## [節點 51] 2026-08-21 — 部署設定改以 appsettings.json 為主（v24.8）
+- **資訊處要求（採納）**：不用環境變數——多系統共存時名稱會打架、還得逐一改名，也墊高部署複雜度。
+  設定寫在 `appsettings.json`；且該檔為**手動維護、不整檔覆蓋**，故每次改版要**明確條列**改哪個值、加哪個節點
+- **查證第 1 題時抓到一個會靜默出錯的問題**：`appsettings` 根層的 `"Urls"` 屬於應用組態、載入順序
+  **晚於** `ASPNETCORE_URLS`（主機組態），會把環境變數靜默蓋掉。發佈版實測：設 `ASPNETCORE_URLS=http://*:8099`
+  仍然監聽 `localhost:8080`。而 `DEPLOYMENT.md` 正是請資訊處用 `ASPNETCORE_URLS` 開放對外連線
+  ——**照文件做沒有效果，服務只綁本機、全公司連不上且完全不報錯**
+- 監聽位址改用獨立鍵 **`App:Urls`**，優先權才與其他設定一致：`--urls` ＞ `ASPNETCORE_URLS` ＞ `App:Urls` ＞ 預設。
+  （不保留根層 `"Urls"`——同一份設定檔裡兩套相反的優先權規則才是真正難查的東西）
+- 新增統一讀取器 `Cfg`，**環境變數 ＞ appsettings ＞ 程式預設**；散在各處的九處
+  `Environment.GetEnvironmentVariable` 全數收斂。新增 `App` 節點承接原本只能靠環境變數的五項
+  （`StaticDir`／`AttachDir`／`BasicAuthUser`／`BasicAuthPassword`／`UseHttpSys`／`AllowInsecureConfig`），
+  並補上 `ConnectionStrings:KgAuditErp` 的**實際鍵**（原本只有 `_KgAuditErp` 註解，填在那裡不會報錯、
+  會在啟用權限後變成全員 503）
+- 環境變數保留為**選用覆寫**：既有部署不會壞；資安政策要求密碼不落檔時可只搬那一項
+- **設錯會被點名**：守衛新增三則檢查——只綁 loopback（讀 `IServerAddressesFeature`，
+  訊息載明反向代理同機時可忽略）、連線字串仍指向 `(localdb)`、`App:AttachDir` 未設定
+  （改版覆蓋目錄會讓簽單掃描檔一併消失）
+- 驗證全部以**發佈版執行檔**實測：優先權矩陣 5 情境全符；零環境變數的完整部署
+  （監聽位址／帳密／連線字串／靜態根／附件根）全部生效；交付包預設值原封不動啟動時五則警告全發
+- ⚠ 兩次誤判都出在測試腳本：`dotnet run` 會被 `launchSettings.json` 的 `applicationUrl` 蓋掉、
+  `Process.Start` 沒設 `WorkingDirectory` 會讀到原始碼那份 appsettings。測部署行為一律用發佈版執行檔
+
 ## [節點 50] 2026-08-20 — 鎖檔區間、月租逐日簽認工程師、逐日內容欄版面（v24.7）
 - **鎖檔從「一個切點」擴充成「可累積的區間清單」**：舊的 `config.lockDate` 只有「這天含以前全鎖」，
   但結算是一段一段來的、而且需要緩衝期。改成 `lockRanges: [{from,to,effectiveAt,enabled,note}]`——

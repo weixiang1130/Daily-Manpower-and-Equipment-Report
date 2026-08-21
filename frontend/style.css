@@ -834,8 +834,19 @@ td.num{font-family:'DM Mono',Consolas,monospace;}    /* 等寬字讓整數位對
    表格變成沒法掃讀的長條。限高後列高一致，超長的那格自己捲。
    ⚠ 列印時要解除，否則紙本會把捲軸外的內容整段吃掉。 */
 .fixed-table td .cellbox{max-height:7.5em;overflow-y:auto;overscroll-behavior:contain;}
-/* 有內容被截住時給一條細邊，否則使用者不知道還有東西可捲 */
 .fixed-table td .cellbox{scrollbar-width:thin;}
+/* 真的被截住的格子才標記（由 app.js 的 scheduleClipScan 在版面完成後加上）。
+   ⚠ 這條不是裝飾：Windows 的覆蓋式捲軸不滑過去看不見，被截住的儲存格與完整的
+   長得一模一樣，讀的人會把半段稽核結論當成全文——比原本的高列更糟。
+   用虛線底邊（形狀差異，不只靠顏色）＋ title 提供全文。
+   ⚠ 標記**不可**用 ::after 放一個「⋯」——虛擬元素在捲動區內部，會跟著內容
+     捲走，只有捲到底才看得到，等於沒有提示。邊框畫在盒子上才會一直在。 */
+.fixed-table td .cellbox.is-clipped{
+  border-bottom-width:2px;
+  border-bottom-style:dashed;
+  border-bottom-color:var(--amber-600);
+  cursor:help;
+}
 @media print{
   .fixed-table td .cellbox{max-height:none;overflow:visible;}
 }

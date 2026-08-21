@@ -294,10 +294,47 @@ const COL_W = new Map([
    懸掛縮排，折行才不會跑到編號正下方；非列點文字原樣輸出，換行交給 pre-line。
    ⚠ 一律經 esc()——這是唯一把資料寫進 DOM 的路徑。 */
 const LIST_TEXT = /(^|\n)\s*\d+[.、)]\s/;
+/* 儲存格內容一律包一層 .cellbox 並在 CSS 限高。
+
+   為什麼放在這裡而不是各張表自己包：固定欄寬下長文字只能往下折，而**同一列的
+   高度由最長那一欄決定**。實測正式資料 2,201 張點工＋1,042 張機具：
+   「逐日使用紀錄(月租)」單格最長 1,446 字（260px 欄寬＝85 行、整列 1,359px），
+   「現場查核回饋」302 字、「工作內容」167 字——只要有一筆，整列就把旁邊
+   二十幾個單行欄位全撐開，表格沒法掃讀。
+   ⚠ 包在 cellHTML 裡，**報表與清單兩條渲染路徑才會一致**——第一版只包在
+     reportTableHTML，點工清單的「現場查核回饋」欄（同一個 302 字欄位）就漏掉了。 */
 function cellHTML(v){
   const s = v === undefined || v === null ? "" : String(v);
-  if(!LIST_TEXT.test(s)) return esc(s);
-  return s.split("\n").map(l=>`<div class="li">${esc(l)}</div>`).join("");
+  scheduleClipScan();
+  const inner = LIST_TEXT.test(s)
+    ? s.split("\n").map(l=>`<div class="li">${esc(l)}</div>`).join("")
+    : esc(s);
+  return `<div class="cellbox">${inner}</div>`;
+}
+
+/* 限高會把超出的內容藏起來，而 Windows 的覆蓋式捲軸不滑過去根本看不到——
+   被截住的儲存格與完整的長得一模一樣，讀的人會以為自己看到的就是全文。
+   這一遍在版面完成後標出真的被截住的格子（加虛線底邊 ＋ 把全文放進 title
+   讓滑過去就能看到），比原本的高列更糟的無聲截斷才不會發生。
+   去抖：一次渲染裡 cellHTML 會被呼叫上千次，只掃一遍。
+
+   ⚠ **用 setTimeout 而不是 requestAnimationFrame**：頁面沒有在合成畫面時
+     （分頁在背景、視窗最小化）rAF 完全不執行，標記就一直沒套上，而
+     `clipScanQueued` 還會卡在 true。scrollHeight／clientHeight 在隱藏狀態
+     照樣讀得到，本來就不需要等繪製。 */
+let clipScanQueued = false;
+function scheduleClipScan(){
+  if(clipScanQueued) return;
+  clipScanQueued = true;
+  setTimeout(()=>{
+    clipScanQueued = false;
+    document.querySelectorAll(".cellbox").forEach(el=>{
+      const clipped = el.scrollHeight > el.clientHeight + 1;
+      el.classList.toggle("is-clipped", clipped);
+      if(clipped && !el.title) el.title = el.textContent;
+      else if(!clipped && el.title) el.removeAttribute("title");
+    });
+  });
 }
 
 /* 產生 <table>＋<colgroup>＋<thead>，呼叫端只需接自己的 <tbody>。
@@ -3197,14 +3234,9 @@ function populateReportFilters(key){
 
 /* 明細與計價彙總共用；欄寬走上方 COL_W（共用表格工具）
 
-   ⚠ 儲存格內容包一層 .cellbox 並在 CSS 限高。理由（實測 2,201 張點工＋1,042 張機具）：
-   固定欄寬下長文字只能往下折，而同一列的高度由最長那一欄決定——
-   「逐日使用紀錄(月租)」單格最長 1,446 字，在 260px 欄寬要 85 行，
-   整列就變成 85 行高，旁邊 27 欄各只有一行字，整張表完全沒法掃讀。
-   限高後每列高度一致、表格可掃，超長的那格自己內捲。
-   **不改欄寬也不改內容**——匯出仍是全量全文（計價紅線 3）。 */
+   儲存格的限高（.cellbox）統一由 cellHTML 負責，報表與清單兩條路徑一致。 */
 function reportTableHTML(headers, rows){
-  const cell = v=>`<td><div class="cellbox">${cellHTML(v)}</div></td>`;
+  const cell = v=>`<td>${cellHTML(v)}</td>`;
   return fixedTableOpen(headers)
     + `<tbody>${rows.map(r=>`<tr>${r.map(cell).join("")}</tr>`).join("")}</tbody></table>`;
 }
@@ -3385,13 +3417,33 @@ async function sha256Hex(bytes){
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
+/* 匯出中的取消控制器。整包匯出要跑數分鐘、上百個請求，
+   卡住時使用者必須有辦法收手（否則按鈕是 disabled、只能重載整頁重跑）。 */
+let bundleAbort = null;
+
+const ATT_TIMEOUT_MS = 60 * 1000;   // 單一附件的逾時（正式資料最大附件約數 MB）
+
 /* 逐一取回附件本體。**每個附件用它自己的工地名**——attUrl() 走的是
-   MASTER.currentSite，對全量匯出是錯的（別站的附件會查無）。 */
-async function fetchAttachment(site, id){
+   MASTER.currentSite，對全量匯出是錯的（別站的附件會查無）。
+
+   ⚠ 一定要有逾時：沒有 signal 的 fetch 遇到中途斷線的連線會**永遠不 reject**，
+     整個匯出就停在那裡不動，而按鈕還是 disabled。
+   重試一次是因為單一暫時性失敗不該讓使用者把幾分鐘的匯出重跑一遍；
+   404 不重試——那是雲端真的沒有這個檔，再試幾次都一樣。 */
+async function fetchAttachment(site, id, outerSignal){
   const url = API_BASE + "?" + new URLSearchParams({ site, attachment: id }).toString();
-  const res = await fetch(url);
-  if (!res.ok){ const e = new Error("HTTP " + res.status); e.status = res.status; throw e; }
-  return new Uint8Array(await res.arrayBuffer());
+  for(let attempt = 0; attempt < 2; attempt++){
+    const timer = AbortSignal.timeout(ATT_TIMEOUT_MS);
+    const signal = (outerSignal && AbortSignal.any) ? AbortSignal.any([outerSignal, timer]) : timer;
+    try{
+      const res = await fetch(url, { signal });
+      if(!res.ok){ const e = new Error("HTTP " + res.status); e.status = res.status; throw e; }
+      return new Uint8Array(await res.arrayBuffer());
+    }catch(err){
+      if(outerSignal && outerSignal.aborted) throw Object.assign(new Error("cancelled"), { cancelled: true });
+      if(err.status === 404 || attempt === 1) throw err;   // 404 不重試；第二次失敗才放棄
+    }
+  }
 }
 
 function bundleProgress(msg){
@@ -3399,19 +3451,27 @@ function bundleProgress(msg){
   if (el){ el.hidden = false; el.textContent = msg; }
 }
 
+const BUNDLE_CONCURRENCY = 5;   // 同時在途的附件請求數
+
 async function buildMigrationBundle(){
   if (!isAdmin()){ toast("僅限管理員操作"); return; }
   const btn = document.getElementById("bundleBtn");
+  const cancelBtn = document.getElementById("bundleCancelBtn");
   if (btn) btn.disabled = true;
+  bundleAbort = new AbortController();
+  if (cancelBtn) cancelBtn.hidden = false;
   try{
     bundleProgress("① 下載單據與名單池…");
     const data = await api("GET", null, { scope: "all" });
     const stores = data.stores || {};
 
     bundleProgress("② 下載行情通報費率書…");
-    let rates = {};
+    /* ⚠ 抓失敗**不可當成「本來就沒有費率」靜默帶過**——包裡照樣會有一個空的
+       rates.json，而匯入說明宣稱本包含費率書，資訊處無從分辨「原本就沒有」
+       與「當時抓失敗」。結果記進 MANIFEST 並在完成訊息裡講出來。 */
+    let rates = {}, ratesError = null;
     try{ rates = await api("GET", null, { rates: "1" }); }
-    catch(e){ rates = {}; }   // 未曾匯入過費率＝空的，不是錯誤
+    catch(e){ ratesError = (e && e.message) ? String(e.message) : "unknown"; }
 
     /* 附件清單：單據本身與稽核紀錄底下的都要，且要記住各自的工地 */
     const todo = [];
@@ -3431,27 +3491,55 @@ async function buildMigrationBundle(){
     const failed = [];       // 其他錯誤，可重試
     let done = 0;
 
-    for (const a of todo){
-      done++;
-      if (done % 5 === 1 || done === todo.length)
-        bundleProgress(`③ 下載附件 ${done}/${todo.length}…（勿關閉本頁）`);
-      let bytes;
-      try{
-        bytes = await fetchAttachment(a.site, a.id);
-      }catch(err){
-        /* 404＝雲端根本沒有這個檔（描述資料成了孤兒），重跑也不會有，與可重試的
-           失敗分開列——否則資訊處會一直重跑想補齊那幾個永遠補不到的。 */
-        (err.status === 404 ? missing : failed).push(
-          { id: a.id, name: a.name, reason: "HTTP " + (err.status || "?") });
-        continue;
+    /* 併發下載。**逐一 await 會把每個請求的往返延遲串起來**——831 個附件
+       光是等待就要近一分鐘，再加上傳輸。同時在途 5 個是相對保守的值：
+       快好幾倍，又不至於把共用資料庫的連線打滿。
+       結果依原順序寫回（result[i]），MANIFEST 的檔案順序才穩定、可重現比對。 */
+    const result = new Array(todo.length);
+    let cursor = 0;
+    async function worker(){
+      while(true){
+        const i = cursor++;
+        if(i >= todo.length) return;
+        if(bundleAbort.signal.aborted) return;
+        const a = todo[i];
+        try{
+          const bytes = await fetchAttachment(a.site, a.id, bundleAbort.signal);
+          /* ⚠ 雜湊只是驗收用的附加資訊。算不出來**不可**讓這個附件被記成失敗——
+             檔案已經在包裡了，記成失敗會讓人以為要重跑，exported 也會與實際內容不符。 */
+          let sha = "";
+          try{ sha = await sha256Hex(bytes); }catch(e){ /* 留空，不影響搬遷 */ }
+          result[i] = { ok: true, bytes, sha };
+        }catch(err){
+          if(err && err.cancelled) return;
+          /* 404＝雲端根本沒有這個檔（描述資料成了孤兒），重跑也不會有，與可重試的
+             失敗分開列——否則資訊處會一直重跑想補齊那幾個永遠補不到的。 */
+          result[i] = { ok: false, kind: (err.status === 404 ? "missing" : "failed"),
+                        reason: "HTTP " + (err.status || "?") };
+        }
+        done++;
+        /* ⚠ 匯出期間沒有任何滑鼠或鍵盤動作，30 分鐘的絕對閒置上限會在匯出中途
+           把使用者登出（回到選站畫面）。把進度視為「使用中」。 */
+        lastActivityAt = Date.now();
+        if(done % 5 === 0 || done === todo.length)
+          bundleProgress(`③ 下載附件 ${done}/${todo.length}…（可按「取消匯出」中止）`);
       }
-      entries.push({ name: `attachments/${a.id}`, data: bytes });
-      /* ⚠ 雜湊只是驗收用的附加資訊。算不出來**不可**讓這個附件被記成失敗——
-         檔案已經在包裡了，記成失敗會讓人以為要重跑，且 exported 與實際內容不符。 */
-      let sha = "";
-      try{ sha = await sha256Hex(bytes); }catch(e){ /* 留空，不影響搬遷 */ }
-      files.push({ id: a.id, name: a.name, size: bytes.length, sha256: sha });
     }
+    await Promise.all(Array.from({ length: Math.min(BUNDLE_CONCURRENCY, todo.length || 1) }, worker));
+
+    if(bundleAbort.signal.aborted){
+      bundleProgress(`已取消（已下載 ${done}/${todo.length} 個附件，未產生檔案）`);
+      toast("已取消匯出");
+      return;
+    }
+
+    todo.forEach((a, i) => {
+      const r = result[i];
+      if(!r) return;                       // 理論上不會發生；有的話當成未匯出
+      if(!r.ok){ (r.kind === "missing" ? missing : failed).push({ id: a.id, name: a.name, reason: r.reason }); return; }
+      entries.push({ name: `attachments/${a.id}`, data: r.bytes });
+      files.push({ id: a.id, name: a.name, size: r.bytes.length, sha256: r.sha });
+    });
 
     bundleProgress("④ 打包中…");
     const nLabor = Object.values(stores).reduce((n, s) => n + (s.labor || []).length, 0);
@@ -3462,6 +3550,10 @@ async function buildMigrationBundle(){
       sites: Object.keys(stores).length,
       laborRecords: nLabor,
       equipRecords: nEquip,
+      /* 費率書的取得結果一定要留痕，否則空的 rates.json 有兩種可能而分不出來 */
+      rates: ratesError
+        ? { fetched: false, error: ratesError }
+        : { fetched: true, labor: (rates.labor || []).length, equipment: (rates.equipment || []).length },
       attachments: { expected: todo.length, exported: files.length, missing, failed },
       totalAttachmentBytes: files.reduce((n, f) => n + f.size, 0),
       files
@@ -3484,12 +3576,15 @@ async function buildMigrationBundle(){
                 + `附件 ${files.length} 個（${mb} MB）`;
     if (missing.length) summary += `｜雲端查無 ${missing.length} 個（孤兒描述資料，屬已知情況）`;
     if (failed.length)  summary += `｜⚠ 失敗 ${failed.length} 個，請重跑一次補齊`;
+    if (ratesError)     summary += `｜⚠ 費率書下載失敗（${ratesError}），包內 rates.json 為空`;
     bundleProgress(summary);
   }catch(e){
     bundleProgress("⚠ 匯出失敗：" + (e && e.message ? e.message : "請檢查網路後重試"));
     toast("⚠ 遷移包匯出失敗");
   }finally{
     if (btn) btn.disabled = false;
+    if (cancelBtn) cancelBtn.hidden = true;
+    bundleAbort = null;
   }
 }
 
@@ -4609,6 +4704,11 @@ function crc32(u8){
    ⚠ 二進位一定要原樣寫入——先轉字串再 TextEncoder 會把非 UTF-8 位元組
      換成 U+FFFD，JPEG/PDF 會整個壞掉。 */
 function zipStore(entries, mime){
+  /* ZIP32 的硬上限：條目數是 uint16、位移是 uint32。超過會**靜默截斷**——
+     壓縮檔照樣開得起來，只是少了大半條目，而 MANIFEST 仍宣稱全數匯出。
+     本函式現在是整個資料集的搬遷路徑，寧可在這裡明確擋下。 */
+  if(entries.length > 65000)
+    throw new Error(`ZIP 條目數 ${entries.length} 超過格式上限（65,535），需改用 ZIP64`);
   const enc = new TextEncoder();
   const d = new Date();
   const dosTime = ((d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1)) & 0xFFFF;
@@ -4617,7 +4717,16 @@ function zipStore(entries, mime){
   let offset = 0;
   entries.forEach(e => {
     const name = enc.encode(e.name);
-    const data = (e.data instanceof Uint8Array) ? e.data : enc.encode(e.data);
+    /* ⚠ 二進位一定要原樣寫入，而且**不能只認 Uint8Array**：傳進 ArrayBuffer
+       （`await res.arrayBuffer()` 的自然產物）或 DataView 時，落到 enc.encode()
+       會把物件字串化成 "[object ArrayBuffer]" 寫進去——壓縮檔開得起來、CRC 也對，
+       要等有人打開附件才發現檔案全毀。形狀不對就直接擋下。 */
+    let data;
+    if(typeof e.data === "string") data = enc.encode(e.data);
+    else if(e.data instanceof Uint8Array) data = e.data;
+    else if(e.data instanceof ArrayBuffer) data = new Uint8Array(e.data);
+    else if(ArrayBuffer.isView(e.data)) data = new Uint8Array(e.data.buffer, e.data.byteOffset, e.data.byteLength);
+    else throw new Error(`zipStore：${e.name} 的 data 必須是字串或二進位，收到 ${Object.prototype.toString.call(e.data)}`);
     const crc = crc32(data);
     const lh = new DataView(new ArrayBuffer(30));
     lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true);
@@ -4635,6 +4744,8 @@ function zipStore(entries, mime){
     cd.setUint16(28, name.length, true); cd.setUint32(42, offset, true);
     central.push(new Uint8Array(cd.buffer), name);
     offset += 30 + name.length + data.length;
+    if(offset > 0xFFFFFFF0)
+      throw new Error("ZIP 總大小超過 4 GB 上限，需改用 ZIP64");
   });
   const cdSize = central.reduce((a, b) => a + b.length, 0);
   const eo = new DataView(new ArrayBuffer(22));
@@ -6051,6 +6162,9 @@ function initSettings(){
   });
 
   document.getElementById("bundleBtn").addEventListener("click", buildMigrationBundle);
+  document.getElementById("bundleCancelBtn").addEventListener("click", ()=>{
+    if(bundleAbort) bundleAbort.abort();
+  });
 
   document.getElementById("clearAllData").addEventListener("click", async ()=>{
     if(!isAdmin()){ toast("僅限管理員操作"); return; }

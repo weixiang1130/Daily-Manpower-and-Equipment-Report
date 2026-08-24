@@ -854,6 +854,18 @@ app.MapGet("/api/data", async (HttpContext ctx) =>
         ("@k", Wr.AdminDeptKey));
     if (deptRow.Count > 0 && JsonArrayOf(deptRow[0]["value_json"]) is JsonArray da && da.Count > 0)
         master["adminDepartments"] = da;
+    /* 節點 55 補強：授權覆寫。**只給管理者**（az 為 null＝權限未啟用，等同全員管理）——
+       內容含工號與核准註記，不該讓一般工地使用者列舉「誰被額外授了哪裡」。 */
+    if (az is null || az.IsAdmin)
+    {
+        var grRow = await Query(cn, "SELECT value_json FROM dbo.app_settings WHERE setting_key = @k",
+            ("@k", Wr.SiteGrantsKey));
+        if (grRow.Count > 0 && grRow[0]["value_json"] is string gj && !string.IsNullOrWhiteSpace(gj))
+        {
+            try { if (JsonNode.Parse(gj) is JsonObject go) master["siteGrants"] = go; }
+            catch { /* 壞 JSON 就不回，設定頁會顯示空清單，重存一次即修復 */ }
+        }
+    }
     var stores = await ReadStores(cn, null);
     if (az is not null)
     {
@@ -1169,6 +1181,39 @@ static async Task<IResult> OpMaster(SqlConnection cn, JsonObject body)
               WHEN MATCHED THEN UPDATE SET value_json = @v, updated_at = SYSDATETIME()
               WHEN NOT MATCHED THEN INSERT (setting_key, value_json) VALUES (@k, @v);",
             ("@k", Wr.AdminDeptKey), ("@v", new JsonArray(vals.Select(v => (JsonNode)JsonValue.Create(v)!).ToArray()).ToJsonString(Wr.JsonOpts)));
+    }
+
+    /* 節點 55 補強：授權覆寫改由設定頁維護（原第一版僅能以 SQL 直改）。
+       與 adminDepartments 同一守則：**省略＝保留既有值**；要清空請明確送空物件 {}。
+       寫入前正規化：工號 trim、sites 去空白去重；空 sites 的整筆略過。
+       ⚠ 工地名在這裡**不驗存在性**——覆寫允許授予尚未建立的工地（先授權後納管），
+         Auth 端比對時查無此站自然不生效，與判定層的防呆一致。 */
+    if (body["siteGrants"] is JsonObject grants)
+    {
+        var norm = new JsonObject();
+        foreach (var (emp, node) in grants)
+        {
+            var id = emp.Trim();
+            if (id.Length == 0 || node is not JsonObject g) continue;
+            var gs = (g["sites"] as JsonArray)?
+                .Select(x => x?.GetValueKind() == JsonValueKind.String ? x.GetValue<string>().Trim() : null)
+                .Where(s => !string.IsNullOrEmpty(s)).Distinct(StringComparer.Ordinal).ToArray()
+                ?? Array.Empty<string>();
+            if (gs.Length == 0) continue;
+            norm[id] = new JsonObject
+            {
+                ["sites"] = new JsonArray(gs.Select(v => (JsonNode)JsonValue.Create(v)!).ToArray()),
+                ["by"] = g["by"]?.GetValueKind() == JsonValueKind.String ? g["by"]!.GetValue<string>() : "",
+                ["at"] = g["at"]?.GetValueKind() == JsonValueKind.String ? g["at"]!.GetValue<string>() : "",
+                ["why"] = g["why"]?.GetValueKind() == JsonValueKind.String ? g["why"]!.GetValue<string>() : ""
+            };
+        }
+        await Exec(cn, tx,
+            @"MERGE dbo.app_settings AS t
+              USING (SELECT @k AS k) AS s ON t.setting_key = s.k
+              WHEN MATCHED THEN UPDATE SET value_json = @v, updated_at = SYSDATETIME()
+              WHEN NOT MATCHED THEN INSERT (setting_key, value_json) VALUES (@k, @v);",
+            ("@k", Wr.SiteGrantsKey), ("@v", norm.ToJsonString(Wr.JsonOpts)));
     }
 
     // 不在清單裡的工地標為 is_active=0 而**不是刪除**——歷史紀錄必須留著，
@@ -2325,6 +2370,9 @@ static class Wr
 
     /* app_settings 的鍵名（v23.2）。Auth.cs 也讀同一把鍵——**改這裡就好，勿各寫一份** */
     public const string AdminDeptKey = "admin_departments";
+
+    /* 授權覆寫（節點 55）：工號 → 額外可見工地。Auth.cs 的 GrantsAsync() 讀同一把鍵 */
+    public const string SiteGrantsKey = "site_grants";
 
     /* JSON 輸出設定（v23.2）。
        .NET 的預設編碼器會把所有非 ASCII 逃脫成 \uXXXX——功能上沒錯（JSON 合法、

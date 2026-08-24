@@ -676,6 +676,25 @@
       </div>
     </div>
 
+    <!-- ============ 跨工地授權（節點 55；地端權限用） ============ -->
+    <div class="panel">
+      <div class="panel-head">
+        <h2>跨工地授權<span class="admin-only-badge">管理員</span></h2>
+        <p class="hint">讓特定同仁在 ERP 專案權限之外<strong>額外</strong>看到指定工地（例：支援同廠區另一棟）。
+          被授予者以一般工地使用者身分進入，可申請與回報；<strong>只增加可見工地、不提升權限</strong>。
+          撤銷 ERP 本來給的權限請回 ERP 處理，這裡只能加、不能減。</p>
+      </div>
+      <div class="form-grid">
+        <div class="field field-wide">
+          <label>授權清單（每行一筆：工號｜工地1、工地2｜原因）</label>
+          <textarea id="cfg_siteGrants" rows="4" placeholder="例：&#10;K0201234｜某工地A、某工地B｜支援同廠區出工覆核"></textarea>
+          <p class="hint">工地名稱必須與上方工地清單<strong>完全相同</strong>（存檔時會逐一檢查，打錯會擋下並提示）。
+            原因會連同核准日期記錄下來，供日後查考。<strong>整份留空＝清除所有跨工地授權</strong>。
+            儲存後即刻生效；被授予者重新整理頁面即可看到新工地。</p>
+        </div>
+      </div>
+    </div>
+
     <div class="panel">
       <div class="panel-head">
         <h2 id="siteConfigTitle">目前工地基礎資料<span class="admin-only-badge">管理員</span></h2>

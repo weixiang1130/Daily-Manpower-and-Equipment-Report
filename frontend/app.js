@@ -130,7 +130,10 @@ async function api(method, body, query){
      讓後端保留既有值。若無條件送 `|| []`，任何一次存設定都會把它清空。 */
 const apiSaveMaster = () => api("POST", Object.assign(
   { op:"master", sites: MASTER.sites },
-  Array.isArray(MASTER.adminDepartments) ? { adminDepartments: MASTER.adminDepartments } : {}
+  Array.isArray(MASTER.adminDepartments) ? { adminDepartments: MASTER.adminDepartments } : {},
+  /* 節點 55：跨工地授權，同一守則——沒載到就省略，後端保留既有值。
+     載到了（含空物件）就照送：空物件＝管理員明確清空。 */
+  (MASTER.siteGrants && typeof MASTER.siteGrants === "object") ? { siteGrants: MASTER.siteGrants } : {}
 ));
 const apiSaveConfig = (site) => api("POST", { op:"config", site, config: SITE_CACHE[site].config });
 const apiSaveRecord = (kind, rec, baseV) => api("POST", { op:"record", site: MASTER.currentSite, kind, record: rec, baseV: baseV || 0 });
@@ -532,6 +535,9 @@ async function boot(){
     // v23.2：管理員部門白名單。先接住，apiSaveMaster() 才知道要不要送（見該函式註解）
     if(data.master && Array.isArray(data.master.adminDepartments))
       MASTER.adminDepartments = data.master.adminDepartments;
+    // 節點 55：跨工地授權（後端只回給管理者；一般使用者收不到，維持 undefined 即不回送）
+    if(data.master && data.master.siteGrants && typeof data.master.siteGrants === "object")
+      MASTER.siteGrants = data.master.siteGrants;
 
     if(data.master && Array.isArray(data.master.sites) && data.master.sites.length){
       MASTER.sites = data.master.sites;
@@ -610,6 +616,8 @@ async function refreshData(silent){
     if(data.master && data.master.sites && data.master.sites.length) MASTER.sites = data.master.sites;
     if(data.master && Array.isArray(data.master.adminDepartments))
       MASTER.adminDepartments = data.master.adminDepartments;   // v23.2
+    if(data.master && data.master.siteGrants && typeof data.master.siteGrants === "object")
+      MASTER.siteGrants = data.master.siteGrants;               // 節點 55
     for(const site of MASTER.sites){
       const st = (data.stores && data.stores[site]) || {};
       SITE_CACHE[site] = {
@@ -5849,11 +5857,55 @@ const SITE_CFG_MAP = {
   cfg_equipTypes:"equipTypes", cfg_people:"people", cfg_laborTypes:"laborTypes"
 };
 
+/* ==========================================================
+   跨工地授權（節點 55）：textarea 一行一筆「工號｜工地1、工地2｜原因」
+   ========================================================== */
+function formatSiteGrants(grants){
+  if(!grants || typeof grants !== "object") return "";
+  return Object.entries(grants).map(([emp, g])=>{
+    const sites = (g && Array.isArray(g.sites)) ? g.sites.join("、") : "";
+    const why = (g && g.why) ? String(g.why) : "";
+    return emp + "｜" + sites + (why ? "｜" + why : "");
+  }).join("\n");
+}
+
+/* 解析 textarea → {工號:{sites,by,at,why}}。回 { grants } 或 { error }。
+   ⚠ 工地名逐一對照 MASTER.sites：後端刻意不驗（允許先授權後納管），
+     打錯字的防線在這裡——放過去就是「存了卻沒生效」，最難查。
+   分隔符全半形都收（｜/|、頓號/逗號），現場常混用。 */
+function parseSiteGrants(text, prev){
+  const grants = {};
+  const lines = String(text||"").split("\n").map(l=>l.trim()).filter(Boolean);
+  for(const line of lines){
+    const parts = line.split(/[｜|]/).map(p=>p.trim());
+    if(parts.length < 2 || !parts[0] || !parts[1])
+      return { error: "格式不完整（需「工號｜工地」）：" + line.slice(0,30) };
+    const emp = parts[0];
+    if(!/^[A-Za-z0-9_-]{2,20}$/.test(emp))
+      return { error: "工號格式不對（英數 2～20 字）：" + emp };
+    if(grants[emp]) return { error: "工號重複，請併成一行：" + emp };
+    const sites = Array.from(new Set(parts[1].split(/[、,，]/).map(x=>x.trim()).filter(Boolean)));
+    if(!sites.length) return { error: "沒有填工地：" + emp };
+    const unknown = sites.filter(x=>!MASTER.sites.includes(x));
+    if(unknown.length)
+      return { error: "工地名稱與工地清單不符（須逐字相同）：" + unknown.join("、") };
+    const why = parts.slice(2).join("｜");
+    const old = prev && prev[emp];
+    const same = old && Array.isArray(old.sites)
+      && old.sites.length === sites.length && old.sites.every(x=>sites.includes(x))
+      && String(old.why||"") === why;
+    // 內容沒變就保留原核准註記——否則每次存別的設定都會把核准日期洗成今天
+    grants[emp] = same ? old : { sites, by: "設定頁", at: localDate(), why };
+  }
+  return { grants };
+}
+
 function renderSettings(){
   if(!READY) return;
   document.getElementById("cfg_sites").value = MASTER.sites.join("\n");
   // v23.2：管理員部門白名單（未設定時留白，代表沿用系統預設）
   document.getElementById("cfg_adminDepts").value = (MASTER.adminDepartments || []).join("\n");
+  document.getElementById("cfg_siteGrants").value = formatSiteGrants(MASTER.siteGrants);
   document.getElementById("siteConfigTitle").childNodes[0].textContent = `目前工地基礎資料：${MASTER.currentSite}`;
   const c = cur().config;
   Object.entries(SITE_CFG_MAP).forEach(([id,key])=>{
@@ -6071,6 +6123,11 @@ function initSettings(){
        （而不是「沒有任何管理員」——那會把所有人鎖在門外，見合約 §4.1） */
     MASTER.adminDepartments = Array.from(new Set(
       document.getElementById("cfg_adminDepts").value.split("\n").map(s=>s.trim()).filter(Boolean)));
+
+    // 節點 55 跨工地授權：解析失敗就整個擋下——寧可不存，也不要默默存進打錯的授權
+    const sg = parseSiteGrants(document.getElementById("cfg_siteGrants").value, MASTER.siteGrants);
+    if(sg.error){ toast("跨工地授權未儲存：" + sg.error); return; }
+    MASTER.siteGrants = sg.grants;   // 留白＝空物件＝明確清空
 
     // v15.1：人員名單批次貼上也須逐行單一人名（與「新增選項」同一規則）
     const peopleLines = document.getElementById("cfg_people").value.split("\n").map(s=>s.trim()).filter(Boolean);

@@ -1029,8 +1029,9 @@ app.MapGet("/whoami", async (HttpContext ctx) =>
     }
     if (az is null)
     {
-        o["stoppedAt"] = "③ 無任何權限——部門不在管理員清單，且 ERP 查無工地角色";
-        o["hint"] = "若此人應為管理員，請比對上方 deptName 與設定的管理員部門是否**逐字**相同";
+        o["stoppedAt"] = "③ 無任何權限——部門不在管理員清單、ERP 查無工地角色，且無授權覆寫";
+        o["hint"] = "若此人應為管理員，請比對上方 deptName 與設定的管理員部門是否**逐字**相同；"
+                  + "若只是需要臨時支援某工地，可於 app_settings 的 site_grants 加入授權覆寫";
         return Results.Content(o.ToJsonString(Wr.JsonOpts), "application/json; charset=utf-8");
     }
     o["role"] = az.Role.ToString();
@@ -1056,6 +1057,17 @@ app.MapGet("/whoami", async (HttpContext ctx) =>
             o["hint"] = $"ERP 已授權 {az.ErpProjects.Count} 個專案，其中 {un.Count} 個換不出工地"
                       + "——這些專案代碼在 dbo.sites 裡沒有對應且啟用中的列（多半是 project_code 尚未填）。"
                       + "請跑資料匯入包的 02-set-project-code.sql，或於系統設定頁以「工地納管」補上。";
+    }
+
+    /* v24.12 授權覆寫：把「哪些工地不是 ERP 給的」標出來。
+       不標的話，日後查「他怎麼會看得到這一站」會先去翻 ERP，而 ERP 上根本沒有。 */
+    if (az.GrantedSites is { Count: > 0 })
+    {
+        o["grantedSites"] = new JsonArray(az.GrantedSites.OrderBy(x => x, StringComparer.Ordinal)
+            .Select(x => (JsonNode)JsonValue.Create(x)!).ToArray());
+        o["grantNote"] = az.GrantNote ?? "";
+        o["grantHint"] = "上列工地由 app_settings 的 site_grants 額外授予，不是 ERP 專案權限。"
+                       + "要撤銷請改該筆設定，改完到系統設定頁存一次工地設定以清除快取。";
     }
     return Results.Content(o.ToJsonString(Wr.JsonOpts), "application/json; charset=utf-8");
 });

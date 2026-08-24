@@ -67,6 +67,15 @@ public sealed record Authz(Role Role, IReadOnlySet<string> Sites, bool AllSites)
     public IReadOnlySet<string>? ErpProjects { get; init; }
     public IReadOnlySet<string>? UnmappedProjects { get; init; }
 
+    /* 授權覆寫（v24.12）：ERP 之外由成本管理部額外授予的工地，以及核准註記。
+       **同樣僅供 /whoami 診斷，不參與判定**——判定時已經併進 Sites。
+
+       ⚠ 覆寫製造了第三種「為什麼看得到這個工地」的成因（前兩種見上方註解）。
+         不把它標出來的話，日後查「他怎麼會看得到 X 站」會先去翻 ERP，
+         但 ERP 上根本沒有——查修方向完全錯誤。 */
+    public IReadOnlySet<string>? GrantedSites { get; init; }
+    public string? GrantNote { get; init; }
+
     public bool CanSee(string site) => AllSites || Sites.Contains(site);
     /// 破壞性操作與全域設定限系統管理者——一併解決「伺服器端無權限分級」的安審遺留
     public bool IsAdmin => Role == Role.Admin;
@@ -307,7 +316,7 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
         return authz;
     }
 
-    public void Invalidate(){ _cache.Clear(); _depts = null; }
+    public void Invalidate(){ _cache.Clear(); _depts = null; _grants = null; }
 
     /* ---- 管理員部門白名單（v23.2） ----
        優先讀資料庫的 app_settings，讓成控自己在系統後台增減，不必請資訊處
@@ -343,6 +352,66 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
                ERP 角色那條路仍在，不會有人因此被誤放行。 */
         }
         return _depts = opt.AdminDepartments;
+    }
+
+    /* ---- 授權覆寫：工地額外授予（v24.12） ----
+       ERP 的專案角色是權限主來源，但它由 ERP 端維護、我方無法即時調整。
+       跨工地支援（例如同廠區支援隔壁棟）常常等不及 ERP 流程，因此開一張
+       由成本管理部自行維護的覆寫表，**只加不減**。
+
+       存在 app_settings 的 `site_grants` 鍵（沿用 admin_departments 的模式，
+       不另建資料表——維運帳號多半只有 db_datareader/db_datawriter，建表要動 DDL）。
+
+       格式：
+         { "K0000000": { "sites": ["工地A","工地B"],
+                         "by": "核准人", "at": "2026-08-24", "why": "原因" } }
+       只有 sites 是必要的；by/at/why 是稽核註記，這張表沒有其他軌跡，請務必填。
+
+       ⚠ 覆寫**只給工地，不升角色**：被授予者在該站的角色仍是 ERP 算出來的那個
+         （或無 ERP 工地角色時的 SiteUser），不會因此變成主管或系統管理者。 */
+    /* ⚠ 這份快取**必須有 TTL**，不能只靠 Invalidate()。
+       管理員部門（_depts）沒有 TTL 是可接受的——它極少變動，且變動時多半
+       伴隨 op:master。但覆寫是「加完就要叫那個人馬上試」的操作：若只靠
+       Invalidate()，用 SQL 直接改完之後在有人存工地設定之前**永遠不會生效**，
+       現場只會回報「你加了我還是看不到」。（實測驗證過這個失敗模式。） */
+    private (DateTime At, Dictionary<string, (string[] Sites, string Note)> Map)? _grants;
+
+    private async Task<Dictionary<string, (string[] Sites, string Note)>> GrantsAsync()
+    {
+        var ttl = TimeSpan.FromMinutes(Math.Max(0, opt.CacheMinutes));
+        if (_grants is { } c && DateTime.UtcNow - c.At < ttl) return c.Map;
+        var map = new Dictionary<string, (string[], string)>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            await using var cn = appDb();
+            await cn.OpenAsync();
+            await using var cmd = new SqlCommand(
+                "SELECT value_json FROM dbo.app_settings WHERE setting_key = 'site_grants'", cn);
+            if (await cmd.ExecuteScalarAsync() is string raw && !string.IsNullOrWhiteSpace(raw)
+                && JsonNode.Parse(raw) is JsonObject root)
+            {
+                foreach (var (emp, node) in root)
+                {
+                    if (node is not JsonObject o || o["sites"] is not JsonArray arr) continue;
+                    var sites = arr.Select(x => x?.GetValue<string>())
+                                   .Where(s => !string.IsNullOrWhiteSpace(s))
+                                   .Select(s => s!.Trim()).ToArray();
+                    if (sites.Length == 0) continue;
+                    var note = string.Join(" / ", new[]
+                    {
+                        o["by"]?.ToString(), o["at"]?.ToString(), o["why"]?.ToString()
+                    }.Where(x => !string.IsNullOrWhiteSpace(x)));
+                    map[emp.Trim()] = (sites, note);
+                }
+            }
+        }
+        catch (Exception)
+        {
+            /* 讀不到就當作沒有覆寫。**不 fail-closed**：覆寫是加法，
+               讀失敗只會讓人少看到額外工地，不會放行任何本來不該看的資料。 */
+        }
+        _grants = (DateTime.UtcNow, map);
+        return map;
     }
 
     private async Task<Authz?> ComputeAsync(UserIdentity user)
@@ -389,22 +458,48 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
 
         // 規則 4／5：工地角色 → 專案代碼換成工地名
         var isLead = roles.Overlaps(opt.SiteLeadRoles);
-        if (!isLead && !roles.Overlaps(opt.SiteUserRoles)) return null;   // 規則 6：拒絕
+
+        /* v24.12 授權覆寫：先取這個人的額外授權。
+           ⚠ 必須在規則 6 之前取得——完全沒有 ERP 工地角色、但有覆寫的人
+             （新到職尚未進 ERP、支援性職務）要能靠覆寫進來，否則覆寫對
+             最需要它的那群人無效。 */
+        var grants = await GrantsAsync();
+        var granted = grants.TryGetValue(user.EmpId, out var g)
+            ? g : (Sites: Array.Empty<string>(), Note: "");
+
+        // 規則 6：ERP 無工地角色**且**無覆寫 → 拒絕
+        if (!isLead && !roles.Overlaps(opt.SiteUserRoles) && granted.Sites.Length == 0) return null;
 
         var sites = new HashSet<string>(StringComparer.Ordinal);
         var mapped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var okGrants = new HashSet<string>(StringComparer.Ordinal);
         await using (var cn = appDb())
         {
             await cn.OpenAsync();
+            /* 一次取回全部啟用中的工地：ERP 對映需要 project_code，
+               覆寫則要能授予**尚未填 project_code**的工地，所以不能在 SQL 就濾掉 NULL。 */
             await using var cmd = new SqlCommand(
-                "SELECT name, project_code FROM dbo.sites WHERE project_code IS NOT NULL AND is_active = 1", cn);
+                "SELECT name, project_code FROM dbo.sites WHERE is_active = 1", cn);
             await using var rd = await cmd.ExecuteReaderAsync();
             while (await rd.ReadAsync())
             {
-                var code = rd.GetString(1).Trim();
-                if (!projects.Contains(code)) continue;
-                sites.Add(rd.GetString(0));
-                mapped.Add(code);
+                var name = rd.GetString(0);
+                if (!rd.IsDBNull(1))
+                {
+                    var code = rd.GetString(1).Trim();
+                    if (code.Length > 0 && projects.Contains(code))
+                    {
+                        sites.Add(name);
+                        mapped.Add(code);
+                    }
+                }
+                /* 覆寫比對工地名。以資料庫的名稱為準（大小寫不敏感比對、存回正規名），
+                   JSON 裡打錯字的項目不會生效，也不會憑空造出一個不存在的工地。 */
+                if (granted.Sites.Any(s => string.Equals(s, name, StringComparison.OrdinalIgnoreCase)))
+                {
+                    sites.Add(name);
+                    okGrants.Add(name);
+                }
             }
         }
 
@@ -412,7 +507,11 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
            回空清單而不是拒絕登入——使用者會看到「沒有可用工地」的引導訊息，
            比直接擋在門外容易查出是設定沒做完。 */
         var unmapped = new HashSet<string>(projects.Where(p => !mapped.Contains(p)), StringComparer.OrdinalIgnoreCase);
+        /* 角色仍由 ERP 決定：覆寫**只加工地、不升角色**（設計決策，2026-08-24）。
+           純靠覆寫進來的人（ERP 無任何工地角色）視為 SiteUser——能申請與回報，
+           不會因為被授予工地而變成主管。 */
         return new Authz(isLead ? Role.SiteLead : Role.SiteUser, sites, false)
-            { ErpProjects = projects, UnmappedProjects = unmapped };
+            { ErpProjects = projects, UnmappedProjects = unmapped,
+              GrantedSites = okGrants, GrantNote = okGrants.Count > 0 ? granted.Note : null };
     }
 }

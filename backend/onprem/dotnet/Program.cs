@@ -1078,8 +1078,17 @@ app.MapGet("/whoami", async (HttpContext ctx) =>
         o["grantedSites"] = new JsonArray(az.GrantedSites.OrderBy(x => x, StringComparer.Ordinal)
             .Select(x => (JsonNode)JsonValue.Create(x)!).ToArray());
         o["grantNote"] = az.GrantNote ?? "";
-        o["grantHint"] = "上列工地由 app_settings 的 site_grants 額外授予，不是 ERP 專案權限。"
-                       + "要撤銷請改該筆設定，改完到系統設定頁存一次工地設定以清除快取。";
+        o["grantHint"] = "上列工地由跨工地授權額外授予（設定頁「跨工地授權」維護），不是 ERP 專案權限。"
+                       + "增減即存即生效；此人 ERP 本來就有的工地要撤銷請回 ERP 處理。";
+    }
+    /* 覆寫裡對不上任何啟用中工地的項目：與 unmappedProjects 同理必須攤出來——
+       「存了卻沒生效」在畫面上與「沒授權」一模一樣，不標示就查不出來。 */
+    if (az.GrantsNotMatched is { Count: > 0 })
+    {
+        o["grantsNotMatched"] = new JsonArray(az.GrantsNotMatched.OrderBy(x => x, StringComparer.Ordinal)
+            .Select(x => (JsonNode)JsonValue.Create(x)!).ToArray());
+        o["grantsNotMatchedHint"] = "跨工地授權中這些工地名對不上任何啟用中的工地"
+                                  + "（多半是打錯字，或該站已改名／停用）——請到設定頁「跨工地授權」修正。";
     }
     return Results.Content(o.ToJsonString(Wr.JsonOpts), "application/json; charset=utf-8");
 });

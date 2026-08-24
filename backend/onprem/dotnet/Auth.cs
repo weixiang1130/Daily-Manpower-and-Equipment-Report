@@ -75,6 +75,8 @@ public sealed record Authz(Role Role, IReadOnlySet<string> Sites, bool AllSites)
          但 ERP 上根本沒有——查修方向完全錯誤。 */
     public IReadOnlySet<string>? GrantedSites { get; init; }
     public string? GrantNote { get; init; }
+    /// 覆寫中對不上任何啟用中工地的項目（打錯字／該站已改名或停用）——僅供 /whoami 診斷
+    public IReadOnlySet<string>? GrantsNotMatched { get; init; }
 
     public bool CanSee(string site) => AllSites || Sites.Contains(site);
     /// 破壞性操作與全域設定限系統管理者——一併解決「伺服器端無權限分級」的安審遺留
@@ -335,7 +337,7 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
             await using var cn = appDb();
             await cn.OpenAsync();
             await using var cmd = new SqlCommand(
-                "SELECT value_json FROM dbo.app_settings WHERE setting_key = 'admin_departments'", cn);
+                "SELECT value_json FROM dbo.app_settings WHERE setting_key = '" + Wr.AdminDeptKey + "'", cn);
             var raw = await cmd.ExecuteScalarAsync() as string;
             if (!string.IsNullOrWhiteSpace(raw)
                 && JsonNode.Parse(raw) is JsonArray arr && arr.Count > 0)
@@ -386,7 +388,7 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
             await using var cn = appDb();
             await cn.OpenAsync();
             await using var cmd = new SqlCommand(
-                "SELECT value_json FROM dbo.app_settings WHERE setting_key = 'site_grants'", cn);
+                "SELECT value_json FROM dbo.app_settings WHERE setting_key = '" + Wr.SiteGrantsKey + "'", cn);
             if (await cmd.ExecuteScalarAsync() is string raw && !string.IsNullOrWhiteSpace(raw)
                 && JsonNode.Parse(raw) is JsonObject root)
             {
@@ -507,11 +509,18 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
            回空清單而不是拒絕登入——使用者會看到「沒有可用工地」的引導訊息，
            比直接擋在門外容易查出是設定沒做完。 */
         var unmapped = new HashSet<string>(projects.Where(p => !mapped.Contains(p)), StringComparer.OrdinalIgnoreCase);
+        /* 覆寫裡對不上任何啟用中工地的項目（SQL 直改打錯字、或該站事後改名／停用）。
+           與 unmapped 同一個理由要攤出來：不標示的話，「存了卻沒生效」在畫面上
+           與「根本沒授權」一模一樣，查修無從下手（節點 54 的教訓，別再犯一次）。 */
+        var missGrants = new HashSet<string>(
+            granted.Sites.Where(s => !okGrants.Any(n => string.Equals(n, s, StringComparison.OrdinalIgnoreCase))),
+            StringComparer.OrdinalIgnoreCase);
         /* 角色仍由 ERP 決定：覆寫**只加工地、不升角色**（設計決策，2026-08-24）。
            純靠覆寫進來的人（ERP 無任何工地角色）視為 SiteUser——能申請與回報，
            不會因為被授予工地而變成主管。 */
         return new Authz(isLead ? Role.SiteLead : Role.SiteUser, sites, false)
             { ErpProjects = projects, UnmappedProjects = unmapped,
-              GrantedSites = okGrants, GrantNote = okGrants.Count > 0 ? granted.Note : null };
+              GrantedSites = okGrants, GrantNote = okGrants.Count > 0 ? granted.Note : null,
+              GrantsNotMatched = missGrants.Count > 0 ? missGrants : null };
     }
 }

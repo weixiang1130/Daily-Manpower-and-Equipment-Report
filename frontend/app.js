@@ -5873,7 +5873,8 @@ function formatSiteGrants(grants){
    ⚠ 工地名逐一對照 MASTER.sites：後端刻意不驗（允許先授權後納管），
      打錯字的防線在這裡——放過去就是「存了卻沒生效」，最難查。
    分隔符全半形都收（｜/|、頓號/逗號），現場常混用。 */
-function parseSiteGrants(text, prev){
+function parseSiteGrants(text, prev, siteList){
+  const known = Array.isArray(siteList) ? siteList : MASTER.sites;
   const grants = {};
   const lines = String(text||"").split("\n").map(l=>l.trim()).filter(Boolean);
   for(const line of lines){
@@ -5886,7 +5887,7 @@ function parseSiteGrants(text, prev){
     if(grants[emp]) return { error: "工號重複，請併成一行：" + emp };
     const sites = Array.from(new Set(parts[1].split(/[、,，]/).map(x=>x.trim()).filter(Boolean)));
     if(!sites.length) return { error: "沒有填工地：" + emp };
-    const unknown = sites.filter(x=>!MASTER.sites.includes(x));
+    const unknown = sites.filter(x=>!known.includes(x));
     if(unknown.length)
       return { error: "工地名稱與工地清單不符（須逐字相同）：" + unknown.join("、") };
     const why = parts.slice(2).join("｜");
@@ -6117,16 +6118,20 @@ function initSettings(){
   document.getElementById("saveSettings").addEventListener("click", async ()=>{
     if(!isAdmin()){ toast("僅限管理員操作"); return; }
     const siteLines = document.getElementById("cfg_sites").value.split("\n").map(s=>s.trim()).filter(Boolean);
-    if(siteLines.length) MASTER.sites = Array.from(new Set(siteLines));
+    const nextSites = siteLines.length ? Array.from(new Set(siteLines)) : MASTER.sites;
 
+    /* 節點 55 跨工地授權：**先驗證、再改狀態**——早退時 MASTER 不得被改到一半
+       （否則 toast 說「未儲存」，記憶體裡的工地清單卻已換成新值，之後任何
+       呼叫 apiSaveMaster() 的路徑都會把未經確認的清單寫上去）。
+       工地名要對照「即將儲存」的清單，所以拿 nextSites 而不是 MASTER.sites。 */
+    const sg = parseSiteGrants(document.getElementById("cfg_siteGrants").value, MASTER.siteGrants, nextSites);
+    if(sg.error){ toast("整份設定未儲存——跨工地授權有誤：" + sg.error); return; }
+
+    MASTER.sites = nextSites;
     /* v23.2 管理員部門白名單。留白＝送空陣列，後端會回退到系統預設值
        （而不是「沒有任何管理員」——那會把所有人鎖在門外，見合約 §4.1） */
     MASTER.adminDepartments = Array.from(new Set(
       document.getElementById("cfg_adminDepts").value.split("\n").map(s=>s.trim()).filter(Boolean)));
-
-    // 節點 55 跨工地授權：解析失敗就整個擋下——寧可不存，也不要默默存進打錯的授權
-    const sg = parseSiteGrants(document.getElementById("cfg_siteGrants").value, MASTER.siteGrants);
-    if(sg.error){ toast("跨工地授權未儲存：" + sg.error); return; }
     MASTER.siteGrants = sg.grants;   // 留白＝空物件＝明確清空
 
     // v15.1：人員名單批次貼上也須逐行單一人名（與「新增選項」同一規則）

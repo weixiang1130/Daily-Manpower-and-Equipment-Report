@@ -133,3 +133,30 @@ ERP 對映的部分仍然只認有 `project_code` 的列，`unmapped` 的統計�
 ⚠ 開發環境教訓：以 bash heredoc 內嵌 Python 對 `app.js` 做字串比對替換時，
 `\n` 會被吃掉一層跳脫變成真換行、比對必失敗且訊息毫無線索——
 這類補丁腳本一律先落地成 .py 檔再執行。
+
+---
+
+## 補強二（同日）：code review 修正四項
+
+XHIGH 稽核（重點：資訊處「全程 appsettings」規範）結果：**設定面全數合規**——
+節點 55 未新增任何設定鍵、未直讀環境變數，唯一用到的 `Auth:CacheMinutes` 是既有
+appsettings 鍵，優先權仍為 環境變數 ＞ appsettings ＞ 預設。修正的是以下四項：
+
+1. **API-CONTRACT 漏更新**（違反「動欄位先改這份」）：補 §2.1／§3.1／§4.1 的
+   `siteGrants` 規格（含「省略＝保留」「只回給管理者」「不驗工地存在」三個語意）
+2. **鍵名兩處各寫**：`Auth.cs` 原本硬寫 `'site_grants'`／`'admin_departments'`
+   字面值，而 `Wr.SiteGrantsKey`／`Wr.AdminDeptKey` 常數的註解卻宣稱共用——
+   已改為真正引用常數，改鍵名只需改一處
+3. **對不上工地的覆寫在 /whoami 隱形**：SQL 直改打錯字、或被授予的工地事後改名
+   ／停用時，畫面上與「沒授權」一模一樣。新增 `grantsNotMatched`＋提示
+   （與節點 54 的 `unmappedProjects` 同一診斷哲學）
+4. **儲存流程先改狀態後驗證**：跨工地授權驗證失敗早退時，`MASTER.sites`／
+   `adminDepartments` 已被改成新值——toast 說「未儲存」但記憶體已污染，
+   之後任何 `apiSaveMaster()` 路徑會把未確認的清單寫上去。改為
+   **先驗證（對照即將儲存的 nextSites）、全部通過才改狀態**
+
+### 已知限制（記錄，不修）
+
+- 授權行以頓號／逗號分隔工地，**工地名本身含「、」「，」「｜」者無法從介面授予**
+  （會被切開而驗證失敗）。現行 12 站無此命名；若未來出現，改以 SQL 維護該筆，
+  或屆時再改用結構化列表 UI

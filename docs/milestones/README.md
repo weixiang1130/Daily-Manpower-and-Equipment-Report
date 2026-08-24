@@ -58,6 +58,7 @@
 | [53](53-hrapi-onjob-nonstring.md) | 人資 API 非字串欄位導致全員被判離職 | 地端首次以 Windows＋hrapi 部署，**所有人都沒權限**。根因：JSON 取值函式只接受字串，而 `isOnJob` 回的是布林／數字 → 在職判定一律 false，`ResolveAsync` 第一行就擋掉所有人。⚠ 難查在於 `userName`／`deptName` 正常（本來就是字串），只有非字串欄位壞掉。**`/whoami` 還指錯位置**（回報部門/ERP 問題，但根本沒走到那兩步）。放寬表示法不放寬語意，並讓 `/whoami` 單獨回報在職判定＋附原始值 |
 | [54](54-project-code-mapping.md) | 工地看不到的成因分不出來——`sites.project_code` 對映與 `/whoami` 診斷 | UAT 回報「某人只看得到別的工地」。身分鏈四段全通、角色也對，就是少一個工地——而 `/whoami` **沒有任何線索**指出是「ERP 沒給這個專案」還是「該工地的 `project_code` 沒填」，兩者表現一樣、查修方向相反。實查是後者。⚠ 根因是交付缺口：`project_code` 是地端才有的欄位，**不在資料匯出內容裡**，匯入後一律 NULL；而症狀最難察覺——服務正常、資料全對、**管理員看得到全部工地**（走部門白名單不經此欄），只有工地人員是空的且不報錯。`/whoami` 改為攤開 `erpProjects`／`unmappedProjects`；資料交付加一支對映腳本 |
 | [55](55-site-grants-override.md) | 授權覆寫：ERP 之外的工地額外授予 | `app_settings.site_grants`（不建新表）、只加工地不升角色、可穿過規則 6、快取需 TTL、`/whoami` 標示覆寫來源 |
+| [56](56-monthly-diff-display.md) | 月租單不再被標「未填預定」 | 顯示層四處分流（不適用≠漏填）、天數改 `equipOnSiteDays()` 同口徑、CSV 標「月租」 |
 
 ## 如何新增下一個節點
 

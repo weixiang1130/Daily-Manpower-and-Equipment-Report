@@ -2441,6 +2441,11 @@ function updateEquipDiff(){
   const rec = cur().equipment.find(r=>r.id===editingEquipReportId);
   if(!rec) return;
   const el = document.getElementById("e_diff");
+  /* 月租單申請時**設計上就不填**預定時數（plannedHours 一律存 null，見申請送出處），
+     「每台每日預定幾小時」對整個租期一張的單沒有意義。必須在 null 檢查**之前**分流，
+     否則月租永遠落入「申請單未填預定時數」——把「不適用」誤標成「漏填」，
+     現場會以為自己開單開錯而回頭改申請單。 */
+  if(isMonthly(rec)){ el.value = "—（月租單不比較預定時數）"; return; }
   if(rec.plannedHours == null){ el.value = "（申請單未填預定時數）"; return; }
   const n = equipPresentCount();
   if(n === 0){ el.value = "（尚未勾選到場機具）"; return; }
@@ -2670,7 +2675,9 @@ function renderEquipList(){
         ? (rep.zeroUse ? '<span class="tag bad">0時數</span>' : '<span class="tag ok">已回報</span>')
         : '<span class="tag warn">待回報</span>';
       // v22.6：差異可能是 null（申請單未填預定時數）——不可當成 0 顯示「相符」
+      // 月租要先分流：它的 plannedHours 設計上就是 null，標「未填預定」是誤導（不適用≠漏填）
       const diffTag = !reported ? "—"
+        : isMonthly(x) ? '<span class="tag" title="月租單不比較預定時數">月租</span>'
         : rep.diff == null ? '<span class="tag">未填預定</span>'
         : rep.diff === 0 ? '<span class="tag ok">相符</span>'
         : '<span class="tag bad">'+fmt(rep.diff)+'</span>';
@@ -2682,7 +2689,7 @@ function renderEquipList(){
         <td>${esc(x.model||"—")}</td><td>${fmt(x.requiredQty)}</td>
         <td>${x.plannedHours != null ? fmt(x.plannedHours) : "—"}</td>
         <td>${reported ? fmt(rep.actualHours) : "—"}</td><td>${diffTag}</td>
-        <td>${reported ? fmt(rep.days||0) : "—"}</td>
+        <td>${reported ? fmt(equipOnSiteDays(x)) : "—"}</td>
         <td>${reported ? fmt(rep.otHours||0) : "—"}</td>
         <td>${reported ? esc(rep.signReturnDate||"—") : "—"}</td>
         <td>${reported ? esc(rep.checker||"—") : "—"}</td>
@@ -3070,9 +3077,12 @@ const REPORT_DEFS = {
         x.applyNote || "",
         x.applicant, x.status,
         rep.signReturnDate||"", reported?fmt(rep.actualHours):"",
-        // 差異可能是 null（申請單沒填預定時數）——不可 fmt(null) 印出 0，那會被當成「相符」
-        reported && rep.diff != null ? fmt(rep.diff) : "",
-        reported?fmt(rep.days||0):"", reported?fmt(rep.otHours||0):"", rep.workContent||"",
+        // 差異可能是 null（申請單沒填預定時數）——不可 fmt(null) 印出 0，那會被當成「相符」。
+        // 月租寫「月租」而不是留白：成本部在 CSV 上要分得出「不適用」與「日租漏填預定」
+        isMonthly(x) ? (reported ? "月租" : "")
+          : (reported && rep.diff != null ? fmt(rep.diff) : ""),
+        // 出工天數：月租＝在場天數（equipOnSiteDays 對日租回 rep.days，行為不變）
+        reported?fmt(equipOnSiteDays(x)):"", reported?fmt(rep.otHours||0):"", rep.workContent||"",
         // v22.8 品項＋金額＋組成（v23.1：畫面層開關關閉時整組不輸出，見 PRICING_UI）
         ...(PRICING_UI
             ? [rep.rateItem||"", rep.rateOtItem||"", ...(reported ? amountCells(equipAmount(x)) : ["", ""])]

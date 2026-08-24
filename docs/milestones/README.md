@@ -59,6 +59,7 @@
 | [54](54-project-code-mapping.md) | 工地看不到的成因分不出來——`sites.project_code` 對映與 `/whoami` 診斷 | UAT 回報「某人只看得到別的工地」。身分鏈四段全通、角色也對，就是少一個工地——而 `/whoami` **沒有任何線索**指出是「ERP 沒給這個專案」還是「該工地的 `project_code` 沒填」，兩者表現一樣、查修方向相反。實查是後者。⚠ 根因是交付缺口：`project_code` 是地端才有的欄位，**不在資料匯出內容裡**，匯入後一律 NULL；而症狀最難察覺——服務正常、資料全對、**管理員看得到全部工地**（走部門白名單不經此欄），只有工地人員是空的且不報錯。`/whoami` 改為攤開 `erpProjects`／`unmappedProjects`；資料交付加一支對映腳本 |
 | [55](55-site-grants-override.md) | 授權覆寫：ERP 之外的工地額外授予 | `app_settings.site_grants`（不建新表）、只加工地不升角色、可穿過規則 6、快取需 TTL、`/whoami` 標示覆寫來源 |
 | [56](56-monthly-diff-display.md) | 月租單不再被標「未填預定」 | 顯示層四處分流（不適用≠漏填）、天數改 `equipOnSiteDays()` 同口徑、CSV 標「月租」 |
+| [57](57-reported-delete-server-guard.md) | 已回報單刪除限管理員（伺服器端） | ReportedDeleteGuard 與 LockGuard 同層；前端管控補實質把關；資安審查其餘面向無虞 |
 
 ## 如何新增下一個節點
 

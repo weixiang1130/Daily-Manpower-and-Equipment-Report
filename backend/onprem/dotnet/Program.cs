@@ -929,6 +929,16 @@ app.MapPost("/api/data", async (HttpContext ctx) =>
     {
         var denied = await LockGuard(cn, body, op);
         if (denied is not null) return denied;
+
+        /* 節點 57（資安審查）：「已回報的單據是計價依據，僅限管理員刪除」——
+           這條規則原本**只有前端在擋**（清單不顯示刪除鈕＋toast），直接呼叫
+           op:deleteRecord 就繞過去了，與鎖檔修正前是同一類「前端管控＝按 F12 可破」。
+           與 LockGuard 同一層把關：管理員不受限、Auth:Mode=Off 時不介入（azl 為 null）。 */
+        if (op == "deleteRecord")
+        {
+            var denied2 = await ReportedDeleteGuard(cn, body);
+            if (denied2 is not null) return denied2;
+        }
     }
 
     switch (op)
@@ -1471,6 +1481,30 @@ static string? DateGuardError(JsonObject rec, string? storedDate, string? stored
    ⚠ 修改既有單據時**新舊日期都要查**——只查送進來的新日期的話，
      把一張 7/15（已鎖）的單改成 9/1 就能整張搬出鎖定區間再任意修改，
      等於鎖了跟沒鎖一樣。 */
+/* 節點 57：非管理員不得刪除**已回報**的單據（伺服器端）。
+   形狀錯誤或查無單據一律回 null 交給 OpDeleteRecord 處理（400／冪等），
+   本守衛只負責一件事：單據存在且已回報 → 403。 */
+static async Task<IResult?> ReportedDeleteGuard(SqlConnection cn, JsonObject body)
+{
+    var site = Sx(body, "site");
+    var kind = Sx(body, "kind");
+    var id = Sx(body, "id");
+    if (site is null || id is null || (kind != "labor" && kind != "equipment")) return null;
+    if (!Wr.IdRe.IsMatch(id)) return null;
+    var recT = kind == "labor" ? "labor_records" : "equip_records";
+
+    var sid = await Scalar(cn, null, "SELECT site_id FROM dbo.sites WHERE name=@n", ("@n", site));
+    if (sid is null) return null;
+
+    var status = await Scalar(cn, null,
+        $"SELECT status FROM dbo.{recT} WHERE id=@id AND site_id=@s",
+        ("@id", id), ("@s", Convert.ToInt32(sid)));
+    if (status as string == "已回報")
+        return Results.Json(new { error = "forbidden", message = "已回報的單據是計價依據，僅限管理員刪除" },
+                            statusCode: 403);
+    return null;
+}
+
 static async Task<IResult?> LockGuard(SqlConnection cn, JsonObject body, string op)
 {
     var site = Sx(body, "site");

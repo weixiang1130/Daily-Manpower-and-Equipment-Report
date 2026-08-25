@@ -45,6 +45,12 @@ backend/cloud/functions/api.mjs        資料 API（函式內二次驗證同一�
 
 ## 前端要點（app.js）
 
+- **改 js/css 必須同步進版快取參數（2026-08-25 資訊處建議採納）**：地端伺服器對靜態檔
+  不送 `Cache-Control`，瀏覽器會用啟發式快取——換版後使用者可能還在跑舊檔且不自知。
+  日後凡改 `app.js`／`style.css`（含 `config.local.js` 內容變更時），`index.html` 的引用
+  一律附版本參數並**跟著該次改動一起進位**：`<script src="app.js?ver=YYYYMMDDNN"></script>`
+  （NN＝當日流水序）。只改檔不進版＝使用者吃舊快取，等於沒部署。
+
 - 無 localStorage 業務資料；記憶體快取 `SITE_CACHE` ＋ sessionStorage（`dm_site` 本分頁工地、`dm_admin` 管理員狀態）。
 - 寫入 await-first：雲端成功才清表單；失敗保留輸入提示重試；409 顯示「已被他人修改」並重載。
 - 防呆：開站選工地攔截頁（每 session 必選）、表單常駐工地徽章、申請送出前 confirm 工地、0 必須勾「0 工/0 使用確認」、出工×加班異常警告（可確認後送出）、鎖檔（v24.7 `config.lockRanges` 區間清單：可多段、可預約生效時刻、可停用解鎖，各站獨立、管理員限定；判定唯一入口 `isLockedDate()`／訊息 `lockReason()`，**新增攔截點別自己重寫判定**。舊 `lockDate` 保留相容。**地端後端於 `op:record`／`op:deleteRecord` 再擋一次**，修改時新舊日期都查）、已回報單刪除限管理員。

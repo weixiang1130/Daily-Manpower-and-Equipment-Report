@@ -60,6 +60,7 @@
 | [55](55-site-grants-override.md) | 授權覆寫：ERP 之外的工地額外授予 | `app_settings.site_grants`（不建新表）、只加工地不升角色、可穿過規則 6、快取需 TTL、`/whoami` 標示覆寫來源 |
 | [56](56-monthly-diff-display.md) | 月租單不再被標「未填預定」 | 顯示層四處分流（不適用≠漏填）、天數改 `equipOnSiteDays()` 同口徑、CSV 標「月租」 |
 | [57](57-reported-delete-server-guard.md) | 已回報單刪除限管理員（伺服器端） | ReportedDeleteGuard 與 LockGuard 同層；前端管控補實質把關；資安審查其餘面向無虞 |
+| [58](58-cache-busting-ver.md) | 靜態檔引用加 ?ver= 快取參數 | 資訊處建議；改 js/css 必須同步進位，否則使用者吃舊快取等於沒部署 |
 
 ## 如何新增下一個節點
 

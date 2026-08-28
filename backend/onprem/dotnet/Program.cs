@@ -1465,12 +1465,30 @@ static string? DateGuardError(JsonObject rec, string? storedDate, string? stored
     if (!DateOnly.TryParseExact(srdStr, "yyyy-MM-dd",
             CultureInfo.InvariantCulture, DateTimeStyles.None, out var sd))
         return $"簽單繳回日（{srdStr}）格式不正確";
-    if (sd < wd)
-        return $"簽單繳回日（{srdStr}）早於出工日期（{dateStr}）——簽單不可能在出工前繳回";
 
-    var deadline = wd.AddDays(Wr.SignReturnMaxDays);
+    /* v24.14：簽單繳回窗口的基準與前端 signBaseDate() 對齊——**月租以租期迄日為基準**
+       （月租整個租期一張單、簽單月結後才拿得到；v24.4 前端已如此，伺服器端漏了這條例外）。
+       漏掉的後果：月租單的繳回日落在「出工日+20 ～ 租期迄日+20」之間時前端放行、
+       這裡回 400，前端又把非 409 一律顯示成「請檢查網路」——工地只會回報
+       「月租回報送不出去」而完全找不到原因（2026-08-28 實際事故）。
+       出工日早於租期起日的月租單（例：出工日 7/1、租期至 7/31），前端允許的
+       **整段**繳回日範圍都會被舊判定打槍，怎麼填都送不出。 */
+    var baseD = wd;
+    var baseLabel = $"出工日期（{dateStr}）";
+    if (Sx(rec, "billing") == "月租"
+        && DateOnly.TryParseExact(Sx(rec, "rentTo") ?? "", "yyyy-MM-dd",
+               CultureInfo.InvariantCulture, DateTimeStyles.None, out var rt))
+    {
+        baseD = rt;
+        baseLabel = $"租期迄日（{Sx(rec, "rentTo")}）";
+    }
+
+    if (sd < baseD)
+        return $"簽單繳回日（{srdStr}）早於{baseLabel}——簽單不可能在此之前繳回";
+
+    var deadline = baseD.AddDays(Wr.SignReturnMaxDays);
     if (sd > deadline)
-        return $"簽單繳回日（{srdStr}）已超過出工日後 {Wr.SignReturnMaxDays} 天的期限"
+        return $"簽單繳回日（{srdStr}）已超過{baseLabel}後 {Wr.SignReturnMaxDays} 天的期限"
              + $"（最晚 {deadline.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}），逾期不予採計";
     return null;
 }

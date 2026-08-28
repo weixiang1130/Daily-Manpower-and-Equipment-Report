@@ -120,9 +120,19 @@ async function api(method, body, query){
   if(!res.ok){
     const err = new Error("API " + res.status);
     err.status = res.status;
+    /* v24.14：保留伺服器的 message（鎖檔 403、日期防呆 400、限管理員刪除 403…都有附）。
+       丟掉它的話，所有被伺服器擋下的操作都只能顯示「請檢查網路」——工地會把
+       規則攔截誤判成連線問題，一直重試、報修網路（實際發生過兩次）。 */
+    try{ const j = await res.json(); if(j && typeof j.message === "string") err.serverMessage = j.message; }catch(_){}
     throw err;
   }
   return res.json();
+}
+
+/* 儲存/刪除失敗的 toast 文字：伺服器有講原因就講原因，沒有才歸咎網路。
+   500 刻意不帶 message（不洩漏內部細節），自然落到 fallback。 */
+function saveFailText(err, fallback){
+  return (err && err.serverMessage) ? ("⚠ " + err.serverMessage) : fallback;
 }
 
 /* v23.2：一併送管理員部門白名單（合約 §3.1）。
@@ -1087,7 +1097,7 @@ function initLaborApplyForm(){
         resetLaborApplyForm();
         return;
       }
-      toast("⚠ 雲端儲存失敗，資料未送出，請檢查網路後再按一次送出");
+      toast(saveFailText(err, "⚠ 雲端儲存失敗，資料未送出，請檢查網路後再按一次送出"));
       return;
     }
 
@@ -1369,7 +1379,7 @@ function initLaborReportForm(){
         resetLaborReportForm();
         return;
       }
-      toast("⚠ 雲端儲存失敗，回報未送出，請檢查網路後再按一次送出");
+      toast(saveFailText(err, "⚠ 雲端儲存失敗，回報未送出，請檢查網路後再按一次送出"));
       return;
     }
 
@@ -1686,7 +1696,7 @@ async function deleteLaborRecord(id){
   try{
     await apiDeleteRecord("labor", id);
   }catch(err){
-    toast("⚠ 雲端刪除失敗，請檢查網路後再試");
+    toast(saveFailText(err, "⚠ 雲端刪除失敗，請檢查網路後再試"));
     return;
   }
   const store = cur();
@@ -1907,7 +1917,7 @@ function initEquipApplyForm(){
         resetEquipApplyForm();
         return;
       }
-      toast("⚠ 雲端儲存失敗，資料未送出，請檢查網路後再按一次送出");
+      toast(saveFailText(err, "⚠ 雲端儲存失敗，資料未送出，請檢查網路後再按一次送出"));
       return;
     }
 
@@ -2349,7 +2359,7 @@ function initEquipReportForm(){
         resetEquipReportForm();
         return;
       }
-      toast("⚠ 雲端儲存失敗，回報未送出，請檢查網路後再按一次送出");
+      toast(saveFailText(err, "⚠ 雲端儲存失敗，回報未送出，請檢查網路後再按一次送出"));
       return;
     }
 
@@ -2651,7 +2661,7 @@ async function deleteEquipRecord(id){
   try{
     await apiDeleteRecord("equipment", id);
   }catch(err){
-    toast("⚠ 雲端刪除失敗，請檢查網路後再試");
+    toast(saveFailText(err, "⚠ 雲端刪除失敗，請檢查網路後再試"));
     return;
   }
   const store = cur();
@@ -5495,7 +5505,7 @@ async function saveAudit(id){
       if(seqAtSave === auditFetchSeq){ resetAuditView(); renderAuditView(); }
       return;
     }
-    toast("⚠ 雲端儲存失敗，稽核未送出，請檢查網路後再按一次儲存");
+    toast(saveFailText(err, "⚠ 雲端儲存失敗，稽核未送出，請檢查網路後再按一次儲存"));
     return;
   }
   const list = kind==="labor" ? store.labor : store.equipment;
@@ -5580,7 +5590,7 @@ async function deleteAudit(kind, rid, aid){
       renderAuditView();
       return;
     }
-    toast("⚠ 雲端儲存失敗，刪除未執行");
+    toast(saveFailText(err, "⚠ 雲端儲存失敗，刪除未執行"));
     return;
   }
   // API 成功後才關閉正在編輯的同一筆表單（失敗時保留使用者輸入，紀錄其實還在）

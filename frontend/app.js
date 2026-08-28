@@ -357,9 +357,21 @@ function fixedTableOpen(headers, opts={}){
   const ws = headers.map(h=>
     (h === "操作" && opts.actionW) || COL_W.get(h) || DEFAULT_COL_W);
   const cols = ws.map(w=>`<col style="width:${w}px">`).join("");
+  /* opts.statusFilterKind：把「狀態」表頭做成可點擊的狀態篩選入口（v24.15）。
+     只有點工／機具清單傳這個 opt，其餘沿用純文字表頭——共用函式不受影響。 */
+  const thHTML = headers.map(h=>{
+    if(h === "狀態" && opts.statusFilterKind){
+      const cur = listFilter[opts.statusFilterKind].status;
+      const label = cur || "全部";
+      return `<th class="th-status-filter${cur ? " on" : ""}" data-status-kind="${esc(opts.statusFilterKind)}"`
+        + ` title="點擊切換顯示：全部 → 待回報 → 已回報（目前：${esc(label)}）">`
+        + `${esc(h)}<span class="th-filter-ind">${cur ? "▾" : "⇕"}</span></th>`;
+    }
+    return `<th>${esc(h)}</th>`;
+  }).join("");
   return `<table class="fixed-table" style="width:${ws.reduce((a,b)=>a+b,0)}px">`
     + `<colgroup>${cols}</colgroup>`
-    + `<thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead>`;
+    + `<thead><tr>${thHTML}</tr></thead>`;
 }
 
 /* ==========================================================
@@ -706,16 +718,16 @@ function initCollapsibles(){
 
 /* ---------------- 清單篩選（v15：依日期/廠商找要覆核的單） ---------------- */
 const listFilter = {
-  labor: { date: "", vendor: "", applicant: "" },
-  equipment: { date: "", vendor: "", applicant: "" }
+  labor: { date: "", vendor: "", applicant: "", status: "" },
+  equipment: { date: "", vendor: "", applicant: "", status: "" }
 };
 /* v15.2：清單分頁（每頁 20 筆，取代 v15.1「顯示全部」展開——展開後仍是長頁面）。
    套用：點工清單、機具清單、稽核紀錄清單；篩選/切站自動回第 1 頁 */
 const LIST_PAGE_SIZE = 10;   // v15.3：每頁 10 筆，配合放寬版面讓一頁清單盡量落在單一畫面內
 const listPage = { labor: 1, equipment: 1, auditlog: 1, report: 1, ranking: 1 };
 function resetListFilters(){
-  listFilter.labor = { date: "", vendor: "" };
-  listFilter.equipment = { date: "", vendor: "" };
+  listFilter.labor = { date: "", vendor: "", applicant: "", status: "" };
+  listFilter.equipment = { date: "", vendor: "", applicant: "", status: "" };
   listPage.labor = 1;
   listPage.equipment = 1;
   listPage.auditlog = 1;
@@ -753,11 +765,26 @@ function initListFilter(kind, dateId, vendorId, clearId, renderFn, applicantId){
   };
   bind(dateId, "date"); bind(vendorId, "vendor"); bind(applicantId, "applicant");
   document.getElementById(clearId).addEventListener("click", ()=>{
-    listFilter[kind] = { date: "", vendor: "", applicant: "" };
+    listFilter[kind] = { date: "", vendor: "", applicant: "", status: "" };   // 含狀態欄表頭篩選
     listPage[kind] = 1;
     [dateId, vendorId, applicantId].forEach(id=>{
       const el = document.getElementById(id); if(el) el.value = "";
     });
+    renderFn();
+  });
+}
+
+/* 狀態欄表頭點擊：循環切換「全部 → 待回報 → 已回報」的狀態篩選（v24.15）。
+   為什麼是循環篩選而不是排序：狀態只有兩個值，排序只是把同狀態聚在一起、仍要滾動找；
+   點一下只看待回報、再點只看已回報、再點回全部，直接留下要看的那批。
+   與下拉篩選共用同一個 listFilter[kind].status，計數文字與「清除」鈕一致連動。 */
+const STATUS_FILTER_CYCLE = { "": "待回報", "待回報": "已回報", "已回報": "" };
+function bindStatusFilter(el, kind, renderFn){
+  const th = el.querySelector(".th-status-filter[data-status-kind]");
+  if(!th) return;
+  th.addEventListener("click", ()=>{
+    listFilter[kind].status = STATUS_FILTER_CYCLE[listFilter[kind].status] || "";
+    listPage[kind] = 1;
     renderFn();
   });
 }
@@ -786,9 +813,10 @@ function applyListFilter(kind, all, vendorSelId, countId, applicantSelId){
   const list = all.filter(r=>
     (!f.date || r.date === f.date)
     && (!f.vendor || recVendor(r) === f.vendor)
-    && (!f.applicant || r.applicant === f.applicant));
+    && (!f.applicant || r.applicant === f.applicant)
+    && (!f.status || r.status === f.status));   // 狀態欄表頭點擊篩選（"待回報"／"已回報"）
   const cnt = document.getElementById(countId);
-  const filtering = f.date || f.vendor || f.applicant;
+  const filtering = f.date || f.vendor || f.applicant || f.status;
   if(cnt) cnt.textContent = filtering ? `符合 ${list.length}／共 ${all.length} 筆` : `共 ${all.length} 筆`;
   return list;
 }
@@ -1724,12 +1752,12 @@ function renderLaborList(){
   const el = document.getElementById("laborList");
   if(!all.length){ el.innerHTML = '<div class="empty-row">目前工地尚無點工紀錄</div>'; document.getElementById("laborListCount").textContent = ""; return; }
   const list = applyListFilter("labor", all, "laborListVendor", "laborListCount", "laborListApplicant");
-  if(!list.length){ el.innerHTML = '<div class="empty-row">此篩選條件內沒有點工紀錄，請調整日期／廠商</div>'; return; }
+  if(!list.length){ el.innerHTML = '<div class="empty-row">此篩選條件內沒有點工紀錄，請調整日期／廠商／狀態</div>'; return; }
   const { shown, pagerHTML } = paginate("labor", list);
   el.innerHTML = fixedTableOpen([
     "狀態","出工日期","分包商","申請人","需求工數","簽單實際出工數","差異",
     "加班時數","簽單繳回日","簽單責任工程師","現場查核回饋","操作"
-  ]) + `<tbody>
+  ], { statusFilterKind: "labor" }) + `<tbody>
     ${shown.map(r=>{
       const rep = r.report;
       const reported = r.status==="已回報" && rep;
@@ -1760,6 +1788,7 @@ function renderLaborList(){
   el.querySelectorAll(".btn-report").forEach(btn=>btn.addEventListener("click", ()=>loadLaborReportRecord(btn.dataset.id)));
   el.querySelectorAll(".btn-del").forEach(btn=>btn.addEventListener("click", ()=>deleteLaborRecord(btn.dataset.id)));
   bindPager(el, "labor", renderLaborList);
+  bindStatusFilter(el, "labor", renderLaborList);
 }
 
 /* ==========================================================
@@ -2689,13 +2718,13 @@ function renderEquipList(){
   const el = document.getElementById("equipList");
   if(!all.length){ el.innerHTML = '<div class="empty-row">目前工地尚無機具紀錄</div>'; document.getElementById("equipListCount").textContent = ""; return; }
   const list = applyListFilter("equipment", all, "equipListVendor", "equipListCount", "equipListApplicant");
-  if(!list.length){ el.innerHTML = '<div class="empty-row">此篩選條件內沒有機具紀錄，請調整日期／廠商</div>'; return; }
+  if(!list.length){ el.innerHTML = '<div class="empty-row">此篩選條件內沒有機具紀錄，請調整日期／廠商／狀態</div>'; return; }
   const { shown, pagerHTML } = paginate("equipment", list);
   el.innerHTML = fixedTableOpen([
     "狀態","日期","廠商","申請人","類型","型號","需求數量(台)","預定使用時數",
     "機具實際工作使用時數","差異","出工天數","加班時數",
     "簽單繳回日","簽單責任工程師","操作"
-  ]) + `<tbody>
+  ], { statusFilterKind: "equipment" }) + `<tbody>
     ${shown.map(x=>{
       const rep = x.report;
       const reported = x.status==="已回報" && rep;
@@ -2734,6 +2763,7 @@ function renderEquipList(){
   el.querySelectorAll(".btn-report").forEach(btn=>btn.addEventListener("click", ()=>loadEquipReportRecord(btn.dataset.id)));
   el.querySelectorAll(".btn-del").forEach(btn=>btn.addEventListener("click", ()=>deleteEquipRecord(btn.dataset.id)));
   bindPager(el, "equipment", renderEquipList);
+  bindStatusFilter(el, "equipment", renderEquipList);
 }
 
 /* ==========================================================

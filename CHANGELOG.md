@@ -2,6 +2,12 @@
 
 版本異動摘要。完整背景與設計決策請見 [`docs/milestones/`](docs/milestones/README.md)。
 
+## [節點 60] 2026-08-28 — 點工／機具清單「狀態」欄表頭點擊篩選
+- 「狀態」表頭可點擊，循環切換 全部 → 待回報 → 已回報 → 全部（純前端）
+- 與既有廠商／申請人／日期篩選並存、共用計數與清除鈕；未篩選顯示 ⇕、篩選中 ▾ 並高亮
+- `fixedTableOpen` 以 `opts.statusFilterKind` 閘門，其餘表格不受影響
+- 詳見 [`docs/milestones/60-status-header-filter.md`](docs/milestones/60-status-header-filter.md)
+
 ## [節點 59] 2026-08-28 — 總覽改版：追蹤提醒合併＋20 天期限口徑＋排名上移
 - 「逾期未回報」＋「待繳回簽單提醒」合併為單一「追蹤提醒」：同一個 20 天窗口
   （`trackLeftDays`，基準日＝出工日、月租＝租期迄日）、統一「剩 N 天」倒數、

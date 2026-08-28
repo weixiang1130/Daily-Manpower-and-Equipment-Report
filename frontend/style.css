@@ -855,6 +855,11 @@ td.num{font-family:'DM Mono',Consolas,monospace;}    /* 等寬字讓整數位對
    整格套一個負縮排的話只有第 1 點會對，2. 3. 反而歪掉） */
 .fixed-table td .li{padding-left:1.6em;text-indent:-1.6em;}
 .fixed-table th{line-height:1.35;vertical-align:bottom;}   /* 表頭折兩三行，底部對齊資料列 */
+/* 狀態欄表頭點擊篩選（v24.15）：可點、hover 提示、篩選啟用時高亮並帶指示符 */
+.fixed-table th.th-status-filter{cursor:pointer;user-select:none;}
+.fixed-table th.th-status-filter:hover{color:var(--teal-800);}
+.fixed-table th.th-status-filter.on{color:var(--teal-800);text-decoration:underline;text-underline-offset:3px;}
+.fixed-table th.th-status-filter .th-filter-ind{margin-left:2px;font-size:10px;opacity:.6;}
 /* 上一條的例外：狀態徽章與操作按鈕是「一個物件」，字被拆行就散了。
    欄寬已在 COL_W 預留（狀態 78／操作 240），不需要靠折行擠。 */
 .fixed-table .tag,.fixed-table .btn-mini{white-space:nowrap;}

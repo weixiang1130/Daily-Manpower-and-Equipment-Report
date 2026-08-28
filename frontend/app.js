@@ -364,6 +364,7 @@ function fixedTableOpen(headers, opts={}){
       const cur = listFilter[opts.statusFilterKind].status;
       const label = cur || "全部";
       return `<th class="th-status-filter${cur ? " on" : ""}" data-status-kind="${esc(opts.statusFilterKind)}"`
+        + ` tabindex="0" role="button" aria-label="狀態篩選（目前：${esc(label)}），點擊切換全部／待回報／已回報"`
         + ` title="點擊切換顯示：全部 → 待回報 → 已回報（目前：${esc(label)}）">`
         + `${esc(h)}<span class="th-filter-ind">${cur ? "▾" : "⇕"}</span></th>`;
     }
@@ -782,11 +783,28 @@ const STATUS_FILTER_CYCLE = { "": "待回報", "待回報": "已回報", "已回
 function bindStatusFilter(el, kind, renderFn){
   const th = el.querySelector(".th-status-filter[data-status-kind]");
   if(!th) return;
-  th.addEventListener("click", ()=>{
+  const cycle = ()=>{
     listFilter[kind].status = STATUS_FILTER_CYCLE[listFilter[kind].status] || "";
     listPage[kind] = 1;
     renderFn();
+  };
+  th.addEventListener("click", cycle);
+  // 鍵盤可及：th 設了 tabindex/role=button，Enter／空白鍵等同點擊
+  th.addEventListener("keydown", e=>{
+    if(e.key === "Enter" || e.key === " "){ e.preventDefault(); cycle(); }
   });
+}
+
+/* 清單「是否已回報」的單一判定——狀態欄篩選與各清單的狀態徽章必須同源。
+   徽章依 `status==="已回報" && report` 顯示（status 為已回報但 report 缺失時仍算待回報），
+   篩選若只比 status 字串，會把這種單歸進與徽章相反的一組（節點 60 code review）。 */
+function isReported(r){ return r.status === "已回報" && !!r.report; }
+
+/* 篩選後零筆時的 tbody：訊息放在表格內、表頭保留，狀態欄仍可繼續點回全部
+   （否則切到空結果就再也點不回來——節點 60 code review）。 */
+function filteredEmptyRow(colspan, noun){
+  return `<tbody><tr><td colspan="${colspan}" class="empty-row">`
+    + `此篩選條件內沒有${esc(noun)}紀錄，請調整日期／廠商，或再點「狀態」欄切換</td></tr></tbody></table>`;
 }
 /* 廠商下拉選項由該類紀錄實際值彙集；回傳套用篩選後的清單與計數文字 */
 /* 下拉選項一律由「目前清單實際出現過的值」動態組出，不用名單池——
@@ -814,7 +832,7 @@ function applyListFilter(kind, all, vendorSelId, countId, applicantSelId){
     (!f.date || r.date === f.date)
     && (!f.vendor || recVendor(r) === f.vendor)
     && (!f.applicant || r.applicant === f.applicant)
-    && (!f.status || r.status === f.status));   // 狀態欄表頭點擊篩選（"待回報"／"已回報"）
+    && (!f.status || (f.status === "已回報") === isReported(r)));   // 與清單徽章同源（isReported），不只比 status 字串
   const cnt = document.getElementById(countId);
   const filtering = f.date || f.vendor || f.applicant || f.status;
   if(cnt) cnt.textContent = filtering ? `符合 ${list.length}／共 ${all.length} 筆` : `共 ${all.length} 筆`;
@@ -1752,15 +1770,19 @@ function renderLaborList(){
   const el = document.getElementById("laborList");
   if(!all.length){ el.innerHTML = '<div class="empty-row">目前工地尚無點工紀錄</div>'; document.getElementById("laborListCount").textContent = ""; return; }
   const list = applyListFilter("labor", all, "laborListVendor", "laborListCount", "laborListApplicant");
-  if(!list.length){ el.innerHTML = '<div class="empty-row">此篩選條件內沒有點工紀錄，請調整日期／廠商／狀態</div>'; return; }
+  const headers = ["狀態","出工日期","分包商","申請人","需求工數","簽單實際出工數","差異",
+    "加班時數","簽單繳回日","簽單責任工程師","現場查核回饋","操作"];
+  if(!list.length){
+    // 保留可點的「狀態」表頭（否則狀態篩選切到空結果就再也點不回來）
+    el.innerHTML = fixedTableOpen(headers, { statusFilterKind: "labor" }) + filteredEmptyRow(headers.length, "點工");
+    bindStatusFilter(el, "labor", renderLaborList);
+    return;
+  }
   const { shown, pagerHTML } = paginate("labor", list);
-  el.innerHTML = fixedTableOpen([
-    "狀態","出工日期","分包商","申請人","需求工數","簽單實際出工數","差異",
-    "加班時數","簽單繳回日","簽單責任工程師","現場查核回饋","操作"
-  ], { statusFilterKind: "labor" }) + `<tbody>
+  el.innerHTML = fixedTableOpen(headers, { statusFilterKind: "labor" }) + `<tbody>
     ${shown.map(r=>{
       const rep = r.report;
-      const reported = r.status==="已回報" && rep;
+      const reported = isReported(r);
       const statusTag = reported
         ? (rep.zeroWork ? '<span class="tag bad">0工</span>' : '<span class="tag ok">已回報</span>')
         : '<span class="tag warn">待回報</span>';
@@ -2718,16 +2740,20 @@ function renderEquipList(){
   const el = document.getElementById("equipList");
   if(!all.length){ el.innerHTML = '<div class="empty-row">目前工地尚無機具紀錄</div>'; document.getElementById("equipListCount").textContent = ""; return; }
   const list = applyListFilter("equipment", all, "equipListVendor", "equipListCount", "equipListApplicant");
-  if(!list.length){ el.innerHTML = '<div class="empty-row">此篩選條件內沒有機具紀錄，請調整日期／廠商／狀態</div>'; return; }
-  const { shown, pagerHTML } = paginate("equipment", list);
-  el.innerHTML = fixedTableOpen([
-    "狀態","日期","廠商","申請人","類型","型號","需求數量(台)","預定使用時數",
+  const headers = ["狀態","日期","廠商","申請人","類型","型號","需求數量(台)","預定使用時數",
     "機具實際工作使用時數","差異","出工天數","加班時數",
-    "簽單繳回日","簽單責任工程師","操作"
-  ], { statusFilterKind: "equipment" }) + `<tbody>
+    "簽單繳回日","簽單責任工程師","操作"];
+  if(!list.length){
+    // 保留可點的「狀態」表頭（否則狀態篩選切到空結果就再也點不回來）
+    el.innerHTML = fixedTableOpen(headers, { statusFilterKind: "equipment" }) + filteredEmptyRow(headers.length, "機具");
+    bindStatusFilter(el, "equipment", renderEquipList);
+    return;
+  }
+  const { shown, pagerHTML } = paginate("equipment", list);
+  el.innerHTML = fixedTableOpen(headers, { statusFilterKind: "equipment" }) + `<tbody>
     ${shown.map(x=>{
       const rep = x.report;
-      const reported = x.status==="已回報" && rep;
+      const reported = isReported(x);
       const statusTag = reported
         ? (rep.zeroUse ? '<span class="tag bad">0時數</span>' : '<span class="tag ok">已回報</span>')
         : '<span class="tag warn">待回報</span>';

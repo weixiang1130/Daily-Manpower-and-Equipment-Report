@@ -6,6 +6,9 @@
 - 「狀態」表頭可點擊，循環切換 全部 → 待回報 → 已回報 → 全部（純前端）
 - 與既有廠商／申請人／日期篩選並存、共用計數與清除鈕；未篩選顯示 ⇕、篩選中 ▾ 並高亮
 - `fixedTableOpen` 以 `opts.statusFilterKind` 閘門，其餘表格不受影響
+- 補強（HIGH code review 四項）：篩選改與清單徽章同源（`isReported`，修 status 已回報但
+  report 缺失時的分類分歧）；空結果保留可點表頭（否則切到空就點不回來）；表頭鍵盤可及
+  （tabindex／role／Enter、空白鍵）；空訊息去重
 - 詳見 [`docs/milestones/60-status-header-filter.md`](docs/milestones/60-status-header-filter.md)
 
 ## [節點 59] 2026-08-28 — 總覽改版：追蹤提醒合併＋20 天期限口徑＋排名上移

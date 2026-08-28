@@ -18,6 +18,7 @@
 using System.Globalization;
 using System.Collections.Concurrent;
 using System.Text;
+using System.Text.Json;          // JsonValueKind：白名單／覆寫的元素逐項判型用
 using System.Text.Json.Nodes;
 using Microsoft.Data.SqlClient;
 
@@ -78,10 +79,11 @@ public sealed record Authz(Role Role, IReadOnlySet<string> Sites, bool AllSites)
     /// 覆寫中對不上任何啟用中工地的項目（打錯字／該站已改名或停用）——僅供 /whoami 診斷
     public IReadOnlySet<string>? GrantsNotMatched { get; init; }
 
-    /* 工地主管（SiteLead）以 ERP Director 角色**在該站**才成立的工地子集合（v24.15）。
-       ⚠ 與 Sites 不同：一個人可能在 A 站是 Director、B 站只是 Engineer，整體 Role 會是
-         SiteLead 但只有 A 站進得了 LeadSites。site_grants 覆寫的站也**不**進來——覆寫是
-         「支援」不是「主管職」，只給申請/回報、不給刪已回報。判定用，非僅診斷。 */
+    /* 可刪除該站「已回報單」的工地子集合（v24.15，節點 61）。來源是成本管理部於
+       設定頁維護的**主管白名單**（`app_settings.site_leads`），逐站授予、與 ERP 角色無關。
+       ⚠ 只在使用者**本來就看得到**的站生效（ComputeAsync 末端與 Sites 取交集）：
+         白名單不授予可見性，只把已可見的站升級成「可刪已回報單」。
+       ⚠ 不取自 ERP Director：實查顯示該角色含總部幕僚且涵蓋全部工地，語意不符。 */
     public IReadOnlySet<string> LeadSites { get; init; } = new HashSet<string>();
 
     public bool CanSee(string site) => AllSites || Sites.Contains(site);
@@ -327,7 +329,7 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
         return authz;
     }
 
-    public void Invalidate(){ _cache.Clear(); _depts = null; _grants = null; }
+    public void Invalidate(){ _cache.Clear(); _depts = null; _grants = null; _leads = null; }
 
     /* ---- 管理員部門白名單（v23.2） ----
        優先讀資料庫的 app_settings，讓成控自己在系統後台增減，不必請資訊處
@@ -387,26 +389,58 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
        現場只會回報「你加了我還是看不到」。（實測驗證過這個失敗模式。） */
     private (DateTime At, Dictionary<string, (string[] Sites, string Note)> Map)? _grants;
 
+    /* 工地主管白名單（v24.15，節點 61 改版）。與覆寫同一份資料形狀、同一份快取紀律，
+       但語意不同：覆寫給「看得到」，白名單給「刪得掉自己站的已回報單」。
+       ⚠ 為什麼不用 ERP 的 Director 角色：實查正式 ERP，20 位具 Director 者中有 4 位
+         是總部幕僚（總經理室／業務部／品保部／機電管理部）且涵蓋全部 12 站，
+         另有部門與主管站對不上的多筆——ERP 的 Director ≠ 現場工地主任，
+         直接採用會把刪除計價依據的權限發給不該有的人。改為成本管理部自行維護。 */
+    private (DateTime At, Dictionary<string, (string[] Sites, string Note)> Map)? _leads;
+
     private async Task<Dictionary<string, (string[] Sites, string Note)>> GrantsAsync()
     {
         var ttl = TimeSpan.FromMinutes(Math.Max(0, opt.CacheMinutes));
         if (_grants is { } c && DateTime.UtcNow - c.At < ttl) return c.Map;
+        var map = await ReadEmpSiteMapAsync(Wr.SiteGrantsKey);
+        _grants = (DateTime.UtcNow, map);
+        return map;
+    }
+
+    private async Task<Dictionary<string, (string[] Sites, string Note)>> LeadsAsync()
+    {
+        var ttl = TimeSpan.FromMinutes(Math.Max(0, opt.CacheMinutes));
+        if (_leads is { } c && DateTime.UtcNow - c.At < ttl) return c.Map;
+        var map = await ReadEmpSiteMapAsync(Wr.SiteLeadsKey);
+        _leads = (DateTime.UtcNow, map);
+        return map;
+    }
+
+    /* app_settings 的「工號 → 工地清單＋註記」共用讀取器（覆寫與主管白名單同形狀）。
+       ⚠ setting_key 走參數而不是字串串接：目前傳進來的都是程式常數，但這個函式
+         已經是「鍵由呼叫端決定」的形狀，串接等於替日後埋一個 SQL injection。 */
+    private async Task<Dictionary<string, (string[] Sites, string Note)>> ReadEmpSiteMapAsync(string settingKey)
+    {
         var map = new Dictionary<string, (string[], string)>(StringComparer.OrdinalIgnoreCase);
         try
         {
             await using var cn = appDb();
             await cn.OpenAsync();
             await using var cmd = new SqlCommand(
-                "SELECT value_json FROM dbo.app_settings WHERE setting_key = '" + Wr.SiteGrantsKey + "'", cn);
+                "SELECT value_json FROM dbo.app_settings WHERE setting_key = @k", cn);
+            cmd.Parameters.AddWithValue("@k", settingKey);
             if (await cmd.ExecuteScalarAsync() is string raw && !string.IsNullOrWhiteSpace(raw)
                 && JsonNode.Parse(raw) is JsonObject root)
             {
                 foreach (var (emp, node) in root)
                 {
                     if (node is not JsonObject o || o["sites"] is not JsonArray arr) continue;
-                    var sites = arr.Select(x => x?.GetValue<string>())
+                    /* ⚠ 逐項用 GetValueKind 判型再取值：JSON 由設定頁寫入，但這份資料
+                         也可能被 SQL 直改，非字串元素（數字／null／巢狀物件）不可讓
+                         GetValue<string>() 直接丟例外——整包 catch 會讓所有授權一起消失。 */
+                    var sites = arr.Where(x => x?.GetValueKind() == JsonValueKind.String)
+                                   .Select(x => x!.GetValue<string>())
                                    .Where(s => !string.IsNullOrWhiteSpace(s))
-                                   .Select(s => s!.Trim()).ToArray();
+                                   .Select(s => s.Trim()).ToArray();
                     if (sites.Length == 0) continue;
                     var note = string.Join(" / ", new[]
                     {
@@ -418,10 +452,9 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
         }
         catch (Exception)
         {
-            /* 讀不到就當作沒有覆寫。**不 fail-closed**：覆寫是加法，
-               讀失敗只會讓人少看到額外工地，不會放行任何本來不該看的資料。 */
+            /* 讀不到就當作沒有這份設定。**不 fail-closed**：兩份都是加法授權，
+               讀失敗只會讓人少拿到權限，不會放行任何本來不該有的操作。 */
         }
-        _grants = (DateTime.UtcNow, map);
         return map;
     }
 
@@ -438,12 +471,13 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
                 "未設定 ERP 權限連線：請填 appsettings.json 的 ConnectionStrings:KgAuditErp"
               + "（或設環境變數 KGAUDIT_ERP_CONNECTION 覆寫）——權限模式已啟用但無法查詢授權來源");
 
+        /* 主管白名單：由成本管理部於設定頁維護，**不取自 ERP 角色**（見 LeadsAsync 註解）。
+           在 ERP 查詢之前先取，讓全站角色（規則 2）與工地角色（規則 4／5）共用同一份。 */
+        var leads = await LeadsAsync();
+        var leadGrant = leads.TryGetValue(user.EmpId, out var lg) ? lg.Sites : Array.Empty<string>();
+
         var roles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var projects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        /* 主管刪已回報單要精確到「他是 Director 的那個站」，不能用整體 Role。
-           上面的 projects/roles 兩個 set 丟失了 project↔role 的關聯，所以這裡
-           另存「Director 角色的專案代碼」。 */
-        var leadProjects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         await using (var cn = erpDb())
         {
@@ -462,11 +496,8 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
             await using var rd = await cmd.ExecuteReaderAsync();
             while (await rd.ReadAsync())
             {
-                var pid = rd.GetString(0);
-                var rn = rd.GetString(1);
-                projects.Add(pid);
-                roles.Add(rn);
-                if (opt.SiteLeadRoles.Contains(rn, StringComparer.OrdinalIgnoreCase)) leadProjects.Add(pid);
+                projects.Add(rd.GetString(0));
+                roles.Add(rd.GetString(1));
             }
         }
 
@@ -491,7 +522,7 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
         var sites = new HashSet<string>(StringComparer.Ordinal);
         var mapped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var okGrants = new HashSet<string>(StringComparer.Ordinal);
-        var leadSites = new HashSet<string>(StringComparer.Ordinal);   // Director 角色對映到的站（v24.15）
+        var leadSites = new HashSet<string>(StringComparer.Ordinal);   // 主管白名單命中的站（v24.15）
         await using (var cn = appDb())
         {
             await cn.OpenAsync();
@@ -510,9 +541,12 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
                     {
                         sites.Add(name);
                         mapped.Add(code);
-                        if (leadProjects.Contains(code)) leadSites.Add(name);   // 只有 Director 站進 LeadSites
                     }
                 }
+                /* 主管白名單以**資料庫的工地名**為準比對（同覆寫的做法）：
+                   白名單裡打錯字的項目不會生效，也不會憑空造出一個不存在的工地。 */
+                if (leadGrant.Any(s => string.Equals(s, name, StringComparison.OrdinalIgnoreCase)))
+                    leadSites.Add(name);
                 /* 覆寫比對工地名。以資料庫的名稱為準（大小寫不敏感比對、存回正規名），
                    JSON 裡打錯字的項目不會生效，也不會憑空造出一個不存在的工地。 */
                 if (granted.Sites.Any(s => string.Equals(s, name, StringComparison.OrdinalIgnoreCase)))
@@ -533,6 +567,11 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
         var missGrants = new HashSet<string>(
             granted.Sites.Where(s => !okGrants.Any(n => string.Equals(n, s, StringComparison.OrdinalIgnoreCase))),
             StringComparer.OrdinalIgnoreCase);
+        /* ⚠ 主管白名單**只在看得到的站生效**（最小權限）：白名單本身不授予可見性，
+             它只是把「已看得到的站」升級成「可刪該站已回報單」。
+             CanSee 在 op 層也會先擋一次，這裡的交集是第二道、也讓 /whoami 不會
+             報出一個他其實進不去的站。 */
+        leadSites.IntersectWith(sites);
         /* 角色仍由 ERP 決定：覆寫**只加工地、不升角色**（設計決策，2026-08-24）。
            純靠覆寫進來的人（ERP 無任何工地角色）視為 SiteUser——能申請與回報，
            不會因為被授予工地而變成主管。 */

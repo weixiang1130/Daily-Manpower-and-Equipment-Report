@@ -693,6 +693,24 @@
 
     <div class="panel">
       <div class="panel-head">
+        <h2>工地主管白名單<span class="admin-only-badge">管理員</span></h2>
+        <p class="hint">指定同仁在<strong>特定工地</strong>可刪除該站的「已回報」單據（計價依據，平時僅限管理員）。
+          用於工地主任覆核後發現錯單需自行更正的情形。<strong>只給刪除已回報單這一項</strong>——
+          不會因此看到別的工地、不能改設定、不能清空資料、看不到成控稽核。</p>
+      </div>
+      <div class="form-grid">
+        <div class="field field-wide">
+          <label>主管清單（每行一筆：工號｜工地1、工地2｜原因）</label>
+          <textarea id="cfg_siteLeads" rows="4" placeholder="例：&#10;K0201234｜某工地A｜該站工地主任"></textarea>
+          <p class="hint">⚠ 這份清單決定<strong>誰能刪掉計價依據</strong>，請只放該站真正的負責人。
+            工地名稱須與上方工地清單完全相同；<strong>只在對方本來就看得到的工地生效</strong>（不會因此多看到工地）。
+            <strong>鎖檔區間內的單仍然刪不掉</strong>（結算凍結優先）。<strong>整份留空＝取消所有主管授權</strong>。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
         <h2 id="siteConfigTitle">目前工地基礎資料<span class="admin-only-badge">管理員</span></h2>
         <p class="hint">以下清單僅屬於目前切換的工地。每行一個項目；一般使用者請改用表單搜尋欄位的「＋ 新增選項」加入。</p>
       </div>
@@ -806,6 +824,6 @@
 <div id="toast" class="toast"></div>
 
 <script src="config.local.js?ver=2026082501"></script>
-<script src="app.js?ver=2026082805"></script>
+<script src="app.js?ver=2026082806"></script>
 </body>
 </html>

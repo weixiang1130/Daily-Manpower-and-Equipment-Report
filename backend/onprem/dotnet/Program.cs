@@ -858,12 +858,16 @@ app.MapGet("/api/data", async (HttpContext ctx) =>
        內容含工號與核准註記，不該讓一般工地使用者列舉「誰被額外授了哪裡」。 */
     if (az is null || az.IsAdmin)
     {
-        var grRow = await Query(cn, "SELECT value_json FROM dbo.app_settings WHERE setting_key = @k",
-            ("@k", Wr.SiteGrantsKey));
-        if (grRow.Count > 0 && grRow[0]["value_json"] is string gj && !string.IsNullOrWhiteSpace(gj))
+        /* 兩份「工號→工地」設定都只回給管理者：內容含工號與核准註記，
+           不該讓一般工地使用者列舉「誰被額外授了哪裡」「誰能刪已回報單」。 */
+        foreach (var (key, field) in new[] { (Wr.SiteGrantsKey, "siteGrants"), (Wr.SiteLeadsKey, "siteLeads") })
         {
-            try { if (JsonNode.Parse(gj) is JsonObject go) master["siteGrants"] = go; }
-            catch { /* 壞 JSON 就不回，設定頁會顯示空清單，重存一次即修復 */ }
+            var row = await Query(cn, "SELECT value_json FROM dbo.app_settings WHERE setting_key = @k", ("@k", key));
+            if (row.Count > 0 && row[0]["value_json"] is string j && !string.IsNullOrWhiteSpace(j))
+            {
+                try { if (JsonNode.Parse(j) is JsonObject o) master[field] = o; }
+                catch { /* 壞 JSON 就不回，設定頁會顯示空清單，重存一次即修復 */ }
+            }
         }
     }
     var stores = await ReadStores(cn, null);
@@ -1217,10 +1221,14 @@ static async Task<IResult> OpMaster(SqlConnection cn, JsonObject body)
        寫入前正規化：工號 trim、sites 去空白去重；空 sites 的整筆略過。
        ⚠ 工地名在這裡**不驗存在性**——覆寫允許授予尚未建立的工地（先授權後納管），
          Auth 端比對時查無此站自然不生效，與判定層的防呆一致。 */
-    if (body["siteGrants"] is JsonObject grants)
+    /* 「工號 → 工地清單」兩份設定共用的正規化：工號 trim、sites 去空白去重、
+       空 sites 的整筆略過、by/at/why 只收字串。
+       ⚠ 工地名在這裡**不驗存在性**——覆寫允許授予尚未建立的工地（先授權後納管），
+         Auth 端比對時查無此站自然不生效，與判定層的防呆一致。 */
+    static JsonObject NormEmpSiteMap(JsonObject src)
     {
         var norm = new JsonObject();
-        foreach (var (emp, node) in grants)
+        foreach (var (emp, node) in src)
         {
             var id = emp.Trim();
             if (id.Length == 0 || node is not JsonObject g) continue;
@@ -1237,13 +1245,25 @@ static async Task<IResult> OpMaster(SqlConnection cn, JsonObject body)
                 ["why"] = g["why"]?.GetValueKind() == JsonValueKind.String ? g["why"]!.GetValue<string>() : ""
             };
         }
-        await Exec(cn, tx,
-            @"MERGE dbo.app_settings AS t
-              USING (SELECT @k AS k) AS s ON t.setting_key = s.k
-              WHEN MATCHED THEN UPDATE SET value_json = @v, updated_at = SYSDATETIME()
-              WHEN NOT MATCHED THEN INSERT (setting_key, value_json) VALUES (@k, @v);",
-            ("@k", Wr.SiteGrantsKey), ("@v", norm.ToJsonString(Wr.JsonOpts)));
+        return norm;
     }
+
+    const string UpsertSetting =
+        @"MERGE dbo.app_settings AS t
+          USING (SELECT @k AS k) AS s ON t.setting_key = s.k
+          WHEN MATCHED THEN UPDATE SET value_json = @v, updated_at = SYSDATETIME()
+          WHEN NOT MATCHED THEN INSERT (setting_key, value_json) VALUES (@k, @v);";
+
+    if (body["siteGrants"] is JsonObject grants)
+        await Exec(cn, tx, UpsertSetting,
+            ("@k", Wr.SiteGrantsKey), ("@v", NormEmpSiteMap(grants).ToJsonString(Wr.JsonOpts)));
+
+    /* 節點 61 主管白名單：同一守則（省略＝保留、{}＝清空）。
+       ⚠ 這份清單決定「誰能刪掉計價依據」，比覆寫更敏感——op:master 已是
+         OpScope.Admin，僅系統管理者可寫；讀取也只回給管理者（見 GET master）。 */
+    if (body["siteLeads"] is JsonObject leadsIn)
+        await Exec(cn, tx, UpsertSetting,
+            ("@k", Wr.SiteLeadsKey), ("@v", NormEmpSiteMap(leadsIn).ToJsonString(Wr.JsonOpts)));
 
     // 不在清單裡的工地標為 is_active=0 而**不是刪除**——歷史紀錄必須留著，
     // 退場專案的資料還要供成本部查帳（scope=all 仍會合成 stores 條目）。
@@ -2444,6 +2464,8 @@ static class Wr
 
     /* app_settings 的鍵名（v23.2）。Auth.cs 也讀同一把鍵——**改這裡就好，勿各寫一份** */
     public const string AdminDeptKey = "admin_departments";
+    /// 工地主管白名單（節點 61）：工號 → 可刪該站已回報單的工地清單。形狀同 site_grants
+    public const string SiteLeadsKey = "site_leads";
 
     /* 授權覆寫（節點 55）：工號 → 額外可見工地。Auth.cs 的 GrantsAsync() 讀同一把鍵 */
     public const string SiteGrantsKey = "site_grants";

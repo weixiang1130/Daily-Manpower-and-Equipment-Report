@@ -143,7 +143,9 @@ const apiSaveMaster = () => api("POST", Object.assign(
   Array.isArray(MASTER.adminDepartments) ? { adminDepartments: MASTER.adminDepartments } : {},
   /* 節點 55：跨工地授權，同一守則——沒載到就省略，後端保留既有值。
      載到了（含空物件）就照送：空物件＝管理員明確清空。 */
-  (MASTER.siteGrants && typeof MASTER.siteGrants === "object") ? { siteGrants: MASTER.siteGrants } : {}
+  (MASTER.siteGrants && typeof MASTER.siteGrants === "object") ? { siteGrants: MASTER.siteGrants } : {},
+  // 節點 61 主管白名單：同一守則——沒載到就省略（後端保留既有值），載到了才照送
+  (MASTER.siteLeads && typeof MASTER.siteLeads === "object") ? { siteLeads: MASTER.siteLeads } : {}
 ));
 const apiSaveConfig = (site) => api("POST", { op:"config", site, config: SITE_CACHE[site].config });
 const apiSaveRecord = (kind, rec, baseV) => api("POST", { op:"record", site: MASTER.currentSite, kind, record: rec, baseV: baseV || 0 });
@@ -592,6 +594,8 @@ async function boot(){
     // 節點 55：跨工地授權（後端只回給管理者；一般使用者收不到，維持 undefined 即不回送）
     if(data.master && data.master.siteGrants && typeof data.master.siteGrants === "object")
       MASTER.siteGrants = data.master.siteGrants;
+    if(data.master && data.master.siteLeads && typeof data.master.siteLeads === "object")
+      MASTER.siteLeads = data.master.siteLeads;                 // 節點 61 主管白名單
 
     if(data.master && Array.isArray(data.master.sites) && data.master.sites.length){
       MASTER.sites = data.master.sites;
@@ -671,7 +675,9 @@ async function refreshData(silent){
     if(data.master && Array.isArray(data.master.adminDepartments))
       MASTER.adminDepartments = data.master.adminDepartments;   // v23.2
     if(data.master && data.master.siteGrants && typeof data.master.siteGrants === "object")
-      MASTER.siteGrants = data.master.siteGrants;               // 節點 55
+      MASTER.siteGrants = data.master.siteGrants;
+    if(data.master && data.master.siteLeads && typeof data.master.siteLeads === "object")
+      MASTER.siteLeads = data.master.siteLeads;                 // 節點 61 主管白名單
     for(const site of MASTER.sites){
       const st = (data.stores && data.stores[site]) || {};
       SITE_CACHE[site] = {
@@ -5935,6 +5941,10 @@ function applyAdminUI(){
 
   document.getElementById("cfg_sites").readOnly = !admin;
   document.getElementById("cfg_adminDepts").readOnly = !admin;   // v23.2
+  // 節點 55／61：兩份授權清單都只有管理員能改（伺服器端 op:master 亦為 Admin scope）
+  ["cfg_siteGrants", "cfg_siteLeads"].forEach(id=>{
+    const el = document.getElementById(id); if(el) el.readOnly = !admin;
+  });
   // v23.3：納管會建立工地並寫入專案代碼，非管理員不開放
   const adopt = document.getElementById("adoptPanel");
   if(adopt) adopt.style.display = admin ? "" : "none";
@@ -5980,7 +5990,10 @@ const SITE_CFG_MAP = {
 };
 
 /* ==========================================================
-   跨工地授權（節點 55）：textarea 一行一筆「工號｜工地1、工地2｜原因」
+   跨工地授權（節點 55）與工地主管白名單（節點 61）
+   兩者資料形狀相同（工號→{sites,by,at,why}），共用同一組解析／格式化：
+   textarea 一行一筆「工號｜工地1、工地2｜原因」。
+   ⚠ 語意不同，別混用：覆寫給「看得到」，白名單給「刪得掉該站已回報單」。
    ========================================================== */
 function formatSiteGrants(grants){
   if(!grants || typeof grants !== "object") return "";
@@ -6029,6 +6042,7 @@ function renderSettings(){
   // v23.2：管理員部門白名單（未設定時留白，代表沿用系統預設）
   document.getElementById("cfg_adminDepts").value = (MASTER.adminDepartments || []).join("\n");
   document.getElementById("cfg_siteGrants").value = formatSiteGrants(MASTER.siteGrants);
+  document.getElementById("cfg_siteLeads").value = formatSiteGrants(MASTER.siteLeads);   // 節點 61
   document.getElementById("siteConfigTitle").childNodes[0].textContent = `目前工地基礎資料：${MASTER.currentSite}`;
   const c = cur().config;
   Object.entries(SITE_CFG_MAP).forEach(([id,key])=>{
@@ -6248,6 +6262,9 @@ function initSettings(){
        工地名要對照「即將儲存」的清單，所以拿 nextSites 而不是 MASTER.sites。 */
     const sg = parseSiteGrants(document.getElementById("cfg_siteGrants").value, MASTER.siteGrants, nextSites);
     if(sg.error){ toast("整份設定未儲存——跨工地授權有誤：" + sg.error); return; }
+    // 節點 61 主管白名單：同樣先驗證再改狀態（兩份都過了才動 MASTER）
+    const sl = parseSiteGrants(document.getElementById("cfg_siteLeads").value, MASTER.siteLeads, nextSites);
+    if(sl.error){ toast("整份設定未儲存——工地主管白名單有誤：" + sl.error); return; }
 
     MASTER.sites = nextSites;
     /* v23.2 管理員部門白名單。留白＝送空陣列，後端會回退到系統預設值
@@ -6255,6 +6272,7 @@ function initSettings(){
     MASTER.adminDepartments = Array.from(new Set(
       document.getElementById("cfg_adminDepts").value.split("\n").map(s=>s.trim()).filter(Boolean)));
     MASTER.siteGrants = sg.grants;   // 留白＝空物件＝明確清空
+    MASTER.siteLeads = sl.grants;    // 同上（節點 61）
 
     // v15.1：人員名單批次貼上也須逐行單一人名（與「新增選項」同一規則）
     const peopleLines = document.getElementById("cfg_people").value.split("\n").map(s=>s.trim()).filter(Boolean);

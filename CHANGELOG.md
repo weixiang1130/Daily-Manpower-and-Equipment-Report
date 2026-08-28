@@ -2,15 +2,18 @@
 
 版本異動摘要。完整背景與設計決策請見 [`docs/milestones/`](docs/milestones/README.md)。
 
-## [節點 61] 2026-08-28 — 工地主管可刪除自己工地的已回報單
-- 主管身分**逐站**認定（`Authz.LeadSites`，只收 ERP Director 角色對映的站）：
-  同一人在 A 站是主任、B 站只是工程師時，只有 A 站取得刪除權
-- 三條邊界：授權覆寫給的站**不算**主管站；鎖檔優先於主管權限；管理員不受站別限制
+## [節點 61] 2026-08-28 — 工地主管白名單：可刪除指定工地的已回報單
+- 新增設定頁「工地主管白名單」（`app_settings.site_leads`，管理員限定、形狀同跨工地授權）：
+  逐人逐站指定誰可刪該站「已回報」單。**預設空白＝行為與改版前完全相同**
+- **不採 ERP 的 Director 角色**：實查正式 ERP，具該角色者含總部幕僚且多人涵蓋全部專案，
+  與「該工地負責人」語意不符，逕用會把刪除計價依據的權限發給不該有的人
+- 三條邊界：只在**本來就看得到**的站生效（不授予可見性）；**鎖檔優先**；管理員不受站別限制
 - `/whoami` 新增 `leadSites` 與 `canDeleteReportedScope`（管理員 leadSites 恆空，
   只看它會得出相反結論，故另給語意欄位）
 - 前端同步：開站時取 `/whoami`，刪除閘門由 adminPin 改用 `canDeleteReported(site)`；
   **取不到身分時退回 adminPin**，雲端／`Auth:Mode=Off`／舊部署行為不變
-- ⚠ 實查 ERP：12 站共 20 人具 Director，其中 4 人涵蓋全部 12 站
+- 資安：授權設定讀取器的 `setting_key` 改參數化（原為字串串接）、JSON 元素逐項判型；
+  兩份授權清單補上非管理員 `readOnly`
 - 含後端變更需重新編譯；無 DB、無 appsettings 異動
 - 詳見 [`docs/milestones/61-sitelead-delete-reported.md`](docs/milestones/61-sitelead-delete-reported.md)
 

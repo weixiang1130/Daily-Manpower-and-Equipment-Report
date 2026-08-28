@@ -936,7 +936,7 @@ app.MapPost("/api/data", async (HttpContext ctx) =>
            與 LockGuard 同一層把關：管理員不受限、Auth:Mode=Off 時不介入（azl 為 null）。 */
         if (op == "deleteRecord")
         {
-            var denied2 = await ReportedDeleteGuard(cn, body);
+            var denied2 = await ReportedDeleteGuard(cn, body, azl);
             if (denied2 is not null) return denied2;
         }
     }
@@ -1061,6 +1061,16 @@ app.MapGet("/whoami", async (HttpContext ctx) =>
     o["sites"] = new JsonArray(az.Sites.Select(s => (JsonNode)JsonValue.Create(s)!).ToArray());
     o["canSeeAudits"] = az.CanSeeAudits;
     o["isAdmin"] = az.IsAdmin;
+    // v24.15：工地主管可刪已回報單的站（Director 站；前端據此決定刪除動線、也供診斷）
+    o["leadSites"] = new JsonArray(az.LeadSites.OrderBy(x => x, StringComparer.Ordinal)
+        .Select(s => (JsonNode)JsonValue.Create(s)!).ToArray());
+    /* ⚠ 直接把「能刪已回報單的範圍」講出來，不要讓人自己從 leadSites 推——
+       管理員的 leadSites 恆為空（判定在規則 1／3 就 return 了），只看那個欄位
+       會得出「管理員不能刪」的相反結論。節點 53／54 的教訓：/whoami 本身也會誤導。 */
+    o["canDeleteReportedScope"] = az.IsAdmin ? "全部工地（系統管理者）"
+        : az.LeadSites.Count > 0
+            ? string.Join("、", az.LeadSites.OrderBy(x => x, StringComparer.Ordinal))
+            : "（無——非管理員且非任何工地的主管）";
 
     /* ⚠ 工地角色**看得到幾個工地**這件事，只給結果是不夠的。
        「少一個工地」有兩種完全不同的成因，畫面上一模一樣：
@@ -1501,8 +1511,11 @@ static string? DateGuardError(JsonObject rec, string? storedDate, string? stored
      等於鎖了跟沒鎖一樣。 */
 /* 節點 57：非管理員不得刪除**已回報**的單據（伺服器端）。
    形狀錯誤或查無單據一律回 null 交給 OpDeleteRecord 處理（400／冪等），
-   本守衛只負責一件事：單據存在且已回報 → 403。 */
-static async Task<IResult?> ReportedDeleteGuard(SqlConnection cn, JsonObject body)
+   本守衛只負責一件事：單據存在且已回報 → 403。
+   v24.15：工地主管（SiteLead）對**自己是 Director 的站**（az.CanDeleteReported）放行——
+   多站主管每個 Director 站都放行；同一人在只是工程師的站（不在 LeadSites）仍被擋。
+   鎖檔（結算凍結）由 LockGuard 先擋且優先，主管能刪的是未鎖檔的已回報單。 */
+static async Task<IResult?> ReportedDeleteGuard(SqlConnection cn, JsonObject body, Authz az)
 {
     var site = Sx(body, "site");
     var kind = Sx(body, "kind");
@@ -1517,8 +1530,8 @@ static async Task<IResult?> ReportedDeleteGuard(SqlConnection cn, JsonObject bod
     var status = await Scalar(cn, null,
         $"SELECT status FROM dbo.{recT} WHERE id=@id AND site_id=@s",
         ("@id", id), ("@s", Convert.ToInt32(sid)));
-    if (status as string == "已回報")
-        return Results.Json(new { error = "forbidden", message = "已回報的單據是計價依據，僅限管理員刪除" },
+    if (status as string == "已回報" && !az.CanDeleteReported(site))
+        return Results.Json(new { error = "forbidden", message = "已回報的單據是計價依據，僅限管理員或該工地主管刪除" },
                             statusCode: 403);
     return null;
 }

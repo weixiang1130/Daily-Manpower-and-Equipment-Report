@@ -2,6 +2,18 @@
 
 版本異動摘要。完整背景與設計決策請見 [`docs/milestones/`](docs/milestones/README.md)。
 
+## [節點 61] 2026-08-28 — 工地主管可刪除自己工地的已回報單
+- 主管身分**逐站**認定（`Authz.LeadSites`，只收 ERP Director 角色對映的站）：
+  同一人在 A 站是主任、B 站只是工程師時，只有 A 站取得刪除權
+- 三條邊界：授權覆寫給的站**不算**主管站；鎖檔優先於主管權限；管理員不受站別限制
+- `/whoami` 新增 `leadSites` 與 `canDeleteReportedScope`（管理員 leadSites 恆空，
+  只看它會得出相反結論，故另給語意欄位）
+- 前端同步：開站時取 `/whoami`，刪除閘門由 adminPin 改用 `canDeleteReported(site)`；
+  **取不到身分時退回 adminPin**，雲端／`Auth:Mode=Off`／舊部署行為不變
+- ⚠ 實查 ERP：12 站共 20 人具 Director，其中 4 人涵蓋全部 12 站
+- 含後端變更需重新編譯；無 DB、無 appsettings 異動
+- 詳見 [`docs/milestones/61-sitelead-delete-reported.md`](docs/milestones/61-sitelead-delete-reported.md)
+
 ## [節點 60] 2026-08-28 — 點工／機具清單「狀態」欄表頭點擊篩選
 - 「狀態」表頭可點擊，循環切換 全部 → 待回報 → 已回報 → 全部（純前端）
 - 與既有廠商／申請人／日期篩選並存、共用計數與清除鈕；未篩選顯示 ⇕、篩選中 ▾ 並高亮

@@ -61,6 +61,9 @@
 | [56](56-monthly-diff-display.md) | 月租單不再被標「未填預定」 | 顯示層四處分流（不適用≠漏填）、天數改 `equipOnSiteDays()` 同口徑、CSV 標「月租」 |
 | [57](57-reported-delete-server-guard.md) | 已回報單刪除限管理員（伺服器端） | ReportedDeleteGuard 與 LockGuard 同層；前端管控補實質把關；資安審查其餘面向無虞 |
 | [58](58-cache-busting-ver.md) | 靜態檔引用加 ?ver= 快取參數 | 資訊處建議；改 js/css 必須同步進位，否則使用者吃舊快取等於沒部署 |
+| [59](59-dashboard-tracking-merge.md) | 總覽追蹤提醒合併＋20 天期限口徑 | 未回報與簽單未繳同一窗口（`trackLeftDays`）；超期只彙總不列；修簽單追蹤漏掉機具、月租租期中誤列逾期 |
+| [60](60-status-header-filter.md) | 清單「狀態」欄表頭點擊篩選 | 兩值欄位用循環篩選勝過排序；篩選與徽章須同源（`isReported`）；空結果仍要保留可點表頭 |
+| [61](61-sitelead-delete-reported.md) | 工地主管可刪自己工地的已回報單 | 主管身分**逐站**認定（`LeadSites`）；覆寫站不算主管站、鎖檔優先；前後端閘門必須成對否則功能形同虛設 |
 
 ## 如何新增下一個節點
 

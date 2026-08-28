@@ -149,6 +149,23 @@ const apiSaveConfig = (site) => api("POST", { op:"config", site, config: SITE_CA
 const apiSaveRecord = (kind, rec, baseV) => api("POST", { op:"record", site: MASTER.currentSite, kind, record: rec, baseV: baseV || 0 });
 const apiDeleteRecord = (kind, id) => api("POST", { op:"deleteRecord", site: MASTER.currentSite, kind, id });
 
+/* 節點 61：後端身分（/whoami）。地端權限模式下據以判斷「這個人在這個工地能不能刪已回報單」。
+   ⚠ 取不到就維持 null——雲端、Auth:Mode=Off、或舊部署都沒有這個端點；
+     此時一律退回原本的 adminPin 行為，與改版前完全相同（不可因為多了這支查詢就把人擋住）。 */
+let AUTHZ = null;
+
+async function loadAuthz(){
+  try{
+    // /whoami 刻意不在 /api 底下（權限中介層只擋 /api），故從 apiBase 去掉尾段自行組出
+    const res = await fetch(API_BASE.replace(/\/api\/data\/?$/, "") + "/whoami",
+                            { headers: { "Accept": "application/json" } });
+    if(!res.ok) return;
+    const w = await res.json();
+    // 只在後端真的判出角色時採用；stoppedAt（判定中止、無角色）不算
+    if(w && typeof w.role === "string" && w.role) AUTHZ = w;
+  }catch(_){ /* 沒有這個端點或連不上：維持 null，退回 adminPin */ }
+}
+
 /* 重新抓取單一工地的最新資料（開啟編輯前呼叫，避免用到舊資料） */
 async function refetchSite(site){
   const st = await api("GET", null, { site });
@@ -564,7 +581,10 @@ function showLoading(msg){
 async function boot(){
   showLoading("正在連線共用資料庫…");
   try{
+    // 節點 61：後端身分與主資料**並行**取，不額外增加開站等待
+    const authzJob = loadAuthz();
     const data = await api("GET", null, { scope: "all" });
+    await authzJob;
 
     // v23.2：管理員部門白名單。先接住，apiSaveMaster() 才知道要不要送（見該函式註解）
     if(data.master && Array.isArray(data.master.adminDepartments))
@@ -1741,8 +1761,8 @@ async function loadLaborReportRecord(id){
 
 async function deleteLaborRecord(id){
   const rec = cur().labor.find(r=>r.id===id);
-  if(rec && rec.status === "已回報" && !isAdmin()){
-    toast("已回報的單據是計價依據，僅限管理員刪除");
+  if(rec && rec.status === "已回報" && !canDeleteReported(MASTER.currentSite)){
+    toast("已回報的單據是計價依據，僅限管理員或該工地主管刪除");
     return;
   }
   if(rec && isLockedDate(rec.date)){
@@ -2711,8 +2731,8 @@ async function loadEquipReportRecord(id){
 
 async function deleteEquipRecord(id){
   const rec = cur().equipment.find(r=>r.id===id);
-  if(rec && rec.status === "已回報" && !isAdmin()){
-    toast("已回報的單據是計價依據，僅限管理員刪除");
+  if(rec && rec.status === "已回報" && !canDeleteReported(MASTER.currentSite)){
+    toast("已回報的單據是計價依據，僅限管理員或該工地主管刪除");
     return;
   }
   if(rec && isLockedDate(rec.date)){
@@ -5875,6 +5895,17 @@ function initAudit(){
 const ADMIN_PIN = (LOCAL.adminPin != null) ? String(LOCAL.adminPin) : "0000";
 
 function isAdmin(){ return ssGet("dm_admin") === "1"; }
+
+/* 已回報單的刪除權（節點 61）。後端有身分時以它為準——管理員不限站、工地主管限
+   **自己是主管的那些站**（leadSites），與伺服器 Authz.CanDeleteReported 同一口徑；
+   取不到身分（雲端／Auth:Mode=Off／舊部署）則退回 adminPin，行為與改版前相同。
+   ⚠ 這裡只是 UI 提示與動線，真正的把關在伺服器的 ReportedDeleteGuard——
+     前端放行不等於刪得掉，前端擋住也不該是唯一防線。
+   ⚠ 鎖檔另由 isLockedDate() 把關且優先：主管一樣刪不了鎖檔區間內的單（與後端一致）。 */
+function canDeleteReported(site){
+  if(!AUTHZ) return isAdmin();
+  return !!AUTHZ.isAdmin || (Array.isArray(AUTHZ.leadSites) && AUTHZ.leadSites.includes(site));
+}
 
 function initAdmin(){
   document.getElementById("adminToggleBtn").addEventListener("click", ()=>{

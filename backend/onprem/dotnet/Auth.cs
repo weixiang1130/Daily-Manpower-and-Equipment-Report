@@ -78,11 +78,20 @@ public sealed record Authz(Role Role, IReadOnlySet<string> Sites, bool AllSites)
     /// 覆寫中對不上任何啟用中工地的項目（打錯字／該站已改名或停用）——僅供 /whoami 診斷
     public IReadOnlySet<string>? GrantsNotMatched { get; init; }
 
+    /* 工地主管（SiteLead）以 ERP Director 角色**在該站**才成立的工地子集合（v24.15）。
+       ⚠ 與 Sites 不同：一個人可能在 A 站是 Director、B 站只是 Engineer，整體 Role 會是
+         SiteLead 但只有 A 站進得了 LeadSites。site_grants 覆寫的站也**不**進來——覆寫是
+         「支援」不是「主管職」，只給申請/回報、不給刪已回報。判定用，非僅診斷。 */
+    public IReadOnlySet<string> LeadSites { get; init; } = new HashSet<string>();
+
     public bool CanSee(string site) => AllSites || Sites.Contains(site);
     /// 破壞性操作與全域設定限系統管理者——一併解決「伺服器端無權限分級」的安審遺留
     public bool IsAdmin => Role == Role.Admin;
     /// 稽核模組：成控與管理者可見。v13 只在 UI 隱藏，這裡才是真隔離
     public bool CanSeeAudits => Role is Role.Admin or Role.CostControl;
+    /* 刪除「已回報」單（計價依據）：系統管理者不限站；工地主管限**自己是 Director 的站**
+       （v24.15）。鎖檔（結算凍結）另由 LockGuard 把關且優先——主管能刪的是未鎖檔的已回報單。 */
+    public bool CanDeleteReported(string site) => IsAdmin || LeadSites.Contains(site);
 }
 
 public sealed class AuthOptions
@@ -431,6 +440,10 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
 
         var roles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var projects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        /* 主管刪已回報單要精確到「他是 Director 的那個站」，不能用整體 Role。
+           上面的 projects/roles 兩個 set 丟失了 project↔role 的關聯，所以這裡
+           另存「Director 角色的專案代碼」。 */
+        var leadProjects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         await using (var cn = erpDb())
         {
@@ -449,8 +462,11 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
             await using var rd = await cmd.ExecuteReaderAsync();
             while (await rd.ReadAsync())
             {
-                projects.Add(rd.GetString(0));
-                roles.Add(rd.GetString(1));
+                var pid = rd.GetString(0);
+                var rn = rd.GetString(1);
+                projects.Add(pid);
+                roles.Add(rn);
+                if (opt.SiteLeadRoles.Contains(rn, StringComparer.OrdinalIgnoreCase)) leadProjects.Add(pid);
             }
         }
 
@@ -475,6 +491,7 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
         var sites = new HashSet<string>(StringComparer.Ordinal);
         var mapped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var okGrants = new HashSet<string>(StringComparer.Ordinal);
+        var leadSites = new HashSet<string>(StringComparer.Ordinal);   // Director 角色對映到的站（v24.15）
         await using (var cn = appDb())
         {
             await cn.OpenAsync();
@@ -493,6 +510,7 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
                     {
                         sites.Add(name);
                         mapped.Add(code);
+                        if (leadProjects.Contains(code)) leadSites.Add(name);   // 只有 Director 站進 LeadSites
                     }
                 }
                 /* 覆寫比對工地名。以資料庫的名稱為準（大小寫不敏感比對、存回正規名），
@@ -521,6 +539,7 @@ public sealed class Authorizer(AuthOptions opt, Func<SqlConnection> appDb, Func<
         return new Authz(isLead ? Role.SiteLead : Role.SiteUser, sites, false)
             { ErpProjects = projects, UnmappedProjects = unmapped,
               GrantedSites = okGrants, GrantNote = okGrants.Count > 0 ? granted.Note : null,
-              GrantsNotMatched = missGrants.Count > 0 ? missGrants : null };
+              GrantsNotMatched = missGrants.Count > 0 ? missGrants : null,
+              LeadSites = leadSites };
     }
 }

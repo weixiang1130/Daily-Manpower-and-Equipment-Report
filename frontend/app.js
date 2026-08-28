@@ -503,6 +503,17 @@ function signReturnError(signDate, workDate){
   return null;
 }
 
+/* v24.14 總覽追蹤口徑：不論「未回報」還是「簽單未繳」，追的都是同一個 20 天窗口
+   ——基準日（signBaseDate：月租＝租期迄日、其餘＝出工日）＋20 天。
+   回傳剩餘天數（負值＝已超過期限）；無基準日回傳 null（無從追蹤）。
+   ⚠ 三個消費端（總覽卡片／追蹤提醒清單／各工地列控總覽）都必須走這裡，
+     不可各自另算——v24.6 的教訓：口徑分家，數字就打架。 */
+function trackLeftDays(rec, today){
+  const base = signBaseDate(rec);
+  if(!base) return null;
+  return SIGN_RETURN_MAX_DAYS - daysBetween(base, today);
+}
+
 /* 開表單時把 min／max 掛上去，讓日期選擇器本身就選不到範圍外的日期——
    送出時的檢查是最後一道，不是唯一一道 */
 function lockSignReturnRange(inputId, workDate){
@@ -2774,64 +2785,53 @@ function renderDashboard(){
   const abnormal = reportedThisMonth.filter(({r})=>r.report.diff!==0);
   const laborPending = allLabor.filter(({r})=>r.status!=="已回報");
   const equipPending = allEquip.filter(({x})=>x.status!=="已回報");
-  // v24.6：只追 DASH_TRACK_SINCE 起的單（卡片與下方清單同一份，數字才不會打架）
-  const pendingSign = allLabor.filter(({r})=>
-    r.status==="已回報" && r.report && !r.report.signReturnDate && inTrackRange(r.date));
 
-  /* 戰情室：逾期未回報＝出工日已過、卻仍停在「待回報」的單（跨工地）。
-     只算「出工日 < 今天」——當天的單還沒到回報時機，不是逾期。
+  /* v24.14 總覽改版：「逾期未回報」與「待繳回簽單」合併成同一套追蹤口徑。
+     兩者追的其實是同一個 20 天窗口（trackLeftDays：基準日＋20；月租＝租期迄日），
+     只是卡在不同階段：未回報＝基準日已過仍停在待回報；簽單未繳＝已回報但繳回日未填。
+     超過 20 天（left<0）＝簽單已逾期不予採計、追回無實益——不進清單與卡片，
+     只在清單尾端彙總一行（歷程報表照樣查得到；月租單本身仍可正常補回報，
+     只有「簽單繳回日」欄位受期限限制——2026-08-28 於正式鏡像實測確認）。
+     v24.6 原則不變：只追 DASH_TRACK_SINCE 起的單，卡片與清單同一份資料。
      機具的廠商一律走 recVendor()（v22.6 起廠商在回報時才填，唯一權威）。 */
   const today = localDate();
-  const overdue = [];
-  allLabor.forEach(({site, r})=>{
-    if(r.status !== "已回報" && inTrackRange(r.date) && r.date < today)
-      overdue.push({ site, kind:"點工", date:r.date, vendor:r.vendor || "—",
-                     who:r.applicant || "—", days: daysBetween(r.date, today) });
-  });
-  allEquip.forEach(({site, x})=>{
-    if(x.status !== "已回報" && inTrackRange(x.date) && x.date < today)
-      overdue.push({ site, kind:"機具", date:x.date, vendor:recVendor(x) || "—",
-                     who:x.applicant || "—", days: daysBetween(x.date, today) });
-  });
-  overdue.sort((a,b)=> b.days - a.days || String(a.site).localeCompare(b.site));
+  const track = [];
+  let expiredCount = 0;
+  const collect = (site, kind, rec) => {
+    const left = trackLeftDays(rec, today);
+    if(left === null) return;
+    const base = signBaseDate(rec);
+    if(!inTrackRange(base)) return;
+    let type = null;
+    if(rec.status !== "已回報" && base < today) type = "未回報";           // 基準日當天還不算逾期
+    else if(rec.status === "已回報" && rec.report && !rec.report.signReturnDate) type = "簽單未繳";
+    if(!type) return;
+    if(left < 0){ expiredCount++; return; }
+    track.push({ site, kind, type, base, left,
+                 vendor: (kind==="機具" ? recVendor(rec) : rec.vendor) || "—",
+                 who: (rec.report && (kind==="機具" ? rec.report.checker : rec.report.engineer)) || rec.applicant || "—" });
+  };
+  allLabor.forEach(({site, r})=> collect(site, "點工", r));
+  allEquip.forEach(({site, x})=> collect(site, "機具", x));
+  track.sort((a,b)=> a.left - b.left || String(a.site).localeCompare(b.site));
+  const overdueCount = track.filter(t=>t.type==="未回報").length;
+  const signCount = track.filter(t=>t.type==="簽單未繳").length;
 
   const cards = [
     {label:"本月出工回報次數", value:reportedThisMonth.length, cls:""},
-    {label:"逾期未回報", value:overdue.length, cls: overdue.length? "bad":""},
+    {label:"逾期未回報", value:overdueCount, cls: overdueCount? "bad":""},
     {label:"本月人數異常件數", value:abnormal.length, cls: abnormal.length? "bad":""},
     {label:"點工待回報", value:laborPending.length, cls: laborPending.length? "warn":""},
     {label:"機具待回報", value:equipPending.length, cls: equipPending.length? "warn":""},
-    {label:"簽單尚未繳回", value:pendingSign.length, cls: pendingSign.length? "warn":""},
+    {label:"簽單尚未繳回", value:signCount, cls: signCount? "warn":""},
   ];
   document.getElementById("dashCards").innerHTML = cards.map(c=>`
     <div class="card ${c.cls}"><div class="num">${c.value}</div><div class="lbl">${esc(c.label)}</div></div>
   `).join("");
 
-  renderSiteBreakdown();
-  renderOverdueList(overdue);
+  renderSiteBreakdown(today);
+  renderTrackList(track, expiredCount);
   renderDashRanking(allLabor);
-
-  /* 簽單提醒：改依「出工日後 20 天」的期限倒數排序，最急的在最上面。
-     只列出尚未填繳回日者；已逾期與快到期分別給不同標記，讓人一眼看出要先追哪一張。 */
-  const dueEl = document.getElementById("dueList");
-  if(!pendingSign.length){
-    dueEl.innerHTML = '<div class="empty-row">目前沒有待繳回的簽單</div>';
-  }else{
-    const dueRows = pendingSign
-      .map(({site,r})=>({ site, r, left: SIGN_RETURN_MAX_DAYS - daysBetween(r.date, today) }))
-      .sort((a,b)=> a.left - b.left);
-    const tagOf = left => left < 0
-      ? `<span class="tag bad">已逾期 ${-left} 天</span>`
-      : (left <= 5 ? `<span class="tag warn">剩 ${left} 天</span>`
-                   : `<span class="tag">尚有 ${left} 天</span>`);
-    dueEl.innerHTML = dueRows.slice(0,10).map(({site,r,left})=>`
-      <div class="row-item">
-        <span>${esc(site)}・${esc(r.date)}・${esc(r.vendor)}・${esc((r.report&&r.report.engineer)||"—")}</span>
-        ${tagOf(left)}
-      </div>
-    `).join("")
-      + (dueRows.length > 10 ? `<div class="empty-row">…另有 ${dueRows.length - 10} 張未列出</div>` : "");
-  }
 
   const recentEl = document.getElementById("recentAudits");
   const reported = allLabor.filter(({r})=>r.status==="已回報" && r.report)
@@ -2848,26 +2848,31 @@ function renderDashboard(){
   }
 }
 
-/* 戰情室：逾期未回報清單（跨工地）。
-   這是「總覽跨工地待回報名單」那個擱置項的落地——工地端各自看得到自己的待回報，
-   但沒有人看得到「全公司哪幾張拖最久」，而那正是成控要追的東西。
+/* 戰情室：追蹤提醒清單（v24.14，合併原「逾期未回報」與「待繳回簽單提醒」）。
+   源起是「總覽跨工地待回報名單」擱置項的落地——工地端各自看得到自己的待回報，
+   但沒有人看得到「全公司哪幾張快到期」，而那正是成控要追的東西。
+   統一用「期限剩 N 天」倒數（同一個 20 天窗口），剩越少排越前面——
+   來得及搶救的排最上面，取代舊版「逾期天數多在前」讓死單永遠置頂的排序。
    列可點擊：切到該工地並跳到對應清單頁，直接接上處理動線。 */
-function renderOverdueList(overdue){
-  const el = document.getElementById("overdueList");
+function renderTrackList(track, expiredCount){
+  const el = document.getElementById("trackList");
   if(!el) return;
-  if(!overdue.length){
-    el.innerHTML = '<div class="empty-row">目前沒有逾期未回報的單據</div>';
+  const foot = [];
+  if(track.length > 12) foot.push(`…另有 ${track.length - 12} 張未列出`);
+  if(expiredCount) foot.push(`另有 ${expiredCount} 張已超過 20 天期限（簽單逾期不予採計），不列入追蹤——歷程報表仍查得到`);
+  const footHtml = foot.map(t=>`<div class="empty-row">${esc(t)}</div>`).join("");
+  if(!track.length){
+    el.innerHTML = '<div class="empty-row">目前沒有期限內待追蹤的單據</div>' + footHtml;
     return;
   }
-  const sev = d => d >= 7 ? "bad" : (d >= 3 ? "warn" : "");
-  el.innerHTML = overdue.slice(0, 12).map(o=>`
+  const sev = left => left <= 5 ? "bad" : (left <= 10 ? "warn" : "");
+  el.innerHTML = track.slice(0, 12).map(o=>`
     <div class="row-item clickable" data-site="${esc(o.site)}" data-kind="${esc(o.kind)}">
-      <span><strong>${esc(o.site)}</strong>・${esc(o.kind)}・${esc(o.date)}
+      <span><strong>${esc(o.site)}</strong>・${esc(o.kind)}・${esc(o.base)}
         <span class="row-meta">${esc(o.vendor)}／${esc(o.who)}</span></span>
-      <span class="tag ${sev(o.days)}">逾期 ${o.days} 天</span>
+      <span><span class="tag">${esc(o.type)}</span><span class="tag ${sev(o.left)}">剩 ${o.left} 天</span></span>
     </div>
-  `).join("")
-    + (overdue.length > 12 ? `<div class="empty-row">…另有 ${overdue.length - 12} 張未列出</div>` : "");
+  `).join("") + footHtml;
 
   // 事件綁定（不可用內聯 onclick，會被 CSP 的 script-src 'self' 擋下）
   el.querySelectorAll(".row-item[data-site]").forEach(row=>{
@@ -2906,7 +2911,7 @@ function renderDashRanking(allLabor){
   vendEl.innerHTML = hBarChart(toRows(byVendor), { max:8, unit:"工", title:"本月分包商出工量", tableBelow:false });
 }
 
-function renderSiteBreakdown(){
+function renderSiteBreakdown(today){
   const el = document.getElementById("siteBreakdown");
   const rows = MASTER.sites.map(site=>{
     const s = SITE_CACHE[site] || {labor:[], equipment:[]};
@@ -2914,9 +2919,12 @@ function renderSiteBreakdown(){
     const ePending = s.equipment.filter(x=>x.status!=="已回報").length;
     const reportedM = s.labor.filter(r=>r.status==="已回報" && r.report && isThisMonth(r.report.reportedAt));
     const abnormalM = reportedM.filter(r=>r.report.diff!==0).length;
-    // v24.6：與上方卡片同一個追蹤起算日，否則各站加總會對不上卡片數字
-    const pendingSign = s.labor.filter(r=>
-      r.status==="已回報" && r.report && !r.report.signReturnDate && inTrackRange(r.date)).length;
+    /* v24.6：與上方卡片同一個追蹤起算日，否則各站加總會對不上卡片數字。
+       v24.14：口徑跟著卡片一起改——點工＋機具都算、超過 20 天期限者不計
+       （trackLeftDays 是唯一權威；null＝無基準日，一律不追）。 */
+    const pendingSign = [...s.labor, ...s.equipment].filter(r=>
+      r.status==="已回報" && r.report && !r.report.signReturnDate
+      && inTrackRange(signBaseDate(r)) && (trackLeftDays(r, today) ?? -1) >= 0).length;
     const total = s.labor.length + s.equipment.length;
     return {site, lPending, ePending, reportedCount:reportedM.length, abnormalM, pendingSign, total};
   });

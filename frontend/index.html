@@ -74,22 +74,8 @@
       <div class="grid-cards" id="dashCards"></div>
     </div>
 
-    <div class="panel">
-      <div class="panel-head">
-        <h2>逾期未回報（全部工地）</h2>
-        <p class="hint">出工日期已過、但尚未完成回報覆核的單據，依逾期天數由多到少排列。點選任一列即切換至該工地。<strong>自 2026-08-01 起算</strong>——更早的單是系統機制未完善前的舊資料，不列入追蹤（歷程報表仍查得到）。</p>
-      </div>
-      <div id="overdueList" class="list-simple"></div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-head">
-        <h2>各工地列控總覽</h2>
-        <p class="hint">點選工地名稱即切換至該工地的資料環境（Context Switch），並跳轉至點工清單。</p>
-      </div>
-      <div id="siteBreakdown" class="table-wrap"></div>
-    </div>
-
+    <!-- v24.14：排名上移至第一個面板（管理層最常看）；原「逾期未回報」與
+         「待繳回簽單提醒」合併為單一「追蹤提醒」（同一個 20 天期限、同一套倒數） -->
     <div class="panel">
       <div class="panel-head">
         <h2>本月出工量排名（全部工地）</h2>
@@ -103,10 +89,18 @@
 
     <div class="panel">
       <div class="panel-head">
-        <h2>待繳回簽單提醒（全部工地）</h2>
-        <p class="hint">依出工日排序；簽單須於出工日後 20 天內繳回，逾期不予採計。<strong>自 2026-08-01 起算</strong>——更早的單不列入追蹤（歷程報表仍查得到）。</p>
+        <h2>追蹤提醒（全部工地）</h2>
+        <p class="hint">「未回報」與「簽單未繳」追的是同一個期限：<strong>基準日（一般單＝出工日；月租單＝租期迄日）後 20 天</strong>內須完成回報並繳回簽單。依剩餘天數由少到多排列——來得及搶救的在最上面；超過 20 天（簽單逾期不予採計）僅顯示彙總筆數。點選任一列即切換至該工地。<strong>自 2026-08-01 起算</strong>——更早的單是系統機制未完善前的舊資料，不列入追蹤（歷程報表仍查得到）。</p>
       </div>
-      <div id="dueList" class="list-simple"></div>
+      <div id="trackList" class="list-simple"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>各工地列控總覽</h2>
+        <p class="hint">點選工地名稱即切換至該工地的資料環境（Context Switch），並跳轉至點工清單。「簽單尚未繳回」與上方追蹤提醒同口徑（點工＋機具、期限內）。</p>
+      </div>
+      <div id="siteBreakdown" class="table-wrap"></div>
     </div>
 
     <div class="panel">
@@ -812,6 +806,6 @@
 <div id="toast" class="toast"></div>
 
 <script src="config.local.js?ver=2026082501"></script>
-<script src="app.js?ver=2026082801"></script>
+<script src="app.js?ver=2026082802"></script>
 </body>
 </html>

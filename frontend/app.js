@@ -2243,22 +2243,29 @@ function initEquipReportForm(){
        0 是「確實填了 0」（走下面的異常警告可確認送出），空白是還沒填，
        放行會靜默變成 0 小時進計價。
        ⚠ 必須擺在下面「時數為 0」那道之前：單台機具沒填時總計也是 0，
-         會先被那道攔下而叫使用者去勾「0 使用確認」——那是錯的指引。 */
-    if(!zeroUse){
-      const blank = usageState.filter(u=>u.present && u.hours == null).map(u=>u.type);
-      if(blank.length){
-        toast(`請填寫實際使用時數：${blank.join("、")}`);
+         會先被那道攔下而叫使用者去勾「0 使用確認」——那是錯的指引。
+       ⚠ v24.14：這三道是**日租專用**，月租一律跳過——月租的「0 使用確認」
+         被 applyEquipBillingView 隱藏，時數總計留空會被引導去勾一個看不見的
+         核取方塊，整張單永遠送不出（工地實際回報的死路：月租水車在租期
+         結束要回報時全數卡死）。月租的使用量以逐日使用紀錄／在場天數為準，
+         時數本來就是選填。 */
+    if(!isMonthly(rec)){
+      if(!zeroUse){
+        const blank = usageState.filter(u=>u.present && u.hours == null).map(u=>u.type);
+        if(blank.length){
+          toast(`請填寫實際使用時數：${blank.join("、")}`);
+          return;
+        }
+      }
+
+      if(actualHours === 0 && !zeroUse){
+        toast("實際使用時數為 0：若機具確實未到場／未使用，請先勾選「0 使用確認」再送出");
         return;
       }
-    }
-
-    if(actualHours === 0 && !zeroUse){
-      toast("實際使用時數為 0：若機具確實未到場／未使用，請先勾選「0 使用確認」再送出");
-      return;
-    }
-    if(zeroUse && actualHours !== 0){
-      toast("已勾選 0 使用確認，但實際使用時數不為 0，請修正其中一項");
-      return;
+      if(zeroUse && actualHours !== 0){
+        toast("已勾選 0 使用確認，但實際使用時數不為 0，請修正其中一項");
+        return;
+      }
     }
 
     // v22.7：出工日還沒到不能回報；簽單繳回日須在 出工日～出工日+20 天

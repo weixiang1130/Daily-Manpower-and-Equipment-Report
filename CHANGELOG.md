@@ -2,6 +2,13 @@
 
 版本異動摘要。完整背景與設計決策請見 [`docs/milestones/`](docs/milestones/README.md)。
 
+## [節點 49 補強三] 2026-08-27 — 修正：月租回報送不出（時數 0 硬擋指向被隱藏的核取方塊）
+- 現場回報月租單「回報送不出去」（日租與點工正常）。根因：時數 0 須勾「0 使用確認」
+  的日租硬擋未對月租分流，而月租版面隱藏了該核取方塊——總計留空即成死路
+- 三道日租硬擋（v22.9）包進 `if(!isMonthly(rec))`；月租異常仍走可確認的警告。日租零改動
+- 非新迴歸：死路自 v24.4 即存在，月租單多在租期結束才回報、此時才集中爆發
+- 詳見 [`docs/milestones/49-monthly-rental-attachments.md`](docs/milestones/49-monthly-rental-attachments.md) 補強三
+
 ## [節點 58] 2026-08-25 — 靜態檔引用加 ?ver= 快取參數（資訊處建議）
 - 地端伺服器對靜態檔不送 Cache-Control，換版後使用者可能繼續跑舊快取且無感
   （v24.13 部署當天實測）。採資訊處建議：index.html 的三個引用一律帶 `?ver=YYYYMMDDNN`

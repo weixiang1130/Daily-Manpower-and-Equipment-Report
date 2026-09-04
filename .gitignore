@@ -21,3 +21,6 @@ data/
 # 本機 DEMO（不進版控）
 demo.html
 demo-local.js
+
+# 本機開發工具設定（Browser 預覽用，不進版控）
+.claude/

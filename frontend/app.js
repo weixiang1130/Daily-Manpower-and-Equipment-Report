@@ -4455,7 +4455,7 @@ function renderRatesPanel(){
    「代付代扣由系統自動統計，排除人工作業」。
    ========================================================== */
 /* 排名頁的統計母體（期間內已回報單）——本頁四張表共用，僅此一份。
-   之前這個 filter 以相同字面存在三處，節點 62 加第四張表時收斂於此 */
+   之前這個 filter 以相同字面存在兩處，節點 62 加第四張表時收斂於此 */
 const rankedRecs = kind => cur()[kind].filter(r => inReportRange(r.date) && r.status === "已回報" && r.report);
 
 function buildVendorRanking(kind){
@@ -4530,13 +4530,20 @@ function buildAgentDeductionSummary(){
 
    母體由呼叫端傳入（排名頁＝期間內全部已回報；計價彙總匯出＝跟隨當下
    篩選條件），**彙總邏輯只有這一份**——兩個出口共用，數字不會各長各的。 */
-function buildAgentTypeSummary(recs){
+function buildAgentTypeSummary(recs, kind){
+  /* 僅點工。機具代辦是 {vendor, qty}——沒有 type 也沒有 work，硬算不會報錯、
+     只會產出一張看似合理的全零表（qty 被丟棄、工種 undefined）。收 kind 明確擋掉，
+     與 agentSummary(rep, kind)／agentDeductions(rec, kind) 同慣例。 */
+  if(kind !== "labor") return [];
   const g = new Map();
   /* 舊制三欄（v23 前）：責任廠商埋在自由文字備註、無工種——不能假裝知道，
-     也不能靜靜丟掉（總數會對不上計價彙總的「廠商代辦工數」），獨立成一列。
-     舊制「代辦時數」未分段，不列入加班兩欄（表下註解有講）。 */
+     也不能靜靜丟掉（總數會對不上計價彙總的「廠商代辦工數／時數」），獨立成一列。
+     ⚠ 舊制「代辦時數」的語意無法機器判定：有的單是工數×8 的重複表達（同一批工
+       填了兩種寫法）、有的單只填時數（不足一工的部分工時）。因此**不折進折算工數**
+       （重複表達的單會被算成兩倍），但一定要看得見——單獨列於「時數(未分段)」欄，
+       Σ(前2h＋3h起＋該欄) 才對得上計價彙總的「廠商代辦時數」。 */
   const legacy = { vendor: "（v23 前舊制單）", type: "（未分工種）",
-                   work: 0, ot2: 0, otOver: 0, rows: 0, sources: new Set() };
+                   work: 0, ot2: 0, otOver: 0, legacyHours: 0, rows: 0, sources: new Set() };
   recs.forEach(r=>{
     const rep = r.report;
     if(!rep) return;
@@ -4544,9 +4551,17 @@ function buildAgentTypeSummary(recs){
     const items = rep.agentItems || [];
     if(items.length){
       items.forEach(a=>{
-        const key = `${a.vendor}|${a.type}`;
-        const e = g.get(key) || { vendor: a.vendor, type: a.type,
-                                  work: 0, ot2: 0, otOver: 0, rows: 0, sources: new Set() };
+        /* 佔位而非放行空值：畫面會把 undefined 印成字面 "undefined"、xlsx 卻印
+           空白格（兩出口不一致），且空值進 sort 的 localeCompare 會 TypeError
+           讓整頁排名空白。地端後端（Program.cs）遇 null 是跳過，前端保守列出。 */
+        const vendor = String(a.vendor || "").trim() || "（未填廠商）";
+        const type   = String(a.type   || "").trim() || "（未填工種）";
+        /* ⚠ 鍵不可用 `${vendor}|${type}` 字串串接——廠商名是自由文字（v23.5 明定
+           不得限制在名單池），名稱含「|」會與另一組合撞鍵、把工數併到別家頭上。
+           （laborBindKey 是同一慣例，但其鍵已存入各站 config，不能順手改。） */
+        const key = JSON.stringify([vendor, type]);
+        const e = g.get(key) || { vendor, type, work: 0, ot2: 0, otOver: 0,
+                                  legacyHours: 0, rows: 0, sources: new Set() };
         e.work   += Number(a.work)   || 0;
         e.ot2    += Number(a.ot2)    || 0;
         e.otOver += Number(a.otOver) || 0;
@@ -4555,18 +4570,24 @@ function buildAgentTypeSummary(recs){
         g.set(key, e);
       });
     }else if(rep.vendorDoneWork || rep.vendorDoneHours){
-      legacy.work += Number(rep.vendorDoneWork) || 0;
-      legacy.rows++;
+      legacy.work        += Number(rep.vendorDoneWork)  || 0;
+      legacy.legacyHours += Number(rep.vendorDoneHours) || 0;
+      legacy.rows++;   // 舊制無逐筆列，這欄數的是「單」數（表下註解有講）
       legacy.sources.add(src);
     }
   });
   const rows = [...g.values()];
-  if(legacy.rows) rows.push(legacy);
-  // 折算工數：8 小時＝1 工，與點工榜「代辦扣工」同一換算（OT_PER_UNIT）
+  // 折算工數：8 小時＝1 工（OT_PER_UNIT）。舊制列僅計工數（時數語意不明，見上）
   rows.forEach(e=>{ e.units = e.work + (e.ot2 + e.otOver) / OT_PER_UNIT; });
-  rows.sort((a,b)=> a.vendor.localeCompare(b.vendor, "zh-Hant")
+  rows.sort((a,b)=> (a.vendor || "").localeCompare(b.vendor || "", "zh-Hant")
                  || b.units - a.units
-                 || a.type.localeCompare(b.type, "zh-Hant"));
+                 || (a.type || "").localeCompare(b.type || "", "zh-Hant"));
+  /* 舊制警示列固定放最後——「（」是全形括號，CLDR 排序在中文之前，
+     混入排序會佔據表首（讀者視為最大值的位置） */
+  if(legacy.rows){
+    legacy.units = legacy.work;
+    rows.push(legacy);
+  }
   return rows;
 }
 
@@ -4594,10 +4615,13 @@ const vrankDedRow = e => [e.vendor, e.rows,
   ...(PRICING_UI ? [e.amount, e.noRate || "", [...e.whys].join("；")] : [])];
 
 /* 代辦工種彙總（節點 62）。加班兩欄分開列——前 2 小時與第 3 小時起費率不同
-   （計價紅線 1），合併就沒辦法按段扣款 */
-const AGENT_TYPE_COLS = ["責任歸屬廠商","工種","代辦工數","加班時數(前2小時)","加班時數(第3小時起)","折算工數","代辦列數","來源廠商(本單廠商)"];
-const agentTypeRow = e => [e.vendor, e.type, fmtRank(e.work),
+   （計價紅線 1），合併就沒辦法按段扣款。
+   「期間」放第一欄（與計價彙總同型）——成本部會把逐月匯出疊在一起，
+   沒有期間欄的列疊起來就失去月份歸屬。 */
+const AGENT_TYPE_COLS = ["期間","責任歸屬廠商","工種","代辦工數","加班時數(前2小時)","加班時數(第3小時起)","時數(未分段)","折算工數","代辦列數","來源廠商(本單廠商)"];
+const agentTypeRow = (e, period) => [period, e.vendor, e.type, fmtRank(e.work),
   e.ot2 ? fmtRank(e.ot2) : "", e.otOver ? fmtRank(e.otOver) : "",
+  e.legacyHours ? fmtRank(e.legacyHours) : "",
   fmtRank(e.units), e.rows, [...e.sources].join("、")];
 
 /* ==========================================================
@@ -4659,7 +4683,7 @@ function renderVendorRankReport(){
   const lab = buildVendorRanking("labor");
   const eq = buildVendorRanking("equipment");
   const ded = buildAgentDeductionSummary();
-  const agt = buildAgentTypeSummary(rankedRecs("labor"));   // 節點 62
+  const agt = buildAgentTypeSummary(rankedRecs("labor"), "labor");   // 節點 62
   const period = reportPeriodLabel();
   if(cnt) cnt.textContent = `${period}・點工 ${lab.length} 家・機具 ${eq.length} 家`
     + (ded.length ? `・代辦扣抵 ${ded.length} 家` : "");
@@ -4686,26 +4710,34 @@ function renderVendorRankReport(){
           ? "計價時從該廠商扣回，金額依<strong>本單廠商</strong>的當季費率自動計算（合約 §4.10）。"
           : "本表僅統計歸屬與數量；扣抵量已反映在上方兩張排行榜的「代辦扣工／代辦扣抵」欄。"))
     /* 節點 62：把「代辦工數合計」攤回工種——各工種費率不同，只看合計不知道扣的是什麼工 */
-    + vrankTableHTML(`代辦工種彙總（${period}・責任歸屬廠商×工種・點工）`, AGENT_TYPE_COLS, agt.map(agentTypeRow),
-      "<strong>折算工數＝代辦工數＋(前2h＋3h起)÷8</strong>（8 小時＝1 工，與點工榜「代辦扣工」同一換算）。"
+    + vrankTableHTML(`代辦工種彙總（${period}・責任歸屬廠商×工種・點工）`, AGENT_TYPE_COLS,
+      agt.map(e=>agentTypeRow(e, period)),
+      "<strong>折算工數＝代辦工數＋(前2h＋3h起)÷8</strong>（8 小時＝1 工）。"
+      + "⚠ 與點工榜「代辦扣工」對數時請先扣除「（v23 前舊制單）」列——該榜只計新制逐筆、不含舊制。"
       + "加班兩段分開列——前 2 小時與第 3 小時起費率不同，合併就沒辦法按段扣款。"
-      + "機具代辦綁廠商層級、無工種可分，不列入本表（見上方代辦扣抵彙總）。"
-      + "「（v23 前舊制單）」＝改版前只填合計三欄的舊單：無廠商與工種歸屬，其時數未分段故不列入加班欄。");
+      + "「時數(未分段)」＝v23 前舊制單的代辦時數合計：無廠商工種歸屬、且可能與工數為同一批工的重複表達，"
+      + "故<strong>不折入折算工數</strong>，僅供與計價彙總「廠商代辦時數」對帳；舊制列的「代辦列數」計的是單數。"
+      + "機具代辦綁廠商層級、無工種可分，不列入本表（見上方代辦扣抵彙總）。");
 }
 
 function exportVendorRankXls(){
   const lab = buildVendorRanking("labor");
   const eq = buildVendorRanking("equipment");
   const ded = buildAgentDeductionSummary();
-  const agt = buildAgentTypeSummary(rankedRecs("labor"));   // 節點 62：與畫面同母體
+  const agt = buildAgentTypeSummary(rankedRecs("labor"), "labor");   // 節點 62：與畫面同母體
   if(!lab.length && !eq.length && !ded.length){ toast("此期間內尚無已回報資料可排名"); return; }
   const period = reportPeriodLabel();
+  /* 檔名只標「期間」＋匯出日：本頁四張表的母體只吃期間篩選（rankedRecs），
+     廠商／內容／工程師篩選一律不套用——沿用 exportFilterTag() 會把沒發生的
+     篩選寫進檔名，收檔的人會以為內容篩過了。匯出日讓改版前後的檔案分得開。 */
+  const ptag = (reportFrom || reportTo) ? `_${reportFrom || "起"}至${reportTo || "今"}` : "";
   downloadCSVBlocks([
     { title: `點工廠商排名（${period}・依淨工數＝總工數－代辦扣工）`, headers: VRANK_LABOR_COLS, rows: lab.map(vrankLaborRow) },
     { title: `機具廠商排名（${period}・依在場天數）`, headers: VRANK_EQUIP_COLS, rows: eq.map(vrankEquipRow) },
     { title: `代辦扣抵彙總（${period}・依責任歸屬廠商）`, headers: VRANK_DED_COLS, rows: ded.map(vrankDedRow) },
-    { title: `代辦工種彙總（${period}・責任歸屬廠商×工種・點工）`, headers: AGENT_TYPE_COLS, rows: agt.map(agentTypeRow) }
-  ], `廠商排名_${MASTER.currentSite}${exportFilterTag()}.csv`);
+    { title: `代辦工種彙總（${period}・責任歸屬廠商×工種・點工）`, headers: AGENT_TYPE_COLS,
+      rows: agt.map(e=>agentTypeRow(e, period)) }
+  ], `廠商排名_${MASTER.currentSite}${ptag}_${localDate()}.csv`);
 }
 
 /* ==========================================================
@@ -5204,15 +5236,19 @@ function exportLaborSummaryXlsx(){
   const sheets = [{ name: "計價彙總", widths: autoWidths(headers), rows: xml }];
   /* 節點 62：第二張工作表「代辦工種彙總」——把「廠商代辦工數」合計攤回
      責任歸屬廠商×工種（各工種費率不同，只有合計會不知道扣什麼工）。
-     母體＝本匯出的同一批單（跟隨期間／廠商／內容／工程師篩選），
+     母體＝本匯出的同一批單（跟隨期間／廠商／內容／工程師篩選——注意廠商篩選
+     比對的是**本單廠商**，篩「責任歸屬廠商」會得到空表），
      彙總邏輯與排名頁共用 buildAgentTypeSummary（口徑唯一）。
-     期間內完全沒有代辦時不出這張表——空表比沒有表更讓人疑惑。 */
-  const agt = buildAgentTypeSummary(recs.filter(r => r.status === "已回報" && r.report));
-  if(agt.length){
-    const xml2 = ['<row r="1">' + AGENT_TYPE_COLS.map((h, c)=>xlText(c, 1, XS.OHEAD, h)).join("") + "</row>"]
-      .concat(dataRowsXml(agt.map(agentTypeRow), XS.PNUM, XS.PTEXT, 2, XS.PTEXTW));
-    sheets.push({ name: "代辦工種彙總", widths: autoWidths(AGENT_TYPE_COLS), rows: xml2 });
-  }
+     ⚠ 這張表**無條件出現**：同一個檔名有時 1 張表、有時 2 張表，會讓成本部
+       寫死 Sheets(2)／Sheets("代辦工種彙總") 的巨集間歇爆「陣列索引超出範圍」，
+       且從檔名查不出原因。無資料時印一列說明（與 CSV 匯出的空區塊同一表達）。 */
+  const agt = buildAgentTypeSummary(recs.filter(r => r.status === "已回報" && r.report), "labor");
+  const period2 = reportPeriodLabel();
+  const agtRows = agt.length ? agt.map(e=>agentTypeRow(e, period2))
+                             : [[`（${period2} 無代辦資料）`]];
+  const xml2 = ['<row r="1">' + AGENT_TYPE_COLS.map((h, c)=>xlText(c, 1, XS.OHEAD, h)).join("") + "</row>"]
+    .concat(dataRowsXml(agtRows, XS.PNUM, XS.PTEXT, 2, XS.PTEXTW));
+  sheets.push({ name: "代辦工種彙總", widths: autoWidths(AGENT_TYPE_COLS), rows: xml2 });
   downloadXlsx(sheets,
     MASTER.currentSite + "_點工計價彙總" + exportFilterTag() + "_" + localDate() + ".xlsx");
 }

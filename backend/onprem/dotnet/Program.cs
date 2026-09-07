@@ -960,6 +960,13 @@ app.MapPost("/api/data", async (HttpContext ctx) =>
         {
             var denied2 = await ReportedDeleteGuard(cn, body, azl);
             if (denied2 is not null) return denied2;
+
+            /* 節點 63 補強（審查發現）：刪單會連坐銷毀稽核紀錄（FK CASCADE），
+               「刪掉重開一張」就能讓稽核差異無痕消失——待回報單人人可刪，
+               這條路原本完全沒關。無稽核權限者刪除**已有稽核**的單一律 403；
+               成控／管理員不受限（刪單銷稽核是他們的職權）。 */
+            var denied3 = await AuditedDeleteGuard(cn, body, azl);
+            if (denied3 is not null) return denied3;
         }
     }
 
@@ -979,8 +986,8 @@ app.MapPost("/api/data", async (HttpContext ctx) =>
         case "record": return await OpRecord(cn, body, ctx.Items["authz"] as Authz);
         case "addOption": return await OpAddOption(cn, body);
         case "deleteRecord": return await OpDeleteRecord(cn, body);
-        case "uploadAttachment": return await OpUploadAttachment(cn, body);
-        case "deleteAttachment": return await OpDeleteAttachment(cn, body);
+        case "uploadAttachment": return await OpUploadAttachment(cn, body, ctx.Items["authz"] as Authz);
+        case "deleteAttachment": return await OpDeleteAttachment(cn, body, ctx.Items["authz"] as Authz);
         case "rateBook": return await OpRateBook(cn, body);
         case "deleteRateBook": return await OpDeleteRateBook(cn, body);
         case "clearSite": return await OpClear(cn, body, false);
@@ -1583,6 +1590,30 @@ static async Task<IResult?> ReportedDeleteGuard(SqlConnection cn, JsonObject bod
     return null;
 }
 
+/* 節點 63 補強：被成控稽核過的單，無稽核權限者不得刪除（含待回報）。
+   形狀錯誤或查無單據回 null 交給 OpDeleteRecord 處理（400／冪等），
+   本守衛只管一件事：單據存在且掛有稽核紀錄 → 403。 */
+static async Task<IResult?> AuditedDeleteGuard(SqlConnection cn, JsonObject body, Authz az)
+{
+    if (az.CanSeeAudits) return null;
+    var site = Sx(body, "site");
+    var kind = Sx(body, "kind");
+    var id = Sx(body, "id");
+    if (site is null || kind is not ("labor" or "equipment") || id is null) return null;
+    var sid = await Scalar(cn, null, "SELECT site_id FROM dbo.sites WHERE name=@n", ("@n", site));
+    if (sid is null) return null;
+    var (recT, audT) = kind == "labor" ? ("labor_records", "labor_audits") : ("equip_records", "equip_audits");
+    var hasAudit = await Scalar(cn, null,
+        $@"SELECT 1 FROM dbo.{audT} a JOIN dbo.{recT} r ON r.id = a.record_id
+           WHERE a.record_id=@id AND r.site_id=@s",
+        ("@id", id), ("@s", Convert.ToInt32(sid)));
+    if (hasAudit is not null)
+        return Results.Json(new { error = "forbidden",
+                                  message = "本單已有成控稽核紀錄，刪除僅限成控／管理員（避免稽核紀錄隨單銷毀）" },
+                            statusCode: 403);
+    return null;
+}
+
 static async Task<IResult?> LockGuard(SqlConnection cn, JsonObject body, string op)
 {
     var site = Sx(body, "site");
@@ -1707,6 +1738,14 @@ static async Task<IResult> OpRecord(SqlConnection cn, JsonObject body, Authz? az
        修法＝稽核子層對這類寫入者**原地保留**：不刪、不重建、payload 的 audits 忽略。
        Auth:Mode=Off（az 為 null，雲端同款行為）維持原樣——無身分即無從分辨。 */
     var preserveAudits = az is not null && !az.CanSeeAudits;
+    /* 節點 63 補強（審查發現・升權窗口）：使用者以工地端身分載入（快取是瘦身摘要），
+       其後被升為成控／管理員再送出編輯——此時走 InsertAudits，而瘦身列缺 auditor
+       會被逐列跳過＝整包靜默滅失。payload 稽核列只要有任何一筆缺 auditor，
+       就視為非權威資料、整批改走保留路徑。（成控正常刪稽核送的是完整列或空陣列，不受影響。） */
+    if (!preserveAudits && rec["audits"] is JsonArray pa63)
+        foreach (var n63 in pa63)
+            if (n63 is JsonObject a63 && a63["id"] is not null && a63["auditor"] is null)
+            { preserveAudits = true; break; }
     /* ⚠ 快照必須在刪除前做：稽核列的 FK 帶 ON DELETE CASCADE，刪父列時會連坐消失，
        只跳過明刪擋不住。稽核**附件描述資料**沒有 FK（泛用 parent_kind/parent_id），
        不會連坐——由 DeleteRecordRows 的 preserveAudits 分支負責不去動它。 */
@@ -1886,6 +1925,8 @@ static async Task InsertAudits(SqlConnection cn, SqlTransaction tx, int sid, str
 static async Task RestoreAudits(SqlConnection cn, SqlTransaction tx, string kind,
                                 List<Dictionary<string, object?>> rows)
 {
+    /* ⚠ 快照是 SELECT *、這裡是固定 11 欄 INSERT——日後對 *_audits 加欄位時，
+       這裡**必須**同步補上，否則工地端每次編輯就把新欄位靜默重設為預設值。 */
     var table = kind == "labor" ? "labor_audits" : "equip_audits";
     foreach (var a in rows)
         await Exec(cn, tx,
@@ -1973,7 +2014,7 @@ static async Task<IResult> GetAttachment(SqlConnection cn, string site, string i
 {
     if (!Wr.IdRe.IsMatch(id)) return Results.Json(new { error = "bad id" }, statusCode: 400);
     var rows = await Query(cn,
-        @"SELECT s.name AS owner_site, a.name, a.content_type, a.file_path FROM dbo.attachments a
+        @"SELECT s.name AS owner_site, a.parent_kind, a.name, a.content_type, a.file_path FROM dbo.attachments a
           JOIN dbo.sites s ON s.site_id = a.site_id
           WHERE a.attachment_id = @id AND (@site = '' OR s.name = @site)",
         ("@id", id), ("@site", site ?? ""));
@@ -1986,6 +2027,10 @@ static async Task<IResult> GetAttachment(SqlConnection cn, string site, string i
        附件是它們的載體，這裡漏掉就等於稽核隔離沒做。 */
     if (az is not null && !az.CanSee(Str(r["owner_site"]) ?? ""))
         return Results.Json(new { error = "forbidden", message = "您沒有這個工地的權限" }, statusCode: 403);
+    /* 節點 63 補強（審查發現）：稽核照片的隔離原本只靠附件 id 保密——同站工地
+       使用者拿到 id 就能下載。稽核附件比照稽核資料本體，無稽核權限者一律 403。 */
+    if (az is not null && !az.CanSeeAudits && Str(r["parent_kind"]) is "labor_audit" or "equip_audit")
+        return Results.Json(new { error = "forbidden", message = "稽核附件僅限成控／管理員存取" }, statusCode: 403);
 
     var rel = Str(r["file_path"]);
     var path = rel is null ? null : Path.Combine(AttachDir(), rel);
@@ -2000,7 +2045,7 @@ static async Task<IResult> GetAttachment(SqlConnection cn, string site, string i
 }
 
 /* ---------- §3.6 op:uploadAttachment ---------- */
-static async Task<IResult> OpUploadAttachment(SqlConnection cn, JsonObject body)
+static async Task<IResult> OpUploadAttachment(SqlConnection cn, JsonObject body, Authz? az = null)
 {
     var id = Sx(body, "id");
     if (id is null || !Wr.IdRe.IsMatch(id)) return Results.Json(new { error = "bad id" }, statusCode: 400);
@@ -2020,6 +2065,9 @@ static async Task<IResult> OpUploadAttachment(SqlConnection cn, JsonObject body)
     var site = Sx(body, "site");
     if (await AttachSiteMismatch(cn, id, site))
         return Results.Json(new { error = "forbidden", message = "此附件不屬於指定工地" }, statusCode: 403);
+    // 節點 63 補強：既有稽核附件的**覆寫**（同 id 再上傳＝換掉照片內容）限稽核權限
+    if (az is not null && !az.CanSeeAudits && await AttachIsAuditKind(cn, id))
+        return Results.Json(new { error = "forbidden", message = "稽核附件僅限成控／管理員存取" }, statusCode: 403);
 
     // 先落檔。描述資料的那一列由後續的 op:record 建立（前端是「先上傳、再存單」），
     // 所以這裡**不碰資料表**——此時還不知道它要掛在哪一張單下。
@@ -2032,8 +2080,12 @@ static async Task<IResult> OpUploadAttachment(SqlConnection cn, JsonObject body)
     return Results.Json(new { ok = true, id, size = bytes.Length });
 }
 
+static async Task<bool> AttachIsAuditKind(SqlConnection cn, string id)
+    => (await Scalar(cn, null, "SELECT parent_kind FROM dbo.attachments WHERE attachment_id=@id",
+                     ("@id", id))) is string pk && pk is "labor_audit" or "equip_audit";
+
 /* ---------- §3.7 op:deleteAttachment（冪等） ---------- */
-static async Task<IResult> OpDeleteAttachment(SqlConnection cn, JsonObject body)
+static async Task<IResult> OpDeleteAttachment(SqlConnection cn, JsonObject body, Authz? az = null)
 {
     var id = Sx(body, "id");
     if (id is null || !Wr.IdRe.IsMatch(id)) return Results.Json(new { error = "bad id" }, statusCode: 400);
@@ -2043,6 +2095,9 @@ static async Task<IResult> OpDeleteAttachment(SqlConnection cn, JsonObject body)
     var site = Sx(body, "site");
     if (await AttachSiteMismatch(cn, id, site))
         return Results.Json(new { error = "forbidden", message = "此附件不屬於指定工地" }, statusCode: 403);
+    // 節點 63 補強：稽核附件的刪除限稽核權限（描述資料已不在時查無＝放行，冪等語意不變）
+    if (az is not null && !az.CanSeeAudits && await AttachIsAuditKind(cn, id))
+        return Results.Json(new { error = "forbidden", message = "稽核附件僅限成控／管理員存取" }, statusCode: 403);
 
     /* ⚠ 過了上面那道之後，這裡**不可依賴描述資料那一列還在**才刪檔。
        前端的順序是「先存單（被移除的附件當下就從資料表消失）、再呼叫本 op」，

@@ -302,7 +302,7 @@ const COL_W = new Map([
   ["工作內容",120], ["實際工作內容",180], ["申請備註",150],
   ["工作地點",120], ["機具類型",110], ["類型",110],
   ["根基自辦備註",100], ["廠商代辦備註",100], ["代辦明細(廠商)",190],
-  ["稽核實點數",62], ["稽核差異",62],
+  ["稽核實點數",62], ["稽核差異",62], ["稽核差異單數(已回報)",108],
   ["廠商",110], ["分包商",110], ["機具廠商",110], ["責任廠商",110], ["型號",120],
   ["期間",110], ["工地",180], ["查核結果",100],
   /* 人名不折行：三字姓名 ＋ 少數四字，給 90 */
@@ -833,8 +833,8 @@ function isReported(r){ return r.status === "已回報" && !!r.report; }
    清單標記、狀態欄快篩、歷程/明細欄位、計價彙總、送出警示全部共用這裡——
    改口徑只准改這裡（同 otSegments 的紀律）。
 
-   基準值：已回報點工＝簽單實際出工數；已回報機具＝回報勾選到場的台數；
-   待回報＝申請數（與稽核表單自己的 applied 快照同義）。
+   基準值：已回報點工＝簽單實際出工數；機具＝申請台數（勾 0 使用＝0，
+   與稽核表單的「申請台數」同口徑）；待回報點工＝申請工數。
    取「最近一次」稽核：auditedAt 最大者，同日取較晚儲存的那筆。
    差異＝實點 − 基準；**不等於 0 就標**（多點到也是異常）。
    數字任一方修正到相符，標記即自動消失——差異是算出來的，不是存起來的。
@@ -845,14 +845,20 @@ function auditLatest(rec){
   let best = null;
   for(const a of (rec && rec.audits) || []){
     if(!a || !isFinite(Number(a.actualCount))) continue;
-    if(!best || String(a.auditedAt || "") >= String(best.auditedAt || "")) best = a;
+    const d = String(a.auditedAt || ""), bd = best ? String(best.auditedAt || "") : "";
+    // 同日以 id（時間前綴 uid）破平手——地端 GET 只 ORDER BY 稽核日，同日陣列順序無保證
+    if(!best || d > bd || (d === bd && String(a.id || "") >= String(best.id || ""))) best = a;
   }
   return best;
 }
 function auditBaseline(kind, rec){
   if(!isReported(rec)) return Number(kind === "labor" ? rec.required : rec.requiredQty) || 0;
   if(kind === "labor") return Number(rec.report.actual) || 0;
-  return ((rec.report.usage) || []).filter(u => u && u.present).length;
+  /* ⚠ 機具不可用 usage 的 present 列數——usage 是**一類型一列**（申請 3 台水車＝1 列），
+     正式資料有上百張多台單，用列數當台數會把正常回報全部誤標成差異，且與稽核表單
+     自身的 diff（實點−申請台數）數學上不可能同時歸零＝死鎖。
+     基準＝申請台數（與 auditApplied 同口徑）；勾 0 使用＝實際 0 台。 */
+  return rec.report.zeroUse ? 0 : (Number(rec.requiredQty) || 0);
 }
 function auditMismatch(kind, rec){
   const a = auditLatest(rec);
@@ -1445,6 +1451,18 @@ function initLaborReportForm(){
       if(!ok) return;
     }
 
+    /* 節點 63：成控已稽核在先且實點數與本次回報不符 → 警示可確認（抽查的反向順序）。
+       ⚠ 必須放在附件上傳**之前**——放在上傳後按「取消」會留下無單據引用的孤兒檔
+         （attRollbackUploaded 只掛在儲存失敗的 catch 上）。 */
+    {
+      const al63 = auditLatest(rec);
+      const base63 = zeroWork ? 0 : actual;
+      if(al63 && (Number(al63.actualCount) || 0) !== base63){
+        const ok63 = confirm(`⚠ 成控稽核提醒\n\n本單成控已於 ${al63.auditedAt} 現場實點 ${fmt(Number(al63.actualCount)||0)} 人，本次回報為 ${fmt(base63)} 人。\n\n仍要送出嗎？（送出後本單將標示「稽核差異」，數字修正相符後標示自動消失）`);
+        if(!ok63) return;
+      }
+    }
+
     /* v24.2：簽單掃描檔改在回報端上傳。先傳檔（失敗即中止、輸入保留可重試），
        成功後才把合併結果寫回單據的 attachments[] */
     let laborAttList;
@@ -1490,16 +1508,6 @@ function initLaborReportForm(){
       }
     });
 
-    /* 節點 63：成控已稽核在先且實點數與本次回報不符 → 警示可確認（抽查的反向順序）。
-       比對取實際要送出的 payload 值，與 auditMismatch 的基準同源。 */
-    {
-      const al63 = auditLatest(rec);
-      const base63 = Number(updated.report && updated.report.actual) || 0;
-      if(al63 && (Number(al63.actualCount) || 0) !== base63){
-        const ok63 = confirm(`⚠ 成控稽核提醒\n\n本單成控已於 ${al63.auditedAt} 現場實點 ${fmt(Number(al63.actualCount)||0)} 人，本次回報為 ${fmt(base63)} 人。\n\n仍要送出嗎？（送出後本單將標示「稽核差異」，數字修正相符後標示自動消失）`);
-        if(!ok63) return;
-      }
-    }
     try{
       const resp = await apiSaveRecord("labor", updated, editingLaborReportBaseV);   // v18：以開表單快照為 baseV（合約 §3.3）
       updated.v = resp.v; updated.updatedAt = resp.updatedAt;
@@ -1818,6 +1826,12 @@ async function loadLaborReportRecord(id){
 
 async function deleteLaborRecord(id){
   const rec = cur().labor.find(r=>r.id===id);
+  /* 節點 63 補強：被稽核過的單，工地端不得刪除（刪單會連坐銷毀稽核紀錄）。
+     伺服器亦有 AuditedDeleteGuard 403 把關；AUTHZ 取不到（雲端／Off）時交伺服器決定。 */
+  if(rec && auditLatest(rec) && AUTHZ && AUTHZ.canSeeAudits === false){
+    toast("本單已有成控稽核紀錄，刪除僅限成控／管理員（避免稽核紀錄隨單銷毀）");
+    return;
+  }
   if(rec && rec.status === "已回報" && !canDeleteReported(MASTER.currentSite)){
     toast("已回報的單據是計價依據，僅限管理員或該工地主管刪除");
     return;
@@ -2435,6 +2449,17 @@ function initEquipReportForm(){
       if(!ok) return;
     }
 
+    /* 節點 63：同點工——成控實點台數 vs 申請台數（0 使用＝0；usage 列數是類型數不是台數，
+       不可拿來當基準）。放在附件上傳之前，取消不留孤兒檔。 */
+    {
+      const al63 = auditLatest(rec);
+      const base63 = zeroUse ? 0 : (Number(rec.requiredQty) || 0);
+      if(al63 && (Number(al63.actualCount) || 0) !== base63){
+        const ok63 = confirm(`⚠ 成控稽核提醒\n\n本單成控已於 ${al63.auditedAt} 現場實點 ${fmt(Number(al63.actualCount)||0)} 台，本單${zeroUse ? "本次勾選 0 使用（0 台）" : `申請台數為 ${fmt(Number(rec.requiredQty)||0)} 台`}。\n\n仍要送出嗎？（送出後本單將標示「稽核差異」，數字修正相符後標示自動消失）`);
+        if(!ok63) return;
+      }
+    }
+
     // v24.2：簽單掃描檔改在回報端上傳（理由同點工端）
     let equipAttList;
     try{
@@ -2486,15 +2511,6 @@ function initEquipReportForm(){
       }
     });
 
-    /* 節點 63：同點工——成控實點台數 vs 本次回報勾選到場台數 */
-    {
-      const al63 = auditLatest(rec);
-      const base63 = ((updated.report && updated.report.usage) || []).filter(u=>u && u.present).length;
-      if(al63 && (Number(al63.actualCount) || 0) !== base63){
-        const ok63 = confirm(`⚠ 成控稽核提醒\n\n本單成控已於 ${al63.auditedAt} 現場實點 ${fmt(Number(al63.actualCount)||0)} 台，本次回報到場 ${fmt(base63)} 台。\n\n仍要送出嗎？（送出後本單將標示「稽核差異」，數字修正相符後標示自動消失）`);
-        if(!ok63) return;
-      }
-    }
     try{
       const resp = await apiSaveRecord("equipment", updated, editingEquipReportBaseV);   // v18：同上
       updated.v = resp.v; updated.updatedAt = resp.updatedAt;
@@ -2797,6 +2813,10 @@ async function loadEquipReportRecord(id){
 
 async function deleteEquipRecord(id){
   const rec = cur().equipment.find(r=>r.id===id);
+  if(rec && auditLatest(rec) && AUTHZ && AUTHZ.canSeeAudits === false){   // 節點 63 補強，同點工
+    toast("本單已有成控稽核紀錄，刪除僅限成控／管理員（避免稽核紀錄隨單銷毀）");
+    return;
+  }
   if(rec && rec.status === "已回報" && !canDeleteReported(MASTER.currentSite)){
     toast("已回報的單據是計價依據，僅限管理員或該工地主管刪除");
     return;
@@ -3328,7 +3348,7 @@ function pricingSummaryTable(kind){
     return {
       headers:["期間","廠商","已回報單數","0工單數","總出工數","加班時數(前2小時)","加班時數(第3小時起)",
         ...(PRICING_UI ? ["計價金額","未能計價單數"] : []),
-        "根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","工作內容","稽核差異單數"],
+        "根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","工作內容","稽核差異單數(已回報)"],
       rows: gs.map(g=>[period, g.vendor, g.count, g.zero, fmt(g.work), fmt(g.ot2), fmt(g.otOver),
         ...(PRICING_UI ? [g.amount, g.noRate] : []),
         fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、"), g.auditDiff])
@@ -3339,7 +3359,7 @@ function pricingSummaryTable(kind){
   return {
     headers:["期間","機具廠商","已回報單數","0使用單數","總出工天數","總加班時數","總實際使用時數",
       ...(PRICING_UI ? ["計價金額","未能計價單數"] : []),
-      "根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","機具類型","稽核差異單數"],
+      "根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","機具類型","稽核差異單數(已回報)"],
     rows: gs.map(g=>[period, g.vendor, g.count, g.zero, fmt(g.days), fmt(g.ot), fmt(g.hours),
       ...(PRICING_UI ? [g.amount, g.noRate] : []),
       fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、"), g.auditDiff])
@@ -5810,10 +5830,12 @@ async function saveAudit(id){
   ssSet("dm_auditor", auditor);
   attFinalize(auditAtt);   // 儲存成功後才真正刪除被移除的附件
   /* 節點 63：稽核送出當下即比對（抽查主順序：工地先報、成控後查）。
-     updated 已含本次稽核，auditMismatch 取最近一筆＝本次。 */
-  const mm63 = auditMismatch(kind, updated);
+     ⚠ 用**本次這筆**的實點數比，不可用 auditMismatch（它取「最近一筆」——
+       編輯較舊稽核而另有較新稽核時，兩者不是同一筆，訊息會引用到別筆的數字）。 */
+  const base63 = auditBaseline(kind, updated);
+  const diff63 = (Number(audit.actualCount) || 0) - base63;
   toast((orig ? "稽核紀錄已更新" : "稽核紀錄已儲存至共用資料庫")
-    + (mm63 ? `；⚠ 實點 ${fmt(Number(mm63.audit.actualCount)||0)} 與${updated.status==="已回報"?"回報數":"申請數"} ${fmt(mm63.base)} 不符，本單已標示「稽核差異」` : ""));
+    + (diff63 !== 0 ? `；⚠ 本次實點 ${fmt(Number(audit.actualCount)||0)} 與${updated.status==="已回報"?"回報數":"申請台數／工數"} ${fmt(base63)} 不符，本單已標示「稽核差異」` : ""));
   if(seqAtSave === auditFetchSeq){
     resetAuditView();
     renderAuditView();
@@ -5850,7 +5872,7 @@ function renderAuditLog(){
     ["稽核日期","類型","出工日期","廠商","申請","實點","差異","查核結果","稽核人","操作"],
     { actionW: 210 }) + `<tbody>` +
     shown.map(e=>{
-      const bad = e.a.items.filter(i=>!i.ok).length;
+      const bad = (e.a.items || []).filter(i=>!i.ok).length;
       const resTag = bad ? `<span class="tag warn">${bad} 項不符</span>` : `<span class="tag ok">全數相符</span>`;
       const ids = `data-kind="${e.kind}" data-rid="${esc(e.rec.id)}" data-aid="${esc(e.a.id)}"`;
       return `<tr>
@@ -5862,7 +5884,7 @@ function renderAuditLog(){
         <td>${fmt(e.a.actualCount)}</td>
         <td>${fmt(e.a.diff)}</td>
         <td>${resTag}</td>
-        <td>${esc(e.a.auditor)}</td>
+        <td>${esc(e.a.auditor || "")}</td>
         <td>
           <button type="button" class="btn-mini btn-edit audit-edit" ${ids}>編輯</button>
           <button type="button" class="btn-mini btn-edit audit-one-pdf" ${ids}>PDF</button>
@@ -5910,7 +5932,7 @@ function auditPeriodLabel(){
 
 function auditReportHTML(entries, subtitle){
   const secs = entries.map((e,n)=>{
-    const bad = e.a.items.filter(i=>!i.ok).length;
+    const bad = (e.a.items || []).filter(i=>!i.ok).length;
     return `<div class="sec">
       <h3>${n+1}. ${esc(e.rec.date)}｜${e.kind==="labor"?"點工":"機具"}｜${esc(recVendor(e.rec)||"（未填廠商）")} — ${bad?`<span class="r-bad">${bad} 項不符</span>`:`<span class="r-ok">全數相符</span>`}</h3>
       <table class="info">
@@ -5920,7 +5942,7 @@ function auditReportHTML(entries, subtitle){
       </table>
       <table class="items">
         <thead><tr><th>查核項目</th><th class="w1">結果</th><th>不符原因</th></tr></thead>
-        <tbody>${e.a.items.map(i=>`<tr><td>${esc(i.text)}</td><td class="${i.ok?"r-ok":"r-bad"}">${i.ok?"相符":"不相符"}</td><td>${esc(i.reason||"")}</td></tr>`).join("")}</tbody>
+        <tbody>${(e.a.items || []).map(i=>`<tr><td>${esc(i.text)}</td><td class="${i.ok?"r-ok":"r-bad"}">${i.ok?"相符":"不相符"}</td><td>${esc(i.reason||"")}</td></tr>`).join("")}</tbody>
       </table>
       ${e.a.note?`<p class="note"><strong>現場狀況說明：</strong>${esc(e.a.note)}</p>`:""}
       ${(() => {   // v14：現場照片嵌入報告；PDF 附件列出檔名
@@ -5930,13 +5952,13 @@ function auditReportHTML(entries, subtitle){
         return (imgs.length ? `<div class="photos">${imgs.map(a=>`<img src="${esc(attSrc(a.id))}" alt="${esc(a.name)}">`).join("")}</div>` : "")
              + (pdfs.length ? `<p class="meta">附件（PDF）：${esc(pdfs.map(a=>a.name).join("、"))}</p>` : "");
       })()}
-      <p class="meta">稽核日期：${esc(e.a.auditedAt)}｜稽核人員：${esc(e.a.auditor)}${e.a.editedAt?`｜編輯於：${esc(e.a.editedAt)}`:""}</p>
+      <p class="meta">稽核日期：${esc(e.a.auditedAt)}｜稽核人員：${esc(e.a.auditor || "")}${e.a.editedAt?`｜編輯於：${esc(e.a.editedAt)}`:""}</p>
     </div>`;
   }).join("");
 
   const sumRows = entries.map((e,n)=>{
-    const bad = e.a.items.filter(i=>!i.ok).length;
-    return `<tr><td>${n+1}</td><td>${esc(e.a.auditedAt)}</td><td>${e.kind==="labor"?"點工":"機具"}</td><td>${esc(e.rec.date)}</td><td>${esc(recVendor(e.rec))}</td><td>${fmt(e.a.applied)}</td><td>${fmt(e.a.actualCount)}</td><td>${fmt(e.a.diff)}</td><td class="${bad?"r-bad":"r-ok"}">${bad?bad+" 項不符":"全數相符"}</td><td>${esc(e.a.auditor)}</td></tr>`;
+    const bad = (e.a.items || []).filter(i=>!i.ok).length;
+    return `<tr><td>${n+1}</td><td>${esc(e.a.auditedAt)}</td><td>${e.kind==="labor"?"點工":"機具"}</td><td>${esc(e.rec.date)}</td><td>${esc(recVendor(e.rec))}</td><td>${fmt(e.a.applied)}</td><td>${fmt(e.a.actualCount)}</td><td>${fmt(e.a.diff)}</td><td class="${bad?"r-bad":"r-ok"}">${bad?bad+" 項不符":"全數相符"}</td><td>${esc(e.a.auditor || "")}</td></tr>`;
   }).join("");
 
   const auditors = [...new Set(entries.map(e=>e.a.auditor).filter(Boolean))];

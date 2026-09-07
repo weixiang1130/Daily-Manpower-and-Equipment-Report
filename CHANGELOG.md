@@ -14,7 +14,11 @@
 - **⚠ 資料保全修復**：修正前工地端編輯被稽核過的單會把稽核紀錄整包滅掉（op:record 整筆
   覆寫＋工地端 audits 為空陣列＋FK 連坐）；改為無稽核權限者寫入時稽核子層快照原地保留。
   實查正式庫尚無實際滅失（稽核 2026-09-07 才開始使用，共 6 筆）
-- 含後端變更需重新編譯；無 DB、無 appsettings；`?ver=2026090701`
+- **補強（同日，MAX 雙代理複審後修畢九項）**：機具基準改申請台數（初版用 usage 列數
+  會誤標 116 張多台單且數學死鎖）；新增刪單滅證守衛（AuditedDeleteGuard＋前端閘門）；
+  升權窗口 slim 偵測改走保留路徑；稽核附件三端點加 CanSeeAudits 閘門；稽核頁 slim 防呆；
+  回報警示前移至附件上傳前；同日稽核以 id 破平手；toast 引用本筆；彙總欄名標明(已回報)
+- 含後端變更需重新編譯；無 DB、無 appsettings；`?ver=2026090702`
 - 詳見 [`docs/milestones/63-audit-mismatch-flagging.md`](docs/milestones/63-audit-mismatch-flagging.md)
 
 ## [節點 62] 2026-09-04 — 代辦工種彙總表（責任歸屬廠商×工種）

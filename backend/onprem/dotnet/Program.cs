@@ -452,14 +452,32 @@ static JsonArray BuildAudits(List<Dictionary<string, object?>> auds,
 
 /* 稽核紀錄只給成控與管理者。
    v13 的「成控現場稽核」對工地端是**前端隱藏**，資料照樣傳到瀏覽器；
-   這裡把它降級為真隔離——工地使用者的回應裡根本沒有 audits 內容。
-   仍保留空陣列而不是刪掉鍵：合約 §4.5 的型別是陣列，塌成 null 會讓前端 .map 爆炸。 */
+   這裡把它降級為真隔離——工地使用者拿不到稽核的內容細節。
+   節點 63：從「整包清空」改為「最小摘要」——只留 id／稽核日／申請數快照／
+   實點數／差異五欄。工地端要看得到「成控實點 N」才能自主更正、
+   清單的「稽核差異」標記與回報送出警示才有比對依據；
+   查核逐項結果、不符原因、現場狀況說明、現場照片、稽核人姓名照舊隔離。
+   仍保留陣列而不是刪掉鍵：合約 §4.5 的型別是陣列，塌成 null 會讓前端 .map 爆炸。 */
 static void StripAudits(JsonNode? store, Authz? az)
 {
     if (az is null || az.CanSeeAudits || store is null) return;
     foreach (var kind in new[] { "labor", "equipment" })
         foreach (var r in (store[kind] as JsonArray) ?? new JsonArray())
-            if (r is JsonObject o && o.ContainsKey("audits")) o["audits"] = new JsonArray();
+            if (r is JsonObject o && o["audits"] is JsonArray arr)
+            {
+                var slim = new JsonArray();
+                foreach (var n in arr)
+                    if (n is JsonObject a)
+                        slim.Add(new JsonObject
+                        {
+                            ["id"] = a["id"]?.DeepClone(),
+                            ["auditedAt"] = a["auditedAt"]?.DeepClone(),
+                            ["applied"] = a["applied"]?.DeepClone(),
+                            ["actualCount"] = a["actualCount"]?.DeepClone(),
+                            ["diff"] = a["diff"]?.DeepClone()
+                        });
+                o["audits"] = slim;
+            }
 }
 
 /* ---------- 讀取整站資料 ---------- */
@@ -958,7 +976,7 @@ app.MapPost("/api/data", async (HttpContext ctx) =>
             return r;
         }
         case "config": return await OpConfig(cn, body);
-        case "record": return await OpRecord(cn, body);
+        case "record": return await OpRecord(cn, body, ctx.Items["authz"] as Authz);
         case "addOption": return await OpAddOption(cn, body);
         case "deleteRecord": return await OpDeleteRecord(cn, body);
         case "uploadAttachment": return await OpUploadAttachment(cn, body);
@@ -1427,7 +1445,9 @@ static async Task<IResult> OpDeleteRecord(SqlConnection cn, JsonObject body)
 /* 刪整筆：子層一律連坐（含 v14 起的附件描述資料，避免孤兒檔案）。
    ⚠ 附件**本體**的刪除在階段 C——實作時要能只憑 attachment_id 刪檔，
      不可依賴這裡的 metadata 列還在。 */
-static async Task DeleteRecordRows(SqlConnection cn, SqlTransaction tx, int sid, string kind, string id)
+/* preserveAudits（節點 63）：op:record 的寫入者看不到稽核內容時，稽核列與
+   稽核附件描述資料**原地保留**（op:deleteRecord 與有稽核權限者照舊全刪重建）。 */
+static async Task DeleteRecordRows(SqlConnection cn, SqlTransaction tx, int sid, string kind, string id, bool preserveAudits = false)
 {
     var (recT, repT, childT, childCol, audT, attKind, agentT) = kind == "labor"
         ? ("labor_records", "labor_reports", "labor_report_worktypes", "record_id", "labor_audits", "labor_audit", "labor_agent_items")
@@ -1446,10 +1466,17 @@ static async Task DeleteRecordRows(SqlConnection cn, SqlTransaction tx, int sid,
 
     await Exec(cn, tx,
         $@"DELETE FROM dbo.attachments
-           WHERE site_id=@s AND ((parent_kind=@pk AND parent_id=@id)
-              OR (parent_kind=@ak AND parent_id IN (SELECT audit_id FROM dbo.{audT} WHERE record_id=@id)))",
-        ("@s", sid), ("@pk", kind), ("@id", id), ("@ak", attKind));
-    await Exec(cn, tx, $"DELETE FROM dbo.{audT} WHERE record_id=@id", ("@id", id));
+           WHERE site_id=@s AND parent_kind=@pk AND parent_id=@id",
+        ("@s", sid), ("@pk", kind), ("@id", id));
+    if (!preserveAudits)
+    {
+        await Exec(cn, tx,
+            $@"DELETE FROM dbo.attachments
+               WHERE site_id=@s AND parent_kind=@ak
+                 AND parent_id IN (SELECT audit_id FROM dbo.{audT} WHERE record_id=@id)",
+            ("@s", sid), ("@ak", attKind), ("@id", id));
+        await Exec(cn, tx, $"DELETE FROM dbo.{audT} WHERE record_id=@id", ("@id", id));
+    }
     await Exec(cn, tx, $"DELETE FROM dbo.{childT} WHERE {childCol}=@id", ("@id", id));
     // v23 代辦列：FK 掛在 *_reports 上、有 ON DELETE CASCADE，刪 repT 本來就會連動，
     // 這裡仍明寫一行與其他子表對齊——日後有人改動 FK 時不會靜默留下孤兒列
@@ -1606,7 +1633,7 @@ static async Task<IResult?> LockGuard(SqlConnection cn, JsonObject body, string 
         new { error = "locked", message = $"此單日期已鎖檔（{range}），僅限系統管理者異動" }, statusCode: 403);
 }
 
-static async Task<IResult> OpRecord(SqlConnection cn, JsonObject body)
+static async Task<IResult> OpRecord(SqlConnection cn, JsonObject body, Authz? az = null)
 {
     var site = Sx(body, "site");
     var kind = Sx(body, "kind");
@@ -1673,14 +1700,30 @@ static async Task<IResult> OpRecord(SqlConnection cn, JsonObject body)
 
     // 先整筆清掉再重建：合約語意是「覆寫整筆」，逐欄 diff 反而容易漏掉被移除的子層。
     // 附件描述資料例外——見 SyncAttachments。
+    /* 節點 63 資料保全：看不到稽核內容的人（工地端）**不得覆寫稽核子層**。
+       其 GET 拿到的 audits 是瘦身摘要（早期版本甚至是空陣列），照「整筆覆寫」
+       語意重建會把成控的完整稽核（查核細項／原因／照片）換成摘要或直接滅掉——
+       ⚠ 此前即是如此：工地端只要編輯過被稽核的單，稽核紀錄就被整包清除。
+       修法＝稽核子層對這類寫入者**原地保留**：不刪、不重建、payload 的 audits 忽略。
+       Auth:Mode=Off（az 為 null，雲端同款行為）維持原樣——無身分即無從分辨。 */
+    var preserveAudits = az is not null && !az.CanSeeAudits;
+    /* ⚠ 快照必須在刪除前做：稽核列的 FK 帶 ON DELETE CASCADE，刪父列時會連坐消失，
+       只跳過明刪擋不住。稽核**附件描述資料**沒有 FK（泛用 parent_kind/parent_id），
+       不會連坐——由 DeleteRecordRows 的 preserveAudits 分支負責不去動它。 */
+    var auditKeep = preserveAudits
+        ? await QueryTx(cn, tx,
+            $"SELECT * FROM dbo.{(kind == "labor" ? "labor_audits" : "equip_audits")} WHERE record_id=@id",
+            ("@id", id))
+        : null;
     var keepAtt = await SnapshotAttachments(cn, tx, sid, kind, id);
-    await DeleteRecordRows(cn, tx, sid, kind, id);
+    await DeleteRecordRows(cn, tx, sid, kind, id, preserveAudits);
 
     if (kind == "labor") await InsertLabor(cn, tx, sid, rec, id, newV, now);
     else await InsertEquip(cn, tx, sid, rec, id, newV, now);
 
     await SyncAttachments(cn, tx, sid, kind, id, rec["attachments"] as JsonArray, keepAtt);
-    await InsertAudits(cn, tx, sid, kind, id, rec["audits"] as JsonArray, keepAtt);
+    if (preserveAudits) await RestoreAudits(cn, tx, kind, auditKeep!);
+    else await InsertAudits(cn, tx, sid, kind, id, rec["audits"] as JsonArray, keepAtt);
 
     await tx.CommitAsync();
     return Results.Json(new { ok = true, v = newV, updatedAt = StampStr(now) });
@@ -1835,6 +1878,24 @@ static async Task InsertAudits(SqlConnection cn, SqlTransaction tx, int sid, str
 
         await SyncAttachments(cn, tx, sid, attKind, aid, a?["attachments"] as JsonArray, keepAtt);
     }
+}
+
+/* 節點 63：把刪除前快照的稽核列**原樣塞回**（工地端 op:record 的稽核保全）。
+   與 InsertAudits 的差別：來源是資料庫自己的列、不是 client payload——
+   不做驗證與轉換，已入庫的合法資料再驗一次只會把它擋掉。 */
+static async Task RestoreAudits(SqlConnection cn, SqlTransaction tx, string kind,
+                                List<Dictionary<string, object?>> rows)
+{
+    var table = kind == "labor" ? "labor_audits" : "equip_audits";
+    foreach (var a in rows)
+        await Exec(cn, tx,
+            $@"INSERT INTO dbo.{table} (audit_id, record_id, audited_at, auditor, applied, actual_count,
+                   diff, items_json, note, status_at_audit, edited_at)
+               VALUES (@aid,@rid,@at,@au,@ap,@ac,@df,@it,@nt,@st,@ed)",
+            ("@aid", a["audit_id"]), ("@rid", a["record_id"]), ("@at", a["audited_at"]),
+            ("@au", a["auditor"]), ("@ap", a["applied"]), ("@ac", a["actual_count"]),
+            ("@df", a["diff"]), ("@it", a["items_json"]), ("@nt", a["note"]),
+            ("@st", a["status_at_audit"]), ("@ed", a["edited_at"]));
 }
 
 /* 附件描述資料：**不能跟其他子層一樣砍掉重建**。

@@ -302,6 +302,7 @@ const COL_W = new Map([
   ["工作內容",120], ["實際工作內容",180], ["申請備註",150],
   ["工作地點",120], ["機具類型",110], ["類型",110],
   ["根基自辦備註",100], ["廠商代辦備註",100], ["代辦明細(廠商)",190],
+  ["稽核實點數",62], ["稽核差異",62],
   ["廠商",110], ["分包商",110], ["機具廠商",110], ["責任廠商",110], ["型號",120],
   ["期間",110], ["工地",180], ["查核結果",100],
   /* 人名不折行：三字姓名 ＋ 少數四字，給 90 */
@@ -383,8 +384,8 @@ function fixedTableOpen(headers, opts={}){
       const cur = listFilter[opts.statusFilterKind].status;
       const label = cur || "全部";
       return `<th class="th-status-filter${cur ? " on" : ""}" data-status-kind="${esc(opts.statusFilterKind)}"`
-        + ` tabindex="0" role="button" aria-label="狀態篩選（目前：${esc(label)}），點擊切換全部／待回報／已回報"`
-        + ` title="點擊切換顯示：全部 → 待回報 → 已回報（目前：${esc(label)}）">`
+        + ` tabindex="0" role="button" aria-label="狀態篩選（目前：${esc(label)}），點擊切換全部／待回報／已回報／稽核差異"`
+        + ` title="點擊切換顯示：全部 → 待回報 → 已回報 → 稽核差異（目前：${esc(label)}）">`
         + `${esc(h)}<span class="th-filter-ind">${cur ? "▾" : "⇕"}</span></th>`;
     }
     return `<th>${esc(h)}</th>`;
@@ -805,7 +806,8 @@ function initListFilter(kind, dateId, vendorId, clearId, renderFn, applicantId){
    為什麼是循環篩選而不是排序：狀態只有兩個值，排序只是把同狀態聚在一起、仍要滾動找；
    點一下只看待回報、再點只看已回報、再點回全部，直接留下要看的那批。
    與下拉篩選共用同一個 listFilter[kind].status，計數文字與「清除」鈕一致連動。 */
-const STATUS_FILTER_CYCLE = { "": "待回報", "待回報": "已回報", "已回報": "" };
+// 節點 63：循環尾端加「稽核差異」——差異單要能一鍵留下（成控與工地端都用得到）
+const STATUS_FILTER_CYCLE = { "": "待回報", "待回報": "已回報", "已回報": "稽核差異", "稽核差異": "" };
 function bindStatusFilter(el, kind, renderFn){
   const th = el.querySelector(".th-status-filter[data-status-kind]");
   if(!th) return;
@@ -825,6 +827,43 @@ function bindStatusFilter(el, kind, renderFn){
    徽章依 `status==="已回報" && report` 顯示（status 為已回報但 report 缺失時仍算待回報），
    篩選若只比 status 字串，會把這種單歸進與徽章相反的一組（節點 60 code review）。 */
 function isReported(r){ return r.status === "已回報" && !!r.report; }
+
+/* ==========================================================
+   稽核差異（節點 63）：成控實點數 vs 單據有效數的**唯一權威判定**。
+   清單標記、狀態欄快篩、歷程/明細欄位、計價彙總、送出警示全部共用這裡——
+   改口徑只准改這裡（同 otSegments 的紀律）。
+
+   基準值：已回報點工＝簽單實際出工數；已回報機具＝回報勾選到場的台數；
+   待回報＝申請數（與稽核表單自己的 applied 快照同義）。
+   取「最近一次」稽核：auditedAt 最大者，同日取較晚儲存的那筆。
+   差異＝實點 − 基準；**不等於 0 就標**（多點到也是異常）。
+   數字任一方修正到相符，標記即自動消失——差異是算出來的，不是存起來的。
+
+   ⚠ 地端工地端拿到的 audits 是伺服器瘦身摘要（只有 id/稽核日/申請數/實點/差異，
+     節點 63 的 StripAudits）——本判定只用到這幾欄，對任何角色都算得出來。 */
+function auditLatest(rec){
+  let best = null;
+  for(const a of (rec && rec.audits) || []){
+    if(!a || !isFinite(Number(a.actualCount))) continue;
+    if(!best || String(a.auditedAt || "") >= String(best.auditedAt || "")) best = a;
+  }
+  return best;
+}
+function auditBaseline(kind, rec){
+  if(!isReported(rec)) return Number(kind === "labor" ? rec.required : rec.requiredQty) || 0;
+  if(kind === "labor") return Number(rec.report.actual) || 0;
+  return ((rec.report.usage) || []).filter(u => u && u.present).length;
+}
+function auditMismatch(kind, rec){
+  const a = auditLatest(rec);
+  if(!a) return null;
+  const base = auditBaseline(kind, rec);
+  const diff = (Number(a.actualCount) || 0) - base;
+  return diff === 0 ? null : { audit: a, base, diff };
+}
+const auditMismatchTag = (kind, r) => auditMismatch(kind, r)
+  ? '<span class="tag bad" title="成控稽核實點數與回報／申請數不符——修正回報或稽核紀錄使兩者相符後，此標記會自動消失">⚠ 稽核差異</span>'
+  : "";
 
 /* 篩選後零筆時的 tbody：訊息放在表格內、表頭保留，狀態欄仍可繼續點回全部
    （否則切到空結果就再也點不回來——節點 60 code review）。 */
@@ -858,7 +897,9 @@ function applyListFilter(kind, all, vendorSelId, countId, applicantSelId){
     (!f.date || r.date === f.date)
     && (!f.vendor || recVendor(r) === f.vendor)
     && (!f.applicant || r.applicant === f.applicant)
-    && (!f.status || (f.status === "已回報") === isReported(r)));   // 與清單徽章同源（isReported），不只比 status 字串
+    && (!f.status || (f.status === "稽核差異"
+          ? !!auditMismatch(kind, r)                                 // 節點 63：留下稽核差異單
+          : (f.status === "已回報") === isReported(r))));            // 與清單徽章同源（isReported），不只比 status 字串
   const cnt = document.getElementById(countId);
   const filtering = f.date || f.vendor || f.applicant || f.status;
   if(cnt) cnt.textContent = filtering ? `符合 ${list.length}／共 ${all.length} 筆` : `共 ${all.length} 筆`;
@@ -1449,6 +1490,16 @@ function initLaborReportForm(){
       }
     });
 
+    /* 節點 63：成控已稽核在先且實點數與本次回報不符 → 警示可確認（抽查的反向順序）。
+       比對取實際要送出的 payload 值，與 auditMismatch 的基準同源。 */
+    {
+      const al63 = auditLatest(rec);
+      const base63 = Number(updated.report && updated.report.actual) || 0;
+      if(al63 && (Number(al63.actualCount) || 0) !== base63){
+        const ok63 = confirm(`⚠ 成控稽核提醒\n\n本單成控已於 ${al63.auditedAt} 現場實點 ${fmt(Number(al63.actualCount)||0)} 人，本次回報為 ${fmt(base63)} 人。\n\n仍要送出嗎？（送出後本單將標示「稽核差異」，數字修正相符後標示自動消失）`);
+        if(!ok63) return;
+      }
+    }
     try{
       const resp = await apiSaveRecord("labor", updated, editingLaborReportBaseV);   // v18：以開表單快照為 baseV（合約 §3.3）
       updated.v = resp.v; updated.updatedAt = resp.updatedAt;
@@ -1815,7 +1866,7 @@ function renderLaborList(){
       const diffTag = !reported ? "—" : (rep.diff===0 ? '<span class="tag ok">相符</span>' : '<span class="tag bad">'+fmt(rep.diff)+'</span>');
       const reportBtnLabel = reported ? "編輯回報" : "填寫回報";
       return `<tr>
-        <td>${statusTag}</td>
+        <td>${statusTag}${auditMismatchTag("labor", r)}</td>
         <td>${esc(r.date)}</td><td>${esc(r.vendor)}</td><td>${esc(r.applicant)}</td>
         <td>${fmt(r.required)}</td>
         <td>${reported ? fmt(rep.actual) : "—"}</td><td>${diffTag}</td>
@@ -2435,6 +2486,15 @@ function initEquipReportForm(){
       }
     });
 
+    /* 節點 63：同點工——成控實點台數 vs 本次回報勾選到場台數 */
+    {
+      const al63 = auditLatest(rec);
+      const base63 = ((updated.report && updated.report.usage) || []).filter(u=>u && u.present).length;
+      if(al63 && (Number(al63.actualCount) || 0) !== base63){
+        const ok63 = confirm(`⚠ 成控稽核提醒\n\n本單成控已於 ${al63.auditedAt} 現場實點 ${fmt(Number(al63.actualCount)||0)} 台，本次回報到場 ${fmt(base63)} 台。\n\n仍要送出嗎？（送出後本單將標示「稽核差異」，數字修正相符後標示自動消失）`);
+        if(!ok63) return;
+      }
+    }
     try{
       const resp = await apiSaveRecord("equipment", updated, editingEquipReportBaseV);   // v18：同上
       updated.v = resp.v; updated.updatedAt = resp.updatedAt;
@@ -2792,7 +2852,7 @@ function renderEquipList(){
         : '<span class="tag bad">'+fmt(rep.diff)+'</span>';
       const reportBtnLabel = reported ? "編輯回報" : "填寫回報";
       return `<tr>
-        <td>${statusTag}</td>
+        <td>${statusTag}${auditMismatchTag("equipment", x)}</td>
         <td>${esc(x.date)}</td><td>${esc(recVendor(x)||"—")}</td><td>${esc(x.applicant||"—")}</td>
         <td>${esc((x.types||[]).join("、"))}</td>
         <td>${esc(x.model||"—")}</td><td>${fmt(x.requiredQty)}</td>
@@ -3132,12 +3192,21 @@ function doneCols(rep, kind){
   ];
 }
 
+/* 節點 63：歷程/明細的稽核兩欄——最近一次稽核的實點數與差異（實點−基準）。
+   空白＝未稽核；0＝稽核過且相符。判定與基準一律走 auditLatest/auditBaseline（口徑唯一）。 */
+function auditCols(kind, r){
+  const al = auditLatest(r);
+  if(!al) return ["", ""];
+  const n = Number(al.actualCount) || 0;
+  return [fmt(n), fmt(n - auditBaseline(kind, r))];
+}
+
 const REPORT_DEFS = {
   labor: {
     title:"點工紀錄",
     headers:["出工日期","廠商","需求工數","工作內容","工作地點","申請人","狀態","人臉紀錄","白卡紀錄","工具箱紀錄","簽單繳回日","簽單實際出工數","差異","0工確認","簽單責任工程師","加班時數(前2小時)","加班時數(第3小時起)","加班總時數","出工明細(工種)",
       ...(PRICING_UI ? ["計價金額","計價組成"] : []),
-      "根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註","代辦明細(廠商)","現場查核回饋"],
+      "根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註","代辦明細(廠商)","稽核實點數","稽核差異","現場查核回饋"],
     records: ()=>cur().labor.filter(r=>inReportRange(r.date) && matchReportVendor(r) && matchReportCat(r,"labor") && matchReportEngineer(r,"labor")),
     rows(recs){ return (recs || this.records()).map(r=>{
       const rep = r.report || {};
@@ -3159,7 +3228,7 @@ const REPORT_DEFS = {
         laborDetail(rep),
         // v22.8 金額＋組成（v23.1：畫面層開關關閉時整組不輸出，見 PRICING_UI）
         ...(PRICING_UI ? (reported ? amountCells(laborAmount(r)) : ["", ""]) : [])
-      ].concat(doneCols(rep, "labor"), [rep.conclusion||""]);
+      ].concat(doneCols(rep, "labor"), auditCols("labor", r), [rep.conclusion||""]);
     }); }
   },
   equipment: {
@@ -3170,7 +3239,7 @@ const REPORT_DEFS = {
        - 新增：預定使用時數／申請備註／出工天數／加班時數／實際工作內容 */
     headers:["出工日期","機具廠商","機具類型","型號","工作內容","工作地點","需求數量(台)","預定使用時數","申請備註","申請人","狀態","簽單繳回日","機具實際工作使用時數","差異","出工天數","加班時數","實際工作內容",
       ...(PRICING_UI ? ["計價品項","加班費率品項","計價金額","計價組成"] : []),
-      "0使用確認","機具使用明細","逐日使用紀錄(月租)","簽單責任工程師","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註","代辦明細(廠商)"],
+      "0使用確認","機具使用明細","逐日使用紀錄(月租)","簽單責任工程師","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註","代辦明細(廠商)","稽核實點數","稽核差異"],
     records: ()=>cur().equipment.filter(x=>inReportRange(x.date) && matchReportVendor(x) && matchReportCat(x,"equipment") && matchReportEngineer(x,"equipment")),
     rows(recs){ return (recs || this.records()).map(x=>{
       const rep = x.report || {};
@@ -3200,7 +3269,7 @@ const REPORT_DEFS = {
           `${u.date}${u.hours!=null?`(${fmt(u.hours)}h)`:""}${u.signer?`[${u.signer}]`:""}${u.note?` ${u.note}`:""}`
         ).join("；"),
         rep.checker||""
-      ].concat(doneCols(rep, "equipment"));
+      ].concat(doneCols(rep, "equipment"), auditCols("equipment", x));
     }); }
   }
 };
@@ -3213,9 +3282,10 @@ function buildPricingSummary(kind){
   const groups = {};
   recs.forEach(r=>{
     const key = recVendor(r) || "（未填廠商）";
-    const g = groups[key] || (groups[key] = {vendor:key, count:0, zero:0, work:0, ot2:0, otOver:0, hours:0, days:0, ot:0, selfW:0, selfH:0, vendW:0, vendH:0, cats:new Set(), amount:0, noRate:0});
+    const g = groups[key] || (groups[key] = {vendor:key, count:0, zero:0, work:0, ot2:0, otOver:0, hours:0, days:0, ot:0, selfW:0, selfH:0, vendW:0, vendH:0, cats:new Set(), amount:0, noRate:0, auditDiff:0});
     const rep = r.report;
     g.count++;
+    if(auditMismatch(kind, r)) g.auditDiff++;   // 節點 63：稽核差異單數（口徑同清單標記）
     /* v22.8：金額合計。算不出來的單獨立計數——**不可當 0 加進去**，
        那會讓總額看起來合理卻少算，是最難發現的錯 */
     const amt = kind === "labor" ? laborAmount(r) : equipAmount(r);
@@ -3258,10 +3328,10 @@ function pricingSummaryTable(kind){
     return {
       headers:["期間","廠商","已回報單數","0工單數","總出工數","加班時數(前2小時)","加班時數(第3小時起)",
         ...(PRICING_UI ? ["計價金額","未能計價單數"] : []),
-        "根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","工作內容"],
+        "根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","工作內容","稽核差異單數"],
       rows: gs.map(g=>[period, g.vendor, g.count, g.zero, fmt(g.work), fmt(g.ot2), fmt(g.otOver),
         ...(PRICING_UI ? [g.amount, g.noRate] : []),
-        fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、")])
+        fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、"), g.auditDiff])
     };
   }
   /* v22.6：機具計價的組成是「出工天數＋加班時數」，兩者都要看得見
@@ -3269,10 +3339,10 @@ function pricingSummaryTable(kind){
   return {
     headers:["期間","機具廠商","已回報單數","0使用單數","總出工天數","總加班時數","總實際使用時數",
       ...(PRICING_UI ? ["計價金額","未能計價單數"] : []),
-      "根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","機具類型"],
+      "根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","機具類型","稽核差異單數"],
     rows: gs.map(g=>[period, g.vendor, g.count, g.zero, fmt(g.days), fmt(g.ot), fmt(g.hours),
       ...(PRICING_UI ? [g.amount, g.noRate] : []),
-      fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、")])
+      fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、"), g.auditDiff])
   };
 }
 
@@ -5249,6 +5319,21 @@ function exportLaborSummaryXlsx(){
   const xml2 = ['<row r="1">' + AGENT_TYPE_COLS.map((h, c)=>xlText(c, 1, XS.OHEAD, h)).join("") + "</row>"]
     .concat(dataRowsXml(agtRows, XS.PNUM, XS.PTEXT, 2, XS.PTEXTW));
   sheets.push({ name: "代辦工種彙總", widths: autoWidths(AGENT_TYPE_COLS), rows: xml2 });
+  /* 節點 63：第三張工作表「稽核差異明細」——成控實點與回報不符的單逐筆列出，
+     成本部付款前直接在計價檔裡看到被點名的單。**無條件出現**（工作表數量固定，
+     巨集才穩定——同代辦工種彙總的決策）；無差異時印一列說明。 */
+  const AUDIT_DIFF_COLS = ["期間","出工日期","廠商","申請工數","回報出工數","稽核實點數","差異","最近稽核日","狀態"];
+  const mm63 = recs.filter(r => auditMismatch("labor", r));
+  const mmRows = mm63.length ? mm63.map(r=>{
+      const al = auditLatest(r), base = auditBaseline("labor", r);
+      const n = Number(al.actualCount) || 0;
+      return [period2, r.date, recVendor(r) || "（未填廠商）", fmt(r.required || 0),
+              isReported(r) ? fmt(Number(r.report.actual) || 0) : "（待回報）",
+              fmt(n), fmt(n - base), al.auditedAt || "", r.status];
+    }) : [[`（${period2} 無稽核差異單）`]];
+  const xml3 = ['<row r="1">' + AUDIT_DIFF_COLS.map((h, c)=>xlText(c, 1, XS.OHEAD, h)).join("") + "</row>"]
+    .concat(dataRowsXml(mmRows, XS.PNUM, XS.PTEXT, 2, XS.PTEXTW));
+  sheets.push({ name: "稽核差異明細", widths: autoWidths(AUDIT_DIFF_COLS), rows: xml3 });
   downloadXlsx(sheets,
     MASTER.currentSite + "_點工計價彙總" + exportFilterTag() + "_" + localDate() + ".xlsx");
 }
@@ -5724,7 +5809,11 @@ async function saveAudit(id){
   if(idx >= 0) list[idx] = updated;
   ssSet("dm_auditor", auditor);
   attFinalize(auditAtt);   // 儲存成功後才真正刪除被移除的附件
-  toast(orig ? "稽核紀錄已更新" : "稽核紀錄已儲存至共用資料庫");
+  /* 節點 63：稽核送出當下即比對（抽查主順序：工地先報、成控後查）。
+     updated 已含本次稽核，auditMismatch 取最近一筆＝本次。 */
+  const mm63 = auditMismatch(kind, updated);
+  toast((orig ? "稽核紀錄已更新" : "稽核紀錄已儲存至共用資料庫")
+    + (mm63 ? `；⚠ 實點 ${fmt(Number(mm63.audit.actualCount)||0)} 與${updated.status==="已回報"?"回報數":"申請數"} ${fmt(mm63.base)} 不符，本單已標示「稽核差異」` : ""));
   if(seqAtSave === auditFetchSeq){
     resetAuditView();
     renderAuditView();
@@ -5904,14 +5993,18 @@ function openAuditPDF(entries, subtitle){
 function exportAuditCSV(){
   const entries = auditLogEntries();
   if(!entries.length){ toast("此條件內沒有稽核紀錄可匯出"); return; }
-  const headers = ["稽核日期","編輯日期","類型","工地","出工日期","廠商","工作內容","工作地點","申請","現場實點","差異","不符項數","不符項目與原因","現場狀況說明","稽核人","稽核時單據狀態"];
+  const headers = ["稽核日期","編輯日期","類型","工地","出工日期","廠商","工作內容","工作地點","申請","現場實點","差異","單據現值(回報/申請數)","與現值差異","不符項數","不符項目與原因","現場狀況說明","稽核人","稽核時單據狀態"];
   const rows = entries.map(e=>{
-    const badItems = e.a.items.filter(i=>!i.ok);
+    // 節點 63 起工地端的稽核物件是瘦身摘要（無 items）；本匯出限成控使用，仍防禦性處理
+    const badItems = (e.a.items || []).filter(i=>!i.ok);
     return [
       e.a.auditedAt, e.a.editedAt||"", e.kind==="labor"?"點工":"機具", MASTER.currentSite,
       e.rec.date, recVendor(e.rec), auditRecCats(e.kind, e.rec),
       (e.rec.locations||[]).join("、"),
       fmt(e.a.applied), fmt(e.a.actualCount), fmt(e.a.diff),
+      // 節點 63：與單據「現在」的回報/申請數比（applied 是稽核當時的申請數快照，可能不同）
+      fmt(auditBaseline(e.kind, e.rec)),
+      fmt((Number(e.a.actualCount) || 0) - auditBaseline(e.kind, e.rec)),
       badItems.length,
       badItems.map(i=>`${i.text}：${i.reason}`).join("；"),
       e.a.note||"", e.a.auditor, e.a.statusAtAudit||""

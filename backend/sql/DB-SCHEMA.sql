@@ -156,6 +156,12 @@ CREATE TABLE dbo.equip_reports (
     -- v24.4：月租單的在場天數（＝逐日使用紀錄筆數，供廠商排名；日租為 NULL）
     on_site_days     INT NULL,
     ot_hours         DECIMAL(6,2) NOT NULL DEFAULT 0,  -- v22.6 加班時數（單一欄，機具不分段）
+    /* 節點 64（v24.16）引導人員：堆高機等機具隨車的引導（指揮）人員，屬「人」的口徑，
+       加班沿用點工的前2小時／第3小時起分段（費率不同）。四欄 NULL＝未填（與 0 有別）。 */
+    guide_work       DECIMAL(6,2) NULL,                -- 引導人員出工數(工)
+    guide_ot2        DECIMAL(6,2) NULL,                -- 引導人員加班時數(前2小時)
+    guide_ot_over    DECIMAL(6,2) NULL,                -- 引導人員加班時數(第3小時起)
+    guide_note       NVARCHAR(400) NULL,               -- 引導人員備註
     work_content     NVARCHAR(MAX) NULL,               -- v22.6 實際工作內容
     -- v22.8 行情通報：只存「挑了哪一項」，金額不落庫（計價時依出工日回查當季，合約 §4.9）
     rate_item        NVARCHAR(400) NULL,               -- 主品項原文
@@ -456,6 +462,7 @@ SELECT
     r.applicant, r.status, r.content, r.locations_json,
     rep.sign_return_date, rep.actual_hours, rep.diff,
     rep.days, rep.ot_hours, rep.work_content,
+    rep.guide_work, rep.guide_ot2, rep.guide_ot_over, rep.guide_note,   -- 節點 64 引導人員
     rep.zero_use, rep.checker,
     rep.vendor_done_work, rep.vendor_done_hours, rep.vendor_done_note,
     rep.self_done_work, rep.self_done_hours, rep.self_done_note,
@@ -473,6 +480,7 @@ WITH e AS (
     SELECT r.site_id, r.id, r.types_json, r.status,
            COALESCE(rep.vendor, r.vendor) AS vendor,
            rep.zero_use, rep.actual_hours, rep.days, rep.ot_hours,
+           rep.guide_work, rep.guide_ot2, rep.guide_ot_over,
            rep.vendor_done_work, rep.vendor_done_hours,
            rep.self_done_work, rep.self_done_hours
       FROM dbo.equip_records r
@@ -486,6 +494,10 @@ SELECT
     SUM(CASE WHEN e.zero_use = 1 THEN 1 ELSE 0 END) AS zero_use_count,
     SUM(ISNULL(e.days, 0))     AS total_days,      -- 總出工天數
     SUM(ISNULL(e.ot_hours, 0)) AS total_ot_hours,  -- 總加班時數
+    /* 節點 64 引導人員：人（工）的口徑，與機具的天數／時數分欄並存，不相加 */
+    SUM(ISNULL(e.guide_work, 0))    AS guide_work,
+    SUM(ISNULL(e.guide_ot2, 0))     AS guide_ot2,
+    SUM(ISNULL(e.guide_ot_over, 0)) AS guide_ot_over,
     SUM(e.actual_hours) AS total_hours,
     SUM(ISNULL(e.vendor_done_work, 0))  AS vendor_done_work,
     SUM(ISNULL(e.vendor_done_hours, 0)) AS vendor_done_hours,

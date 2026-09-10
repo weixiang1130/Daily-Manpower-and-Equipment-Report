@@ -454,6 +454,26 @@
             <input type="number" id="e_otHours" min="0" step="0.5" placeholder="選填">
           </div>
 
+          <!-- 節點 64：引導人員（堆高機等機具隨車的引導/指揮人員；全部機具選填）。
+               屬「人」的口徑：出工以工計、加班沿用點工的前2小時/第3小時起分段（費率不同）。
+               留空＝本單無引導人員；與機具本身的加班時數欄互不相干。 -->
+          <div class="field field-num">
+            <label title="引導（指揮）人員的出工數，以工計（可填 0.5）；本單無引導人員請留空">引導人員出工數(工)</label>
+            <input type="number" id="e_guideWork" min="0" step="0.5" placeholder="選填">
+          </div>
+          <div class="field field-num">
+            <label title="引導人員加班的前 2 小時（時數）；與第 3 小時起費率不同，分開填">引導加班(前2小時)</label>
+            <input type="number" id="e_guideOt2" min="0" step="0.5" placeholder="選填">
+          </div>
+          <div class="field field-num">
+            <label title="引導人員加班自第 3 小時起（時數）">引導加班(第3小時起)</label>
+            <input type="number" id="e_guideOtOver" min="0" step="0.5" placeholder="選填">
+          </div>
+          <div class="field">
+            <label title="引導人員相關備註（選填）">引導人員備註</label>
+            <input type="text" id="e_guideNote" maxlength="200" placeholder="選填，例：吊掛指揮 1 名">
+          </div>
+
           <div class="field field-wide">
             <label>簽單掃描檔／附件（選填，最多 5 件；圖片自動壓縮、PDF 上限 4MB）</label>
             <div id="e_attachBox" class="att-strip"></div>
@@ -824,6 +844,6 @@
 <div id="toast" class="toast"></div>
 
 <script src="config.local.js?ver=2026082501"></script>
-<script src="app.js?ver=2026090702"></script>
+<script src="app.js?ver=2026091001"></script>
 </body>
 </html>

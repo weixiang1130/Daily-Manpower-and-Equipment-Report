@@ -381,7 +381,9 @@ for site, store in (data["stores"] or {}).items():
         if rep:
             out.append(
                 "INSERT INTO dbo.equip_reports (record_id, reported_at, checker, vendor, "
-                "actual_hours, diff, days, ot_hours, work_content, rate_item, rate_ot_item, "
+                "actual_hours, diff, days, ot_hours, "
+                "guide_work, guide_ot2, guide_ot_over, guide_note, "
+                "work_content, rate_item, rate_ot_item, "
                 "zero_use, sign_return_date, on_site_days, " + done_cols() + ") VALUES ("
                 f"{q(r['id'])}, {q(rep.get('reportedAt') or None)}, {q(rep.get('checker') or None)}, "
                 f"{q(rep.get('vendor') or None)}, "
@@ -389,6 +391,9 @@ for site, store in (data["stores"] or {}).items():
                 # 不可像舊版塞 0——0 在報表上會被讀成「相符」
                 f"{num(rep.get('actualHours'), '0')}, {num(rep.get('diff'))}, "
                 f"{num(rep.get('days'), '0')}, {num(rep.get('otHours'), '0')}, "
+                # 節點 64 引導人員：NULL＝未填（與 0 有別，同 diff 的理由）
+                f"{num(rep.get('guideWork'))}, {num(rep.get('guideOt2'))}, "
+                f"{num(rep.get('guideOtOver'))}, {q(rep.get('guideNote') or None)}, "
                 f"{q(rep.get('workContent') or None)}, "
                 # v22.8：只存挑了哪一項，金額不落庫（合約 §4.9）
                 f"{q(rep.get('rateItem') or None)}, {q(rep.get('rateOtItem') or None)}, "

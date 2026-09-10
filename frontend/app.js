@@ -313,6 +313,8 @@ const COL_W = new Map([
   ["簽單實際出工數",68], ["機具實際工作使用時數",78],
   ["需求數量(台)",62], ["預定使用時數",68], ["出工天數",62],
   ["加班時數",62], ["加班時數(前2小時)",68], ["加班時數(第3小時起)",68], ["加班總時數",62],
+  /* 節點 64 引導人員（機具回報的隨車人員；人（工）的口徑） */
+  ["引導人員(工)",62], ["引導人員工數",62], ["引導加班(前2小時)",68], ["引導加班(第3小時起)",68], ["引導備註",120],
   ["根基自辦工數",62], ["根基自辦時數",62], ["廠商代辦工數",62], ["廠商代辦時數",62],
   ["已回報單數",62], ["0工單數",62], ["0使用單數",62],
   ["總出工數",62], ["總實際使用時數",68], ["總出工天數",62], ["總加班時數",62],
@@ -2401,6 +2403,16 @@ function initEquipReportForm(){
     const zeroUse = document.getElementById("e_zeroUse").checked;
     const days = parseFloat(document.getElementById("e_days").value) || 0;
     const otHours = parseFloat(document.getElementById("e_otHours").value) || 0;
+    /* 節點 64 引導人員：**空白＝null（未填）、0＝真的 0**——同 diff 的理由，
+       報表端據此決定留白或印 0，不可用 ||0 把兩者壓成同一個值 */
+    const numOrNull = id => {
+      const v = document.getElementById(id).value.trim();
+      return v === "" ? null : (parseFloat(v) || 0);
+    };
+    const guideWork   = numOrNull("e_guideWork");
+    const guideOt2    = numOrNull("e_guideOt2");
+    const guideOtOver = numOrNull("e_guideOtOver");
+    const guideNote   = document.getElementById("e_guideNote").value.trim();
 
     /* v22.9：勾了到場卻沒填時數就擋下來。**空白與 0 是兩件事**——
        0 是「確實填了 0」（走下面的異常警告可確認送出），空白是還沒填，
@@ -2443,7 +2455,8 @@ function initEquipReportForm(){
       if(agentErrs.length){ toast("代辦資料有誤，未送出：\n- " + agentErrs.join("\n- ")); return; }
     }
 
-    const warnings = collectEquipWarnings(usageState, actualHours, zeroUse, days, otHours, isMonthly(rec));
+    const warnings = collectEquipWarnings(usageState, actualHours, zeroUse, days, otHours, isMonthly(rec),
+                                          { work: guideWork, ot2: guideOt2, otOver: guideOtOver });
     if(warnings.length){
       const ok = confirm("⚠ 系統偵測到以下數據配置異常，請確認是否輸入錯誤：\n\n- " + warnings.join("\n- ") + "\n\n確認無誤仍要送出嗎？");
       if(!ok) return;
@@ -2490,6 +2503,9 @@ function initEquipReportForm(){
         usageLog: isMonthly(rec) ? usageLogState.map(u=>({date:u.date, note:u.note||"", hours:u.hours ?? null, signer:(u.signer||"").trim()})) : [],
         onSiteDays: isMonthly(rec) ? usageLogState.length : null,
         otHours,     // 加班時數（單一欄，機具不分段）
+        /* 節點 64 引導人員：人（工）的口徑，加班沿用點工前2h/第3h起分段；
+           null＝未填。刻意**不**因 zeroUse 清空——機具 0 使用當日人員仍可能到場待命 */
+        guideWork, guideOt2, guideOtOver, guideNote,
         workContent: document.getElementById("e_workContent").value.trim(),
         // v22.8：只存「挑了哪一項」，不存金額——計價時依出工日回查當季費率
         rateItem: document.getElementById("e_rateItem").value || "",
@@ -2539,8 +2555,20 @@ function initEquipReportForm(){
   resetEquipReportForm();
 }
 
-function collectEquipWarnings(usage, actualHours, zeroUse, days, otHours, monthly){
+function collectEquipWarnings(usage, actualHours, zeroUse, days, otHours, monthly, guide){
   const w = [];
+  /* 節點 64 引導人員檢查放在 zeroUse 早退**之前**——0 使用單仍可填引導
+     （人員到場待命），這些提醒不因 0 使用而失效 */
+  if(guide){
+    const gw = guide.work, g2 = guide.ot2, go = guide.otOver;
+    // 同點工慣例：加班時數應先計入前 2 小時，再溢入第 3 小時起
+    if(go > 0 && !(g2 > 0)) w.push("引導人員：填了第 3 小時起的加班，但前 2 小時為 0（加班時數應先計入前 2 小時）");
+    if((g2 > 0 || go > 0) && !(gw > 0)) w.push("引導人員：有加班時數但出工數為 0 或未填");
+    if(gw > 3) w.push(`引導人員出工數 ${fmt(gw)} 工，高於常態（單台機具通常配 1 名）`);
+    if((g2 || 0) + (go || 0) > 12) w.push(`引導人員加班合計 ${fmt((g2||0)+(go||0))} 小時，高於常態`);
+    if(zeroUse && (gw != null || g2 != null || go != null))
+      w.push("已勾選 0 使用確認，但填了引導人員——請確認機具未使用當日人員確實有到場");
+  }
   if(zeroUse) return w;
   usage.filter(u=>u.present).forEach(u=>{
     if(!(u.hours > 0)) w.push(`${u.type}：已勾選到場，但實際使用時數為 0`);
@@ -2788,6 +2816,11 @@ async function loadEquipReportRecord(id){
   setCombo("cb_e_vendor", recVendor(rec));
   document.getElementById("e_days").value = rep.days != null ? rep.days : "";
   document.getElementById("e_otHours").value = rep.otHours != null ? rep.otHours : "";
+  // 節點 64 引導人員：null＝未填 → 留空白（不可顯示成 0，0 是「真的填了 0」）
+  document.getElementById("e_guideWork").value = rep.guideWork != null ? rep.guideWork : "";
+  document.getElementById("e_guideOt2").value = rep.guideOt2 != null ? rep.guideOt2 : "";
+  document.getElementById("e_guideOtOver").value = rep.guideOtOver != null ? rep.guideOtOver : "";
+  document.getElementById("e_guideNote").value = rep.guideNote || "";
   document.getElementById("e_workContent").value = rep.workContent || "";
   /* v22.8：費率書不在 scope=all，開表單時才抓；抓到後填品項下拉並帶回原選擇 */
   /* 代辦列要在費率書載入後重繪一次——欄位單位（天／小時）取自主品項的計價方式 */
@@ -3257,7 +3290,9 @@ const REPORT_DEFS = {
        - 「機具廠商」＝有效廠商（回報優先，見 recVendor）；移除重複的「責任廠商」欄
        - 「預計使用時數(需求數量)」正名為「需求數量(台)」——它一直是台數，欄名寫錯
        - 新增：預定使用時數／申請備註／出工天數／加班時數／實際工作內容 */
-    headers:["出工日期","機具廠商","機具類型","型號","工作內容","工作地點","需求數量(台)","預定使用時數","申請備註","申請人","狀態","簽單繳回日","機具實際工作使用時數","差異","出工天數","加班時數","實際工作內容",
+    /* 節點 64：引導人員四欄放在「加班時數」之後——與機具本身的時數相鄰但分欄，
+       成本部一眼分得清「機器的錢」（天數＋加班）與「人的錢」（工數＋分段加班） */
+    headers:["出工日期","機具廠商","機具類型","型號","工作內容","工作地點","需求數量(台)","預定使用時數","申請備註","申請人","狀態","簽單繳回日","機具實際工作使用時數","差異","出工天數","加班時數","引導人員(工)","引導加班(前2小時)","引導加班(第3小時起)","引導備註","實際工作內容",
       ...(PRICING_UI ? ["計價品項","加班費率品項","計價金額","計價組成"] : []),
       "0使用確認","機具使用明細","逐日使用紀錄(月租)","簽單責任工程師","根基自辦工數","根基自辦時數","根基自辦備註","廠商代辦工數","廠商代辦時數","廠商代辦備註","代辦明細(廠商)","稽核實點數","稽核差異"],
     records: ()=>cur().equipment.filter(x=>inReportRange(x.date) && matchReportVendor(x) && matchReportCat(x,"equipment") && matchReportEngineer(x,"equipment")),
@@ -3278,7 +3313,13 @@ const REPORT_DEFS = {
         isMonthly(x) ? (reported ? "月租" : "")
           : (reported && rep.diff != null ? fmt(rep.diff) : ""),
         // 出工天數：月租＝在場天數（equipOnSiteDays 對日租回 rep.days，行為不變）
-        reported?fmt(equipOnSiteDays(x)):"", reported?fmt(rep.otHours||0):"", rep.workContent||"",
+        reported?fmt(equipOnSiteDays(x)):"", reported?fmt(rep.otHours||0):"",
+        // 節點 64 引導人員：null＝未填 → 留白；0＝真的 0 → 印 0（兩者不可壓成同值）
+        rep.guideWork != null ? fmt(rep.guideWork) : "",
+        rep.guideOt2 != null ? fmt(rep.guideOt2) : "",
+        rep.guideOtOver != null ? fmt(rep.guideOtOver) : "",
+        rep.guideNote || "",
+        rep.workContent||"",
         // v22.8 品項＋金額＋組成（v23.1：畫面層開關關閉時整組不輸出，見 PRICING_UI）
         ...(PRICING_UI
             ? [rep.rateItem||"", rep.rateOtItem||"", ...(reported ? amountCells(equipAmount(x)) : ["", ""])]
@@ -3302,7 +3343,7 @@ function buildPricingSummary(kind){
   const groups = {};
   recs.forEach(r=>{
     const key = recVendor(r) || "（未填廠商）";
-    const g = groups[key] || (groups[key] = {vendor:key, count:0, zero:0, work:0, ot2:0, otOver:0, hours:0, days:0, ot:0, selfW:0, selfH:0, vendW:0, vendH:0, cats:new Set(), amount:0, noRate:0, auditDiff:0});
+    const g = groups[key] || (groups[key] = {vendor:key, count:0, zero:0, work:0, ot2:0, otOver:0, hours:0, days:0, ot:0, guideW:0, guideOt2:0, guideOtOver:0, selfW:0, selfH:0, vendW:0, vendH:0, cats:new Set(), amount:0, noRate:0, auditDiff:0});
     const rep = r.report;
     g.count++;
     if(auditMismatch(kind, r)) g.auditDiff++;   // 節點 63：稽核差異單數（口徑同清單標記）
@@ -3323,6 +3364,11 @@ function buildPricingSummary(kind){
       // v22.6：機具計價＝出工天數＋加班時數（加班單一欄，不套用點工的分段規則）
       g.days += rep.days || 0;
       g.ot += rep.otHours || 0;
+      /* 節點 64 引導人員：人（工）的口徑、加班依點工分段——與機具的天數/時數
+         分欄並存**不相加**（單位不同：人·工 vs 台·日） */
+      g.guideW += rep.guideWork || 0;
+      g.guideOt2 += rep.guideOt2 || 0;
+      g.guideOtOver += rep.guideOtOver || 0;
       (r.types||[]).forEach(t=>g.cats.add(t));
     }
     g.selfW += rep.selfDoneWork || 0;
@@ -3356,11 +3402,15 @@ function pricingSummaryTable(kind){
   }
   /* v22.6：機具計價的組成是「出工天數＋加班時數」，兩者都要看得見
      （計價紅線 4：報表不能只給一個算完的數字）。實際使用時數保留供對帳。 */
+  /* 節點 64：引導人員三欄放在總加班時數之後——人（工）的口徑，加班依點工分段，
+     與機具的天數/時數分欄並存不相加 */
   return {
-    headers:["期間","機具廠商","已回報單數","0使用單數","總出工天數","總加班時數","總實際使用時數",
+    headers:["期間","機具廠商","已回報單數","0使用單數","總出工天數","總加班時數",
+      "引導人員工數","引導加班(前2小時)","引導加班(第3小時起)","總實際使用時數",
       ...(PRICING_UI ? ["計價金額","未能計價單數"] : []),
       "根基自辦工數","根基自辦時數","廠商代辦工數","廠商代辦時數","機具類型","稽核差異單數(已回報)"],
-    rows: gs.map(g=>[period, g.vendor, g.count, g.zero, fmt(g.days), fmt(g.ot), fmt(g.hours),
+    rows: gs.map(g=>[period, g.vendor, g.count, g.zero, fmt(g.days), fmt(g.ot),
+      fmt(g.guideW), fmt(g.guideOt2), fmt(g.guideOtOver), fmt(g.hours),
       ...(PRICING_UI ? [g.amount, g.noRate] : []),
       fmt(g.selfW), fmt(g.selfH), fmt(g.vendW), fmt(g.vendH), [...g.cats].join("、"), g.auditDiff])
   };
@@ -4555,7 +4605,7 @@ function buildVendorRanking(kind){
     const v = recVendor(r) || "（未填廠商）";
     const e = g.get(v) || { vendor: v, count: 0, work: 0, ot2: 0, otOver: 0, days: 0, ot: 0,
                             agWork: 0, agOt: 0, amount: 0, noRate: 0,
-                            monthUnits: 0, monthlyCount: 0 };
+                            monthUnits: 0, monthlyCount: 0, guideWork: 0 };
     e.count++;
     if(kind === "labor"){
       // 逐工種展開與加班歸段一律走 reportTypeRows（口徑唯一權威，v21.3）
@@ -4565,6 +4615,8 @@ function buildVendorRanking(kind){
          兩者同為「天」才比得起來；月租的成本單位（台·月）另外累計，不混進天數。 */
       e.days += equipOnSiteDays(r);
       e.ot += r.report.otHours || 0;
+      // 節點 64 引導人員：獨立欄呈現（人·工），不併入在場天數（台·日）——單位不同
+      e.guideWork += r.report.guideWork || 0;
       if(isMonthly(r)){
         e.monthUnits += monthlyProrataParts(r).reduce((t,p)=>t+p.months, 0);
         e.monthlyCount++;
@@ -4589,6 +4641,29 @@ function buildVendorRanking(kind){
   });
   rows.sort((a,b)=> b.netUnits - a.netUnits || b.amount - a.amount);
   return rows;
+}
+
+/* ==========================================================
+   工程師機具使用榜（節點 64）：按**申請人**分組的機具使用彙總。
+   現場需求：機具榜只看得到「哪家廠商供了多少」，看不到「哪位工程師
+   叫了多少機具」——與點工的叫工排名互為對照。
+   口徑與機具榜完全同源（在場天數＝日租出工天數／月租逐日筆數、
+   月租台·月另計、引導人員獨立欄）；僅計已回報單、母體同 rankedRecs。
+   ========================================================== */
+function buildEngineerEquipRanking(){
+  const g = new Map();
+  rankedRecs("equipment").forEach(r=>{
+    const name = r.applicant || "（未填申請人）";
+    const e = g.get(name) || { name, count: 0, days: 0, ot: 0, monthUnits: 0, guideWork: 0 };
+    e.count++;
+    e.days += equipOnSiteDays(r);
+    e.ot += r.report.otHours || 0;
+    e.guideWork += r.report.guideWork || 0;
+    if(isMonthly(r)) e.monthUnits += monthlyProrataParts(r).reduce((t,p)=>t+p.months, 0);
+    g.set(name, e);
+  });
+  // 依在場天數排名；同天數以單數分高下（不折算月租——單位不同，混排會失真）
+  return [...g.values()].sort((a,b)=> b.days - a.days || b.count - a.count);
 }
 
 function buildAgentDeductionSummary(){
@@ -4688,7 +4763,8 @@ function buildAgentTypeSummary(recs, kind){
      計算邏輯與費率資料原樣保留，改一個常數即整組回來。 */
 const VRANK_LABOR_COLS = ["排名","廠商","已回報單數","本工","加班前2h","加班2h後","總工數","代辦扣工","淨工數",
   ...(PRICING_UI ? ["計價金額","未能計價單數"] : [])];
-const VRANK_EQUIP_COLS = ["排名","廠商","已回報單數","在場天數","月租(台·月)","加班時數","代辦扣抵","淨在場天數",
+/* 節點 64：「引導人員(工)」獨立欄——人·工與台·日單位不同，不併入在場天數也不進淨值 */
+const VRANK_EQUIP_COLS = ["排名","廠商","已回報單數","在場天數","月租(台·月)","加班時數","引導人員(工)","代辦扣抵","淨在場天數",
   ...(PRICING_UI ? ["計價金額","未能計價單數"] : [])];
 const VRANK_DED_COLS   = ["責任歸屬廠商","代辦列數",
   ...(PRICING_UI ? ["代扣金額","未能計價列數","未能計價原因"] : [])];
@@ -4699,10 +4775,19 @@ const vrankLaborRow = (e,i) => [i+1, e.vendor, e.count, fmtRank(e.work),
   ...(PRICING_UI ? [e.amount, e.noRate || ""] : [])];
 const vrankEquipRow = (e,i) => [i+1, e.vendor, e.count, fmtRank(e.days),
   e.monthUnits ? fmtRank(e.monthUnits) : "",
-  e.ot ? fmtRank(e.ot) : "", e.agUnits ? "-" + fmtRank(e.agUnits) : "", fmtRank(e.netUnits),
+  e.ot ? fmtRank(e.ot) : "",
+  e.guideWork ? fmtRank(e.guideWork) : "",   // 節點 64：引導人員（人·工，獨立欄）
+  e.agUnits ? "-" + fmtRank(e.agUnits) : "", fmtRank(e.netUnits),
   ...(PRICING_UI ? [e.amount, e.noRate || ""] : [])];
 const vrankDedRow = e => [e.vendor, e.rows,
   ...(PRICING_UI ? [e.amount, e.noRate || "", [...e.whys].join("；")] : [])];
+
+/* 工程師機具使用榜（節點 64）——欄位口徑同機具榜，只是分組鍵換成申請人 */
+const ENG_EQUIP_COLS = ["排名","申請人(工程師)","已回報單數","在場天數","月租(台·月)","加班時數","引導人員(工)"];
+const engEquipRow = (e,i) => [i+1, e.name, e.count, fmtRank(e.days),
+  e.monthUnits ? fmtRank(e.monthUnits) : "",
+  e.ot ? fmtRank(e.ot) : "",
+  e.guideWork ? fmtRank(e.guideWork) : ""];
 
 /* 代辦工種彙總（節點 62）。加班兩欄分開列——前 2 小時與第 3 小時起費率不同
    （計價紅線 1），合併就沒辦法按段扣款。
@@ -4772,10 +4857,12 @@ function renderVendorRankReport(){
   if(sumEl) sumEl.innerHTML = "";
   const lab = buildVendorRanking("labor");
   const eq = buildVendorRanking("equipment");
+  const engEq = buildEngineerEquipRanking();                        // 節點 64
   const ded = buildAgentDeductionSummary();
   const agt = buildAgentTypeSummary(rankedRecs("labor"), "labor");   // 節點 62
   const period = reportPeriodLabel();
   if(cnt) cnt.textContent = `${period}・點工 ${lab.length} 家・機具 ${eq.length} 家`
+    + (engEq.length ? `・機具申請 ${engEq.length} 位工程師` : "")
     + (ded.length ? `・代辦扣抵 ${ded.length} 家` : "");
 
   /* v23.1：先給圖再給表。排名的重點是「誰多誰少、差多少」，
@@ -4793,7 +4880,14 @@ function renderVendorRankReport(){
     + vrankTableHTML(`機具廠商排名（${period}・依淨出工天數）`, VRANK_EQUIP_COLS, eq.map(vrankEquipRow),
       "機具不與點工併榜——出工天數與工數是不同單位，相加沒有意義。淨在場天數＝在場天數－代辦扣抵。"
       + "<strong>在場天數</strong>：日租＝出工天數、月租＝逐日使用紀錄的筆數，同為「天」才可比；"
-      + "<strong>月租(台·月)</strong>是月租的成本單位（租期按比例），刻意不與天數相加。")
+      + "<strong>月租(台·月)</strong>是月租的成本單位（租期按比例），刻意不與天數相加。"
+      + "<strong>引導人員(工)</strong>＝隨車引導（指揮）人員的出工數（人·工）——單位與台·日不同，不併入在場天數也不進淨值。")
+    /* 節點 64：工程師機具使用榜——與點工的叫工排名互為對照，看「誰叫了多少機具」 */
+    + hBarChart(engEq.map(e=>({ label: e.name, value: e.days, sub: `${e.count} 單` })),
+        { unit: " 天", title: "工程師機具使用排名" })
+    + vrankTableHTML(`工程師機具使用榜（${period}・依在場天數・按申請人）`, ENG_EQUIP_COLS, engEq.map(engEquipRow),
+      "按<strong>申請人</strong>分組，口徑與上方機具廠商排名完全相同（在場天數：日租＝出工天數、月租＝逐日紀錄筆數；"
+      + "月租台·月另計不相加；引導人員為人·工獨立欄）。僅計已回報單、跟隨期間篩選。")
     + vrankTableHTML(`代辦扣抵彙總（${period}・依責任歸屬廠商）`, VRANK_DED_COLS, ded.map(vrankDedRow),
       "代辦＝向本單廠商叫的工／機具但成本歸屬另一家。"
       + (PRICING_UI
@@ -4813,6 +4907,7 @@ function renderVendorRankReport(){
 function exportVendorRankXls(){
   const lab = buildVendorRanking("labor");
   const eq = buildVendorRanking("equipment");
+  const engEq = buildEngineerEquipRanking();                        // 節點 64
   const ded = buildAgentDeductionSummary();
   const agt = buildAgentTypeSummary(rankedRecs("labor"), "labor");   // 節點 62：與畫面同母體
   if(!lab.length && !eq.length && !ded.length){ toast("此期間內尚無已回報資料可排名"); return; }
@@ -4826,7 +4921,11 @@ function exportVendorRankXls(){
     { title: `機具廠商排名（${period}・依在場天數）`, headers: VRANK_EQUIP_COLS, rows: eq.map(vrankEquipRow) },
     { title: `代辦扣抵彙總（${period}・依責任歸屬廠商）`, headers: VRANK_DED_COLS, rows: ded.map(vrankDedRow) },
     { title: `代辦工種彙總（${period}・責任歸屬廠商×工種・點工）`, headers: AGENT_TYPE_COLS,
-      rows: agt.map(e=>agentTypeRow(e, period)) }
+      rows: agt.map(e=>agentTypeRow(e, period)) },
+    /* 節點 64：工程師機具使用榜。畫面上排在機具榜之後，CSV 卻**固定附在最後**——
+       既有四個區塊的位置不能動（收檔端的巨集/樞紐靠區塊位置取數，插中間全數位移） */
+    { title: `工程師機具使用榜（${period}・依在場天數・按申請人）`, headers: ENG_EQUIP_COLS,
+      rows: engEq.map(engEquipRow) }
   ], `廠商排名_${MASTER.currentSite}${ptag}_${localDate()}.csv`);
 }
 

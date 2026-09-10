@@ -655,6 +655,11 @@ static async Task<JsonObject> ReadStores(SqlConnection cn, string? onlySite)
                     ["diff"] = Num(rp["diff"]),                    // v22.6 可為 null（申請未填預定時數）
                     ["days"] = Num(rp["days"]),
                     ["otHours"] = Num(rp["ot_hours"]),
+                    // 節點 64 引導人員：可為 null（未填；與 0 有別，同 diff）
+                    ["guideWork"] = Num(rp["guide_work"]),
+                    ["guideOt2"] = Num(rp["guide_ot2"]),
+                    ["guideOtOver"] = Num(rp["guide_ot_over"]),
+                    ["guideNote"] = Str(rp["guide_note"]) ?? "",
                     ["workContent"] = Str(rp["work_content"]) ?? "",
                     ["rateItem"] = Str(rp["rate_item"]) ?? "",     // v22.8
                     ["rateOtItem"] = Str(rp["rate_ot_item"]) ?? "",
@@ -1841,17 +1846,22 @@ static async Task InsertEquip(SqlConnection cn, SqlTransaction tx, int sid, Json
     if (r["report"] is not JsonObject rep) return;
     await Exec(cn, tx,
         @"INSERT INTO dbo.equip_reports (record_id, reported_at, checker, vendor, actual_hours, diff, days, ot_hours,
+              guide_work, guide_ot2, guide_ot_over, guide_note,
               work_content, rate_item, rate_ot_item, zero_use, sign_return_date, on_site_days,
               vendor_done_work, vendor_done_hours, vendor_done_note,
               self_done_work, self_done_hours, self_done_note, legacy_self_done, legacy_vendor_done)
-          VALUES (@id,@ra,@ck,@ven,@ah,@dif,@dy,@ot,@wc,@ri,@ro,@zu,@srd,@osd,
+          VALUES (@id,@ra,@ck,@ven,@ah,@dif,@dy,@ot,@gw,@g2,@go,@gn,@wc,@ri,@ro,@zu,@srd,@osd,
                   @vdw,@vdh,@vdn,@sdw,@sdh,@sdn,@lsd,@lvd)",
         ("@id", id), ("@ra", Sx(rep, "reportedAt")), ("@ck", Sx(rep, "checker")), ("@ven", Sx(rep, "vendor")),
         ("@ah", D0(rep, "actualHours")),
         // diff 可為 NULL（申請單沒填預定時數＝無從比較）。**不可塞 0**——
         // 0 在報表上會被讀成「與預定相符」，是假訊息。
         ("@dif", Dx(rep, "diff")),
-        ("@dy", D0(rep, "days")), ("@ot", D0(rep, "otHours")), ("@wc", Sx(rep, "workContent")),
+        ("@dy", D0(rep, "days")), ("@ot", D0(rep, "otHours")),
+        /* 節點 64 引導人員：NULL＝未填（與 0 有別，同 diff 的理由），故用 Dx 不用 D0 */
+        ("@gw", Dx(rep, "guideWork")), ("@g2", Dx(rep, "guideOt2")),
+        ("@go", Dx(rep, "guideOtOver")), ("@gn", Sx(rep, "guideNote")),
+        ("@wc", Sx(rep, "workContent")),
         // v22.8：只存挑了哪一項，金額不落庫（合約 §4.9）——費率書會換季，金額要能回算
         ("@ri", Sx(rep, "rateItem")), ("@ro", Sx(rep, "rateOtItem")),
         ("@zu", Bx(rep, "zeroUse")), ("@srd", Sx(rep, "signReturnDate")),

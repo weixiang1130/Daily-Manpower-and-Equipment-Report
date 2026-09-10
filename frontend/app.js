@@ -1996,6 +1996,12 @@ async function deleteLaborRecord(id){
     toast("已回報的單據是計價依據，僅限管理員或該工地主管刪除");
     return;
   }
+  /* 資安審查（v24.16）：逾期待回報單的刪除也限主管——「刪掉重開一張填今天」
+     兩下就繞過三日鎖並滅掉逾期事實。伺服器 OverdueDeleteGuard 成對把關。 */
+  if(rec && rec.status !== "已回報" && laborReportLockError(rec) && !canLeadOverride(MASTER.currentSite)){
+    toast("本單已逾期鎖定，刪除僅限工地主管（避免刪單重開繞過回報鎖）");
+    return;
+  }
   if(rec && isLockedDate(rec.date)){
     toast(`此單日期已鎖檔（${lockReason(rec.date)}），僅限管理員刪除`);
     return;

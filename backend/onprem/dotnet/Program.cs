@@ -1075,6 +1075,11 @@ app.MapPost("/api/data", async (HttpContext ctx) =>
     await using var cn = new SqlConnection(ConnStr());
     await cn.OpenAsync();
 
+    /* 資安審查（v24.16）：日期/狀態正規化——放在**所有守衛之前**且不分角色，
+       守衛與資料庫拿到的永遠是同一種寫法（詳 RecordShapeError 的註解）。 */
+    if (op == "record" && RecordShapeError(body) is string shapeErr)
+        return Results.Json(new { error = "bad request", message = shapeErr }, statusCode: 400);
+
     /* v24.7 鎖檔（合約 §4.2）——**伺服器端**把關。
        前端也擋，但前端擋的是誤操作；結算後的資料凍結是實質控制，
        只靠前端等於「按 F12 就能改已結算的月份」。管理員不受限（就是他設的）。
@@ -1100,6 +1105,12 @@ app.MapPost("/api/data", async (HttpContext ctx) =>
         {
             var denied2 = await ReportedDeleteGuard(cn, body, azl);
             if (denied2 is not null) return denied2;
+
+            /* 資安審查（v24.16）：逾期待回報點工單的**刪除**也要主管——
+               規則 2 擋了「改日期再回報」，「刪掉重開一張填今天」兩下就達成同樣效果
+               且把逾期事實滅跡（AuditedDeleteGuard 同一類教訓）。 */
+            var denied65d = await OverdueDeleteGuard(cn, body, azl);
+            if (denied65d is not null) return denied65d;
 
             /* 節點 63 補強（審查發現）：刪單會連坐銷毀稽核紀錄（FK CASCADE），
                「刪掉重開一張」就能讓稽核差異無痕消失——待回報單人人可刪，
@@ -1829,12 +1840,71 @@ static async Task<IResult?> OverdueReportGuard(SqlConnection cn, JsonObject body
     return null;
 }
 
+/* 資安審查（v24.16 節點 65 後複查）：op:record 的日期／狀態**正規化驗證**。
+   根因：守衛們對「解析不了的日期」一律 fail-open（TryParseExact false →
+   判成不逾期／LockGuard 的 ordinal 比對落在區間外），而 SQL Server 的字串→DATE
+   轉換卻寬鬆——不補零的 "2026-8-15"、前後空白、ISO datetime 都收。
+   不驗的話，直打 API 以不補零日期「直接建已回報新單」可同時繞過三日鎖與
+   鎖檔（結算凍結）。status 同理：CHECK 約束忽略尾端空白，"已回報 " 能落庫並被
+   計價 view 視為已回報，守衛的 ordinal 比對卻認不得。
+   一律在守衛**之前**擋 400；日期唯一合法形＝YYYY-MM-DD（合約 §5.3 本就如此，
+   前端一律用 date input／localDate() 產生，正常操作不受影響）。 */
+static string? RecordShapeError(JsonObject body)
+{
+    if (body["record"] is not JsonObject rec) return null;   // 形狀缺漏交給 OpRecord 回 400
+    static bool BadDate(string? s) =>
+        s is not null
+        && !(System.Text.RegularExpressions.Regex.IsMatch(s, @"^\d{4}-\d{2}-\d{2}$")
+             && DateOnly.TryParseExact(s, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                    DateTimeStyles.None, out _));
+    if (Sx(rec, "date") is not string d || BadDate(d))
+        return "出工日期格式不正確（僅接受 YYYY-MM-DD）";
+    var st = Sx(rec, "status");
+    if (st != "待回報" && st != "已回報")
+        return "status 僅接受「待回報」或「已回報」（不得含多餘空白）";
+    if (BadDate(Sx(rec, "rentFrom")) || BadDate(Sx(rec, "rentTo")))
+        return "租期日期格式不正確（僅接受 YYYY-MM-DD）";
+    if (rec["report"] is JsonObject rep && BadDate(Sx(rep, "signReturnDate")))
+        return "簽單繳回日格式不正確（僅接受 YYYY-MM-DD）";
+    return null;
+}
+
 /* 守衛共用的唯讀工地查詢（MAX 審查：原本四個守衛各抄一份）。
    ⚠ 與 SiteId() 不同——SiteId 查無會**建站**（寫入），守衛絕不能帶這種副作用。 */
 static async Task<int?> TrySiteId(SqlConnection cn, string site)
 {
     var v = await Scalar(cn, null, "SELECT site_id FROM dbo.sites WHERE name=@n", ("@n", site));
     return v is null or DBNull ? null : Convert.ToInt32(v);
+}
+
+/* 資安審查（v24.16）：逾期「待回報」點工單的刪除限主管（OverdueReportGuard 的配套）。
+   刪除本身是正常操作（重複單/取消申請），故走**主管升級**而非禁止——
+   與規則 2、節點 61/63 的守衛同一形。僅點工、僅逾期單；其餘刪除照舊。 */
+static async Task<IResult?> OverdueDeleteGuard(SqlConnection cn, JsonObject body, Authz az)
+{
+    if (Sx(body, "kind") != "labor") return null;
+    var site = Sx(body, "site");
+    var id = Sx(body, "id");
+    if (site is null || id is null || !Wr.IdRe.IsMatch(id)) return null;
+    if (az.CanLeadOverride(site)) return null;
+
+    var (lockStart, windowDays) = await LaborLockConfig(cn);
+    var today = DateOnly.FromDateTime(DateTime.Now);
+    if (today <= AddWorkdays(lockStart, windowDays)) return null;   // 生效日＋窗口前零查詢短路
+
+    var sid = await TrySiteId(cn, site);
+    if (sid is null) return null;
+    var row = (await Query(cn,
+        "SELECT status, CONVERT(varchar(10), work_date, 23) AS wd FROM dbo.labor_records WHERE id=@id AND site_id=@s",
+        ("@id", id), ("@s", sid.Value))).FirstOrDefault();
+    if (row is null || row["status"] as string != "待回報") return null;   // 已回報另有 ReportedDeleteGuard
+    if (DateOnly.TryParseExact(row["wd"] as string ?? "", "yyyy-MM-dd",
+            CultureInfo.InvariantCulture, DateTimeStyles.None, out var d)
+        && d >= lockStart && today > AddWorkdays(d, windowDays))
+        return Results.Json(new { error = "forbidden",
+            message = $"本單已超過 {windowDays} 個工作天的回報期限並鎖定，刪除僅限工地主管（避免刪單重開繞過回報鎖）" },
+            statusCode: 403);
+    return null;
 }
 
 static async Task<IResult?> ReportedDeleteGuard(SqlConnection cn, JsonObject body, Authz az)

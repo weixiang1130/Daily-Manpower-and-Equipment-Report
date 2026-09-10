@@ -556,8 +556,22 @@ function signReturnError(signDate, workDate){
    下發，boot／refreshData 經 applyLaborLockConfig 套用）——生效日本就預定
    「部署日確定後再調」，兩份寫死常數必出同步縫（改期還得重編譯＋等快取換版）。
    下兩值只是「還沒拿到 master」時的預設，與後端 Wr 預設同值。 */
-let LABOR_REPORT_WINDOW_DAYS = 3;
+let LABOR_REPORT_WINDOW_DAYS = 3;   // 單位＝工作天（使用者 2026-09-10 更正：不是日曆天）
 let LABOR_REPORT_LOCK_START = "2026-10-01";
+
+/* 出工日之後的第 n 個「工作天」（週六、週日不計；與後端 AddWorkdays 同一口徑）。
+   ⚠ 國定假日**不排除**——排除需要逐年假日清單，現階段未維護；
+     日後若要，把假日清單放進 app_settings 的 labor_report_lock 一併下發即可。 */
+function addWorkdays(dateStr, n){
+  const d = new Date(dateStr + "T00:00:00");   // 本地時區（計價紅線 2）
+  let left = n;
+  while(left > 0){
+    d.setDate(d.getDate() + 1);
+    const dow = d.getDay();
+    if(dow !== 0 && dow !== 6) left--;
+  }
+  return localDate(d);
+}
 function applyLaborLockConfig(m){
   if(!m || typeof m !== "object") return;
   if(typeof m.start === "string" && /^\d{4}-\d{2}-\d{2}$/.test(m.start)) LABOR_REPORT_LOCK_START = m.start;
@@ -574,9 +588,10 @@ function laborReportLockError(rec){
      「真的已回報」的編輯放行；status=已回報但無 report 的半殘單不豁免 */
   if(!rec || isReported(rec)) return null;
   if(!rec.date || rec.date < LABOR_REPORT_LOCK_START) return null;  // 邊界 2：不溯及既往
-  const deadline = addDays(rec.date, LABOR_REPORT_WINDOW_DAYS);
+  // 期限＝出工日後第 N 個**工作天**（使用者 2026-09-10 更正：不是日曆天）
+  const deadline = addWorkdays(rec.date, LABOR_REPORT_WINDOW_DAYS);
   if(localDate() <= deadline) return null;
-  return `本單出工日 ${rec.date}，已超過 ${LABOR_REPORT_WINDOW_DAYS} 天的回報期限（最晚 ${deadline}）`;
+  return `本單出工日 ${rec.date}，已超過 ${LABOR_REPORT_WINDOW_DAYS} 個工作天的回報期限（最晚 ${deadline}）`;
 }
 /* 鎖定訊息尾句共用（原本三處各寫一份，改字會漏） */
 const LABOR_LOCK_CONTACT = "——本單已鎖定，請洽工地主管代為回報";
@@ -1318,7 +1333,7 @@ function initLaborApplyForm(){
        主管／管理員放行。與伺服器 OverdueReportGuard 規則 2 成對（那邊才是防線）。 */
     if(existing && existing.date !== date && laborReportLockError(existing)
        && !canLeadOverride(MASTER.currentSite)){
-      toast(`本單已超過 ${LABOR_REPORT_WINDOW_DAYS} 天的回報期限並鎖定，出工日期僅限工地主管修改`);
+      toast(`本單已超過 ${LABOR_REPORT_WINDOW_DAYS} 個工作天的回報期限並鎖定，出工日期僅限工地主管修改`);
       return;
     }
 
@@ -2026,8 +2041,8 @@ function renderLaborList(){
          MAX 審查修正：主管自己看到「請洽工地主管」是叫他去找他自己——提示按身分分流 */
       const lockTag65 = !reported && laborReportLockError(r)
         ? `<span class="tag bad" title="${canLeadOverride(MASTER.currentSite)
-             ? `超過 ${LABOR_REPORT_WINDOW_DAYS} 天未回報已鎖定；您具主管權限，可代為回報`
-             : `超過 ${LABOR_REPORT_WINDOW_DAYS} 天未回報，已鎖定；請洽工地主管代為回報`}">🔒逾期</span>`
+             ? `超過 ${LABOR_REPORT_WINDOW_DAYS} 個工作天未回報已鎖定；您具主管權限，可代為回報`
+             : `超過 ${LABOR_REPORT_WINDOW_DAYS} 個工作天未回報，已鎖定；請洽工地主管代為回報`}">🔒逾期</span>`
         : "";
       const diffTag = !reported ? "—" : (rep.diff===0 ? '<span class="tag ok">相符</span>' : '<span class="tag bad">'+fmt(rep.diff)+'</span>');
       const reportBtnLabel = reported ? "編輯回報" : "填寫回報";

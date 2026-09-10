@@ -1,4 +1,4 @@
-/* ==========================================================================
+﻿/* ==========================================================================
    點工機具稽核系統 — 地端 API（.NET 8 Minimal API）
 
    這是 docs/API-CONTRACT.md 的地端實作。前端（frontend/）完全不需修改，
@@ -1719,6 +1719,19 @@ static string? DateGuardError(JsonObject rec, string? storedDate, string? stored
    設定缺漏或壞 JSON 時退回 Wr 的程式預設值（fail-safe 到較寬鬆的一側，
    不讓一筆壞設定把全公司的回報鎖死）。同一份值由 GET 的 master.laborReportLock
    下發給前端——兩端永遠同一份，改期不用重編譯也不用等快取換版。 */
+/* 出工日之後的第 n 個「工作天」（週六、週日不計；與前端 addWorkdays 同一口徑）。
+   ⚠ 國定假日**不排除**——排除需要逐年假日清單，現階段未維護；
+     日後若要，把假日清單放進 labor_report_lock 設定一併下發即可。 */
+static DateOnly AddWorkdays(DateOnly d, int n)
+{
+    while (n > 0)
+    {
+        d = d.AddDays(1);
+        if (d.DayOfWeek is not (DayOfWeek.Saturday or DayOfWeek.Sunday)) n--;
+    }
+    return d;
+}
+
 static async Task<(DateOnly start, int windowDays)> LaborLockConfig(SqlConnection cn)
 {
     var start = Wr.LaborReportLockStart;
@@ -1766,12 +1779,14 @@ static async Task<IResult?> OverdueReportGuard(SqlConnection cn, JsonObject body
 
     var (lockStart, windowDays) = await LaborLockConfig(cn);
     var today = DateOnly.FromDateTime(DateTime.Now);
-    if (today <= lockStart.AddDays(windowDays)) return null;   // 生效日＋窗口前不可能有逾期單
+    /* 期限＝出工日後第 N 個**工作天**（使用者 2026-09-10 更正：不是日曆天）。
+       最早可能的期限＝生效日當天出工的期限，之前零紀錄查詢短路。 */
+    if (today <= AddWorkdays(lockStart, windowDays)) return null;
 
     bool Overdue(string? ds)
         => DateOnly.TryParseExact(ds ?? "", "yyyy-MM-dd",
                CultureInfo.InvariantCulture, DateTimeStyles.None, out var d)
-           && d >= lockStart && today > d.AddDays(windowDays);
+           && d >= lockStart && today > AddWorkdays(d, windowDays);
 
     var row = (await Query(cn,
         @"SELECT r.status, CONVERT(varchar(10), r.work_date, 23) AS wd,
@@ -1787,7 +1802,7 @@ static async Task<IResult?> OverdueReportGuard(SqlConnection cn, JsonObject body
         if (Dx(body, "baseV") is decimal bv && bv > 0) return null;   // 規則 4：讓 409 deleted 出得來
         if (incomingReported && Overdue(Sx(rec, "date")))             // 直接以已回報姿態建新單（僅 API）
             return Results.Json(new { error = "forbidden",
-                message = $"出工日已超過 {windowDays} 天的回報期限，本單已鎖定——請洽工地主管代為回報" },
+                message = $"出工日已超過 {windowDays} 個工作天的回報期限，本單已鎖定——請洽工地主管代為回報" },
                 statusCode: 403);
         return null;
     }
@@ -1801,7 +1816,7 @@ static async Task<IResult?> OverdueReportGuard(SqlConnection cn, JsonObject body
         // 規則 1：逾期首次回報——新舊日期都看（單一請求內的改日繞過在此擋）
         if (Overdue(Sx(rec, "date")) || Overdue(storedDate))
             return Results.Json(new { error = "forbidden",
-                message = $"出工日已超過 {windowDays} 天的回報期限，本單已鎖定——請洽工地主管代為回報" },
+                message = $"出工日已超過 {windowDays} 個工作天的回報期限，本單已鎖定——請洽工地主管代為回報" },
                 statusCode: 403);
         return null;
     }
@@ -1809,7 +1824,7 @@ static async Task<IResult?> OverdueReportGuard(SqlConnection cn, JsonObject body
     // 規則 2：逾期待回報單的出工日不得變更——封掉「先改日期、再回報」的兩步繞過
     if (Overdue(storedDate) && !string.Equals(Sx(rec, "date"), storedDate, StringComparison.Ordinal))
         return Results.Json(new { error = "forbidden",
-            message = $"本單已超過 {windowDays} 天的回報期限並鎖定，出工日期僅限工地主管修改（避免改日期繞過回報鎖）" },
+            message = $"本單已超過 {windowDays} 個工作天的回報期限並鎖定，出工日期僅限工地主管修改（避免改日期繞過回報鎖）" },
             statusCode: 403);
     return null;
 }

@@ -1,4 +1,4 @@
-# Changelog
+﻿# Changelog
 
 版本異動摘要。完整背景與設計決策請見 [`docs/milestones/`](docs/milestones/README.md)。
 
@@ -47,7 +47,7 @@
 - 詳見 [`docs/milestones/66-dashboard-open-overview.md`](docs/milestones/66-dashboard-open-overview.md)
 
 ## [節點 65] 2026-09-10 — 點工三日回報鎖＋工地主管代處理權
-- 長官裁示：點工出工日＋**3 個日曆天**內（含第 3 天）須回報，逾期鎖定不給回報
+- 長官裁示：點工出工日＋**3 個工作天**內（週六日不計；2026-09-10 更正口徑）須回報，逾期鎖定不給回報
 - **該站工地主管（節點 61 白名單）與管理員可代為回報**（送出前確認框）；
   代處理權收斂成通則 `CanLeadOverride`——「工地承辦要做什麼，都需要工地主管同意」
 - 三條邊界：只鎖「待回報→已回報」的送出（**已回報單的編輯不受鎖**，

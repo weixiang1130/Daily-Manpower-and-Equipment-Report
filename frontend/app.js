@@ -538,6 +538,26 @@ function signReturnError(signDate, workDate){
   return null;
 }
 
+/* ---------- 節點 65：點工三日回報鎖（長官裁示） ----------
+   出工日＋3 個日曆天內（含第 3 天）可回報，第 4 天起工地承辦鎖死；
+   **該站主管（canLeadOverride）可代為回報**、管理員不受限。
+   三條邊界（與伺服器 OverdueReportGuard 同口徑）：
+   1. 只鎖「待回報→已回報」的送出——已回報單的後續編輯不受此鎖
+      （節點 63 的稽核差異更正靠事後修正數字，鎖編輯會堵死更正流程）
+   2. 只鎖出工日 ≥ 生效日的單（不溯及既往，部署時不會瞬間鎖死全部欠單）
+   3. 僅點工（機具不鎖）
+   ⚠ 這裡是 UI 動線；真正的把關在伺服器（同節點 61 的前後端成對原則）。 */
+const LABOR_REPORT_WINDOW_DAYS = 3;   // 與後端 Wr.LaborReportWindowDays 同值
+/* ⚠ 生效日暫定 2026-10-01，實際部署日確定後與後端 Wr.LaborReportLockStart **同步**調整 */
+const LABOR_REPORT_LOCK_START = "2026-10-01";
+function laborReportLockError(rec){
+  if(!rec || rec.status === "已回報") return null;          // 邊界 1
+  if(!rec.date || rec.date < LABOR_REPORT_LOCK_START) return null;  // 邊界 2
+  const deadline = addDays(rec.date, LABOR_REPORT_WINDOW_DAYS);
+  if(localDate() <= deadline) return null;
+  return `本單出工日 ${rec.date}，已超過 ${LABOR_REPORT_WINDOW_DAYS} 天的回報期限（最晚 ${deadline}）`;
+}
+
 /* v24.14 總覽追蹤口徑：不論「未回報」還是「簽單未繳」，追的都是同一個 20 天窗口
    ——基準日（signBaseDate：月租＝租期迄日、其餘＝出工日）＋20 天。
    回傳剩餘天數（負值＝已超過期限）；無基準日回傳 null（無從追蹤）。
@@ -1440,6 +1460,19 @@ function initLaborReportForm(){
     const signErr = signReturnError(document.getElementById("l_signReturnDate").value, rec.date);
     if(signErr){ toast(signErr); return; }
 
+    /* 節點 65：三日回報鎖——送出端再擋一次（表單可能跨日開著，開表單時還沒逾期）。
+       主管／管理員給確認框代為回報；真正的把關在伺服器 OverdueReportGuard。 */
+    {
+      const lockErr65 = laborReportLockError(rec);
+      if(lockErr65){
+        if(!canLeadOverride(MASTER.currentSite)){
+          toast(lockErr65 + "——本單已鎖定，請洽工地主管代為回報"); return;
+        }
+        const okLead = confirm(`⚠ ${lockErr65}。\n\n您具本工地的主管（或管理員）權限，要代為回報這張逾期單嗎？`);
+        if(!okLead) return;
+      }
+    }
+
     /* v23：代辦列的檢查是**硬性擋下**（不是可確認的警告）——代辦超量會讓代扣金額
        大於我們實際付出去的錢，那是直接算錯帳，不能讓人按確認繞過去 */
     // 0 工單也可能只代扣加班時數——驗證一律執行；collectAgentErrors 本來就
@@ -1776,6 +1809,15 @@ async function loadLaborReportRecord(id){
   }
   if(!rec){ toast("此紀錄已被其他人刪除"); renderAll(); return; }
   if(isLockedDate(rec.date)){ toast(`此單日期已鎖檔（${lockReason(rec.date)}），僅限管理員修改`); renderLaborList(); return; }
+  /* 節點 65：逾期三日的待回報單，承辦連表單都不給開（省得填完才被擋）；
+     主管／管理員照常開，送出時再走一次主管確認。鎖檔訊息優先（上一行）。 */
+  {
+    const lockErr65 = laborReportLockError(rec);
+    if(lockErr65 && !canLeadOverride(MASTER.currentSite)){
+      toast(lockErr65 + "——本單已鎖定，請洽工地主管代為回報");
+      return;
+    }
+  }
   editingLaborReportId = id;
   editingLaborReportBaseV = rec.v || 0;   // v18：版本快照，送出以此為 baseV
   // v24.2：附件改由回報端維護——載入單據上既有的，讓人可檢視/刪除/續傳
@@ -1879,10 +1921,14 @@ function renderLaborList(){
       const statusTag = reported
         ? (rep.zeroWork ? '<span class="tag bad">0工</span>' : '<span class="tag ok">已回報</span>')
         : '<span class="tag warn">待回報</span>';
+      /* 節點 65：逾期鎖定標記——讓承辦看清單就知道這張要找主管，不用點進去才被擋 */
+      const lockTag65 = !reported && laborReportLockError(r)
+        ? `<span class="tag bad" title="超過 ${LABOR_REPORT_WINDOW_DAYS} 天未回報，已鎖定；請洽工地主管代為回報">🔒逾期</span>`
+        : "";
       const diffTag = !reported ? "—" : (rep.diff===0 ? '<span class="tag ok">相符</span>' : '<span class="tag bad">'+fmt(rep.diff)+'</span>');
       const reportBtnLabel = reported ? "編輯回報" : "填寫回報";
       return `<tr>
-        <td>${statusTag}${auditMismatchTag("labor", r)}</td>
+        <td>${statusTag}${lockTag65}${auditMismatchTag("labor", r)}</td>
         <td>${esc(r.date)}</td><td>${esc(r.vendor)}</td><td>${esc(r.applicant)}</td>
         <td>${fmt(r.required)}</td>
         <td>${reported ? fmt(rep.actual) : "—"}</td><td>${diffTag}</td>
@@ -6247,6 +6293,11 @@ function canDeleteReported(site){
   if(!AUTHZ) return isAdmin();
   return !!AUTHZ.isAdmin || (Array.isArray(AUTHZ.leadSites) && AUTHZ.leadSites.includes(site));
 }
+
+/* 主管代處理權（節點 65 把節點 61 的語意定為通則）：工地承辦的超常規操作
+   ——刪已回報單、逾期三日後的回報——由該站主管代為執行。與後端
+   Authz.CanLeadOverride 同一口徑；判定收斂在 canDeleteReported，勿另寫一份。 */
+function canLeadOverride(site){ return canDeleteReported(site); }
 
 function initAdmin(){
   document.getElementById("adminToggleBtn").addEventListener("click", ()=>{

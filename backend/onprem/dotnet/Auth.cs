@@ -91,9 +91,15 @@ public sealed record Authz(Role Role, IReadOnlySet<string> Sites, bool AllSites)
     public bool IsAdmin => Role == Role.Admin;
     /// 稽核模組：成控與管理者可見。v13 只在 UI 隱藏，這裡才是真隔離
     public bool CanSeeAudits => Role is Role.Admin or Role.CostControl;
-    /* 刪除「已回報」單（計價依據）：系統管理者不限站；工地主管限**自己是 Director 的站**
-       （v24.15）。鎖檔（結算凍結）另由 LockGuard 把關且優先——主管能刪的是未鎖檔的已回報單。 */
-    public bool CanDeleteReported(string site) => IsAdmin || LeadSites.Contains(site);
+    /* 主管代處理權（節點 65 把節點 61 的語意定為通則）：工地承辦的**超常規操作**——
+       刪除已回報單（節點 61）、逾期三日後的回報（節點 65）——一律由**該站主管**代為執行
+       （使用者 2026-09-10 裁示：「工地承辦要做什麼，都需要工地主管同意」）。
+       同一組人：系統管理者不限站；主管白名單（LeadSites）限自己的站。
+       日後再有同類「承辦被擋、主管可代做」的能力，判定一律收斂到這裡，勿另起爐灶。 */
+    public bool CanLeadOverride(string site) => IsAdmin || LeadSites.Contains(site);
+    /* 刪除「已回報」單（計價依據，節點 61）。鎖檔（結算凍結）另由 LockGuard
+       把關且優先——主管能刪的是未鎖檔的已回報單。 */
+    public bool CanDeleteReported(string site) => CanLeadOverride(site);
 }
 
 public sealed class AuthOptions

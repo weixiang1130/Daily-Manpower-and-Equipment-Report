@@ -957,6 +957,14 @@ app.MapPost("/api/data", async (HttpContext ctx) =>
         var denied = await LockGuard(cn, body, op);
         if (denied is not null) return denied;
 
+        /* 節點 65：點工三日回報鎖（伺服器端）。鎖檔優先（上方），本守衛次之——
+           結算凍結是更強的控制，訊息也該以它為準。 */
+        if (op == "record")
+        {
+            var denied65 = await OverdueReportGuard(cn, body, azl);
+            if (denied65 is not null) return denied65;
+        }
+
         /* 節點 57（資安審查）：「已回報的單據是計價依據，僅限管理員刪除」——
            這條規則原本**只有前端在擋**（清單不顯示刪除鈕＋toast），直接呼叫
            op:deleteRecord 就繞過去了，與鎖檔修正前是同一類「前端管控＝按 F12 可破」。
@@ -1574,6 +1582,54 @@ static string? DateGuardError(JsonObject rec, string? storedDate, string? stored
    v24.15：工地主管（SiteLead）對**自己是 Director 的站**（az.CanDeleteReported）放行——
    多站主管每個 Director 站都放行；同一人在只是工程師的站（不在 LeadSites）仍被擋。
    鎖檔（結算凍結）由 LockGuard 先擋且優先，主管能刪的是未鎖檔的已回報單。 */
+/* 節點 65：點工三日回報鎖（伺服器端；長官裁示「三日內未回報就鎖起來」）。
+   出工日＋LaborReportWindowDays 個日曆天內可回報，之後工地承辦鎖死；
+   **該站主管（az.CanLeadOverride）可代為回報**、管理員不受限（呼叫端已排除）。
+   範圍刻意收窄，三條邊界：
+   1. 只鎖「待回報 → 已回報」的送出。**已回報單的後續編輯不受此鎖**——
+      節點 63 的稽核差異更正正是靠工地端事後修正數字，鎖編輯會把更正流程堵死。
+   2. 只鎖出工日 ≥ LaborReportLockStart 的單（不溯及既往）——否則部署當下
+      所有欠單瞬間全鎖，歷史帳永遠清不掉。
+   3. 僅點工（使用者裁示）；機具不鎖。
+   ⚠ 新舊日期都查（LockGuard 的教訓）：只查送進來的日期，把逾期單的出工日
+     改成今天再送回報就繞過去了。
+   形狀錯誤或查無資料一律回 null 交給 OpRecord 處理（400／衝突），
+   本守衛只管一件事：逾期的首次回報 → 403。 */
+static async Task<IResult?> OverdueReportGuard(SqlConnection cn, JsonObject body, Authz az)
+{
+    if (Sx(body, "kind") != "labor") return null;
+    if (body["record"] is not JsonObject rec) return null;
+    if (Sx(rec, "status") != "已回報") return null;   // 只有「送出回報」受限；存回待回報不管
+    var site = Sx(body, "site");
+    var id = Sx(rec, "id");
+    if (site is null || id is null || !Wr.IdRe.IsMatch(id)) return null;
+    if (az.CanLeadOverride(site)) return null;        // 該站主管代處理（節點 65 核心）
+
+    static bool Overdue(string? ds)
+        => DateOnly.TryParseExact(ds ?? "", "yyyy-MM-dd",
+               CultureInfo.InvariantCulture, DateTimeStyles.None, out var d)
+           && d >= Wr.LaborReportLockStart
+           && DateOnly.FromDateTime(DateTime.Now) > d.AddDays(Wr.LaborReportWindowDays);
+
+    var sid = await Scalar(cn, null, "SELECT site_id FROM dbo.sites WHERE name=@n", ("@n", site));
+    string? storedStatus = null, storedDate = null;
+    if (sid is not null)
+    {
+        storedStatus = await Scalar(cn, null,
+            "SELECT status FROM dbo.labor_records WHERE id=@id AND site_id=@s",
+            ("@id", id), ("@s", Convert.ToInt32(sid))) as string;
+        storedDate = await Scalar(cn, null,
+            "SELECT CONVERT(varchar(10), work_date, 23) FROM dbo.labor_records WHERE id=@id AND site_id=@s",
+            ("@id", id), ("@s", Convert.ToInt32(sid))) as string;
+    }
+    if (storedStatus == "已回報") return null;         // 編輯既有回報放行（邊界 1）
+
+    if (!Overdue(Sx(rec, "date")) && !Overdue(storedDate)) return null;
+    return Results.Json(new { error = "forbidden",
+        message = $"出工日已超過 {Wr.LaborReportWindowDays} 天的回報期限，本單已鎖定——請洽工地主管代為回報" },
+        statusCode: 403);
+}
+
 static async Task<IResult?> ReportedDeleteGuard(SqlConnection cn, JsonObject body, Authz az)
 {
     var site = Sx(body, "site");
@@ -2587,6 +2643,13 @@ static class Wr
 
     /* 簽單繳回日的期限天數（合約 §4.7，與前端常數 SIGN_RETURN_MAX_DAYS 同值） */
     public const int SignReturnMaxDays = 20;
+
+    /* 節點 65：點工回報期限（日曆天，含週末；與前端 LABOR_REPORT_WINDOW_DAYS 同值）
+       與生效日（不溯及既往——只鎖出工日 ≥ 生效日的單；與前端 LABOR_REPORT_LOCK_START 同值）。
+       ⚠ 生效日暫定 2026-10-01，實際部署日確定後兩端**同步**調整——只改一邊
+         會出現「前端擋、後端放」或反過來的縫。 */
+    public const int LaborReportWindowDays = 3;
+    public static readonly DateOnly LaborReportLockStart = new(2026, 10, 1);
 
     /* app_settings 的鍵名（v23.2）。Auth.cs 也讀同一把鍵——**改這裡就好，勿各寫一份** */
     public const string AdminDeptKey = "admin_departments";

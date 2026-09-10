@@ -42,6 +42,27 @@
 - 地端且讀取者為系統管理者時，`master` 另含 `adminDepartments`、`siteGrants` 與 `siteLeads`（§4.1）；
   `siteGrants`／`siteLeads` **不回給一般使用者**
 
+#### 2.1.1 未授權工地的「瘦身投影」（v24.16 節點 66；僅地端權限模式）
+
+總覽開放全員後，`master.sites` 列出**全部**啟用中工地（不再按授權過濾），
+使用者**看不到的站**在 `stores` 改回一個瘦身投影而非整包移除：
+
+```json
+"看不到的站": { "overviewOnly": true, "config": {},
+  "labor": [ { "date","status","vendor","categories",
+               "report": { "reportedAt","diff","signReturnDate","zeroWork","actual","totalOT",
+                            "workTypes":[{"type","work"}] } } ],
+  "equipment": [ { "date","status","billing","rentTo", "report": { "signReturnDate" } } ] }
+```
+
+- 用途：前端總覽對全站算「整體概況（卡片）」與「本月出工量排名」；
+  追蹤提醒清單／各工地列控總覽／最近出工回報只列可進入的站
+- **不下發**：紀錄 id、人名（申請人/工程師/簽認/稽核人）、地點、工作內容、備註、
+  逐人/逐台明細、代辦、稽核、附件、名單池——資料隔離原則不變
+- `overviewOnly: true` 是前端「鎖站不給進」的判定依據（`siteEnterable()`）；
+  `?site=` 單站讀取與所有寫入對未授權站**仍回 403**（§3 的 CanSee 守衛不變）
+- 雲端／`Auth:Mode=Off`：無此投影（az 為 null 時 stores 照舊全量），行為與改版前相同
+
 ### 2.2 `GET ?site=<工地名>` — 單一工地（編輯前抓最新）
 
 回應：`{ "config": {...}|null, "labor": [...], "equipment": [...] }`

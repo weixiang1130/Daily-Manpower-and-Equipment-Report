@@ -480,6 +480,78 @@ static void StripAudits(JsonNode? store, Authz? az)
             }
 }
 
+/* 節點 66：未授權工地的「瘦身投影」——總覽開放全員後，前端要能對**全部**工地
+   算整體概況（卡片六數字）與本月出工量排名（工地榜/分包商榜），口徑全在前端
+   （reportTypeRows/trackLeftDays 唯一權威，不在 C# 重寫第二份）。
+   因此下發的是**最小欄位集的紀錄**而不是算好的數字：
+   - 點工：date/status/vendor/categories ＋ report{reportedAt,diff,signReturnDate,
+     zeroWork,actual,totalOT,workTypes[{type,work}]}
+   - 機具：date/status/billing/rentTo ＋ report{signReturnDate}（追蹤計數用）
+   **不下發**：id、人名（申請人/工程師/簽認/稽核人）、地點、工作內容、備註、
+   逐人/逐台明細、代辦、稽核、附件、時數細節。config 給空物件
+   （不能給 null——boot 的種子邏輯看到假值會誤發 apiSaveConfig，且必 403）。
+   overviewOnly=true 是前端「鎖站不給進」的判定依據。
+   ⚠ 一律 DeepClone——JsonNode 單親限制，掛過樹的節點不能直接搬。 */
+static JsonObject SlimOverviewStore(JsonNode? full)
+{
+    var slim = new JsonObject
+    {
+        ["overviewOnly"] = true,
+        ["config"] = new JsonObject(),
+        ["labor"] = new JsonArray(),
+        ["equipment"] = new JsonArray()
+    };
+    if (full is not JsonObject f) return slim;
+
+    foreach (var n in (f["labor"] as JsonArray) ?? new JsonArray())
+    {
+        if (n is not JsonObject r) continue;
+        var o = new JsonObject
+        {
+            ["date"] = r["date"]?.DeepClone(),
+            ["status"] = r["status"]?.DeepClone(),
+            ["vendor"] = r["vendor"]?.DeepClone(),          // 分包商榜（使用者裁示全員可見）
+            ["categories"] = r["categories"]?.DeepClone()   // v11 前舊單的工種 fallback
+        };
+        if (r["report"] is JsonObject rep)
+        {
+            o["report"] = new JsonObject
+            {
+                ["reportedAt"] = rep["reportedAt"]?.DeepClone(),
+                ["diff"] = rep["diff"]?.DeepClone(),
+                ["signReturnDate"] = rep["signReturnDate"]?.DeepClone(),
+                ["zeroWork"] = rep["zeroWork"]?.DeepClone(),
+                ["actual"] = rep["actual"]?.DeepClone(),
+                ["totalOT"] = rep["totalOT"]?.DeepClone(),
+                ["workTypes"] = new JsonArray(((rep["workTypes"] as JsonArray) ?? new JsonArray())
+                    .OfType<JsonObject>()
+                    .Select(w => (JsonNode)new JsonObject
+                    { ["type"] = w["type"]?.DeepClone(), ["work"] = w["work"]?.DeepClone() })
+                    .ToArray())
+            };
+        }
+        else o["report"] = null;
+        ((JsonArray)slim["labor"]!).Add(o);
+    }
+
+    foreach (var n in (f["equipment"] as JsonArray) ?? new JsonArray())
+    {
+        if (n is not JsonObject r) continue;
+        var o = new JsonObject
+        {
+            ["date"] = r["date"]?.DeepClone(),
+            ["status"] = r["status"]?.DeepClone(),
+            ["billing"] = r["billing"]?.DeepClone(),        // signBaseDate：月租以租期迄日為基準
+            ["rentTo"] = r["rentTo"]?.DeepClone()
+        };
+        o["report"] = r["report"] is JsonObject rep2
+            ? new JsonObject { ["signReturnDate"] = rep2["signReturnDate"]?.DeepClone() }
+            : null;
+        ((JsonArray)slim["equipment"]!).Add(o);
+    }
+    return slim;
+}
+
 /* ---------- 讀取整站資料 ---------- */
 static async Task<JsonObject> ReadStores(SqlConnection cn, string? onlySite)
 {
@@ -866,11 +938,14 @@ app.MapGet("/api/data", async (HttpContext ctx) =>
     }
 
     // 合約 §2.1：{ master, stores }。master.sites 只列 is_active=1（退場專案保留歷史但不上線）
+    /* 節點 66：master.sites **不再按授權過濾**——總覽的「整體概況／本月出工量排名」
+       開放全員看全站，前端選站清單也列出全部（未授權的站鎖住、點了被擋）。
+       資料隔離沒有放鬆：看不到的站在下方 stores 只給**瘦身投影**（SlimOverviewStore），
+       可進入與否的權威是 /whoami 與各站 store 的 overviewOnly 標記。 */
     var siteRows = await Query(cn, "SELECT name FROM dbo.sites WHERE is_active = 1 ORDER BY sort_order");
-    var visible = siteRows.Select(s => (string)s["name"]!).Where(n => az is null || az.CanSee(n)).ToArray();
     var master = new JsonObject
     {
-        ["sites"] = new JsonArray(visible.Select(n => (JsonNode)JsonValue.Create(n)!).ToArray())
+        ["sites"] = new JsonArray(siteRows.Select(s => (JsonNode)JsonValue.Create((string)s["name"]!)!).ToArray())
     };
     // v23.2：管理員部門白名單（合約 §4.1）。存 JSON 字串，原樣嵌回而不是變成字串值
     var deptRow = await Query(cn, "SELECT value_json FROM dbo.app_settings WHERE setting_key = @k",
@@ -896,9 +971,12 @@ app.MapGet("/api/data", async (HttpContext ctx) =>
     var stores = await ReadStores(cn, null);
     if (az is not null)
     {
-        // master.sites 與 stores 必須同步過濾：只濾清單而 stores 照給，
-        // 等於資料還是送到瀏覽器了，那是「看起來隔離」而不是隔離。
-        foreach (var k in stores.Select(kv => kv.Key).Where(k => !az.CanSee(k)).ToList()) stores.Remove(k);
+        /* 節點 66：看不到的站從「整包移除」改成「瘦身投影」。
+           「只濾清單而 stores 照給＝看起來隔離」的原則不變——瘦身投影只含
+           算總覽必需的統計欄位（日期/狀態/廠商/工種工數/追蹤日期），
+           人名、地點、內容、備註、代辦、稽核、附件一概不下發（見 SlimOverviewStore）。 */
+        foreach (var k in stores.Select(kv => kv.Key).Where(k => !az.CanSee(k)).ToList())
+            stores[k] = SlimOverviewStore(stores[k]);
         foreach (var kv in stores) StripAudits(kv.Value, az);
     }
     var payload = new JsonObject { ["master"] = master, ["stores"] = stores };

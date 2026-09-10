@@ -634,7 +634,8 @@ async function boot(){
       SITE_CACHE[site] = {
         config: st.config || null,
         labor: st.labor || [],
-        equipment: st.equipment || []
+        equipment: st.equipment || [],
+        overviewOnly: !!st.overviewOnly   // 節點 66：未授權站的瘦身標記（siteEnterable 的依據）
       };
       sortRecords(SITE_CACHE[site]);
       if(!SITE_CACHE[site].config){
@@ -651,10 +652,15 @@ async function boot(){
     // v20 的自動進入會立刻把人放回站內，登出等同無效——權限上線後
     // 「可見工地只有一個」正是常態（AUTH-PLAN），這條不可省。
     // 旗標已由 initIdleLogout() 消費（它先於 boot 執行），故讀模組變數
-    if(remembered && MASTER.sites.includes(remembered)){
+    /* 節點 66：MASTER.sites 現在列**全部**工地（未授權的是瘦身站），
+       自動進入與記住的站一律以「可進入的站」（enterableSites）判斷——
+       否則單站使用者的免選直進會因清單變 12 站而失效，
+       記住的站被收回權限後也會直接進到一個看不了的站。 */
+    const enterable = enterableSites();
+    if(remembered && enterable.includes(remembered)){
       enterSite(remembered);
-    }else if(MASTER.sites.length === 1 && !lastLogoutReason){
-      enterSite(MASTER.sites[0]);   // v20：可見工地僅一個時免選直進（為未來 AD 權限過濾鋪路）
+    }else if(enterable.length === 1 && !lastLogoutReason){
+      enterSite(enterable[0]);   // v20：可進入工地僅一個時免選直進
     }else{
       showSiteGate();
     }
@@ -666,11 +672,21 @@ async function boot(){
 
 function showSiteGate(){
   const grid = document.getElementById("siteGateGrid");
-  grid.innerHTML = MASTER.sites.map(s=>`<button type="button" class="gate-btn" data-site="${esc(s)}">${esc(s)}</button>`).join("");
-  grid.querySelectorAll(".gate-btn").forEach(btn=>{
+  /* 節點 66：全部工地都列出來，未授權的鎖住——看得到全貌（總覽開放的一致體驗），
+     點了提示洽成控，不會靜默消失讓人以為系統壞了 */
+  grid.innerHTML = MASTER.sites.map(s=> siteEnterable(s)
+    ? `<button type="button" class="gate-btn" data-site="${esc(s)}">${esc(s)}</button>`
+    : `<button type="button" class="gate-btn gate-btn-locked" data-locked-site="${esc(s)}"
+         title="尚未開通此工地的查閱權限" style="opacity:.45;">🔒 ${esc(s)}</button>`).join("");
+  grid.querySelectorAll(".gate-btn[data-site]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
       document.getElementById("siteGate").hidden = true;
       enterSite(btn.dataset.site);
+    });
+  });
+  grid.querySelectorAll(".gate-btn[data-locked-site]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      toast(`「${btn.dataset.lockedSite}」尚未開通查閱權限——請洽成控申請跨工地授權`);
     });
   });
   document.getElementById("siteGate").hidden = false;
@@ -706,12 +722,14 @@ async function refreshData(silent){
       SITE_CACHE[site] = {
         config: st.config || SITE_CACHE[site]?.config || defaultSiteConfig(),
         labor: st.labor || [],
-        equipment: st.equipment || []
+        equipment: st.equipment || [],
+        overviewOnly: !!st.overviewOnly   // 節點 66：重建快取時標記必須跟著搬，掉了就等於全站解鎖
       };
       sortRecords(SITE_CACHE[site]);
     }
-    if(!MASTER.sites.includes(MASTER.currentSite)){
-      MASTER.currentSite = MASTER.sites[0];
+    /* 節點 66：目前的站被移除**或被收回權限**（變瘦身站）都要退到可進入的站 */
+    if(!MASTER.sites.includes(MASTER.currentSite) || !siteEnterable(MASTER.currentSite)){
+      MASTER.currentSite = enterableSites()[0];
       ssSet("dm_site", MASTER.currentSite);
     }
     renderAll();
@@ -726,13 +744,36 @@ async function refreshData(silent){
 /* ==========================================================
    工地切換（Context Switch）
    ========================================================== */
+/* 節點 66：這個站能不能「進入」（點進去看清單/填單）。
+   總覽開放全員後，MASTER.sites 會列出**全部**工地，未授權的站後端只下發
+   瘦身投影（store.overviewOnly=true）——那些站看得到總覽統計、進不去。
+   ⚠ 判定以資料為準（overviewOnly），不用 AUTHZ.sites 另比對——兩份來源
+     會有先後差；資料到手是什麼形狀，就是什麼權限。
+   雲端／Auth:Mode=Off／舊部署：沒有這個標記 → 一律可進，行為與改版前相同。 */
+function siteEnterable(site){
+  const s = SITE_CACHE[site];
+  return !s || !s.overviewOnly;
+}
+const enterableSites = () => MASTER.sites.filter(siteEnterable);
+
 function renderSitePicker(){
   const sel = document.getElementById("currentSite");
-  sel.innerHTML = MASTER.sites.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join("");
+  // 節點 66：未授權的站列出但鎖住（disabled）——看得到全貌、進不去
+  sel.innerHTML = MASTER.sites.map(s=> siteEnterable(s)
+    ? `<option value="${esc(s)}">${esc(s)}</option>`
+    : `<option value="${esc(s)}" disabled>🔒 ${esc(s)}（未開通）</option>`).join("");
   sel.value = MASTER.currentSite;
   sel.onchange = ()=>switchSiteContext(sel.value);
 }
 function switchSiteContext(site, silent){
+  /* 節點 66：未授權的站擋在門口（disabled option 擋滑鼠，這裡擋程式路徑——
+     追蹤提醒/列控總覽的列點擊、記住的舊站名都會走進來）。
+     後端 CanSee 守衛仍在，這裡是動線不是防線。 */
+  if(!siteEnterable(site)){
+    toast(`「${site}」尚未開通查閱權限——請洽成控申請跨工地授權`);
+    renderSitePicker();   // 把下拉選單彈回目前工地
+    return;
+  }
   MASTER.currentSite = site;
   ssSet("dm_site", site);
   resetLaborApplyForm();
@@ -3038,6 +3079,11 @@ function renderDashboard(){
   const today = localDate();
   const track = [];
   let expiredCount = 0;
+  /* 節點 66：卡片（整體概況）算**全部工地**、追蹤提醒清單只列**自己可進的站**
+     （使用者 2026-09-10 裁示的分區）。計數與清單自此同源不同範圍：
+     overdue/sign 兩個計數在 collect 內對全站累加，push 只發生在可進入的站；
+     expiredCount 是清單的尾註（「另有 N 張超過 20 天」），跟清單同範圍。 */
+  let overdueCount = 0, signCount = 0;
   const collect = (site, kind, rec) => {
     const left = trackLeftDays(rec, today);
     if(left === null) return;
@@ -3047,6 +3093,8 @@ function renderDashboard(){
     if(rec.status !== "已回報" && base < today) type = "未回報";           // 基準日當天還不算逾期
     else if(rec.status === "已回報" && rec.report && !rec.report.signReturnDate) type = "簽單未繳";
     if(!type) return;
+    if(left >= 0){ if(type === "未回報") overdueCount++; else signCount++; }   // 卡片：全站
+    if(!siteEnterable(site)) return;                                          // 清單：自己的站
     if(left < 0){ expiredCount++; return; }
     track.push({ site, kind, type, base, left,
                  vendor: (kind==="機具" ? recVendor(rec) : rec.vendor) || "—",
@@ -3055,8 +3103,6 @@ function renderDashboard(){
   allLabor.forEach(({site, r})=> collect(site, "點工", r));
   allEquip.forEach(({site, x})=> collect(site, "機具", x));
   track.sort((a,b)=> a.left - b.left || String(a.site).localeCompare(b.site));
-  const overdueCount = track.filter(t=>t.type==="未回報").length;
-  const signCount = track.filter(t=>t.type==="簽單未繳").length;
 
   const cards = [
     {label:"本月出工回報次數", value:reportedThisMonth.length, cls:""},
@@ -3075,7 +3121,9 @@ function renderDashboard(){
   renderDashRanking(allLabor);
 
   const recentEl = document.getElementById("recentAudits");
-  const reported = allLabor.filter(({r})=>r.status==="已回報" && r.report)
+  // 節點 66：最近出工回報只列自己可進的站（含廠商與工程師名，未授權站不該看到；
+  // 瘦身資料本來就沒有人名——這裡是動線，資料面已在後端擋掉）
+  const reported = allLabor.filter(({site,r})=> siteEnterable(site) && r.status==="已回報" && r.report)
     .sort((a,b)=>(b.r.report.reportedAt||"").localeCompare(a.r.report.reportedAt||""));
   if(!reported.length){
     recentEl.innerHTML = '<div class="empty-row">尚無出工回報紀錄</div>';
@@ -3154,7 +3202,9 @@ function renderDashRanking(allLabor){
 
 function renderSiteBreakdown(today){
   const el = document.getElementById("siteBreakdown");
-  const rows = MASTER.sites.map(site=>{
+  // 節點 66：各工地列控總覽只列自己可進的站（使用者裁示——這區是「點進去處理」的動線，
+  // 未授權站列了也進不去；全站的宏觀數字由上方卡片與排名負責）
+  const rows = enterableSites().map(site=>{
     const s = SITE_CACHE[site] || {labor:[], equipment:[]};
     const lPending = s.labor.filter(r=>r.status!=="已回報").length;
     const ePending = s.equipment.filter(x=>x.status!=="已回報").length;

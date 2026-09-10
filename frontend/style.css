@@ -806,6 +806,13 @@ td.num{font-family:'DM Mono',Consolas,monospace;}    /* 等寬字讓整數位對
 .rank-table col:nth-child(8){width:10%;}
 .rank-table col:nth-child(9){width:11%;}
 .rank-table th.num,.rank-table td.num{padding-right:18px;}
+/* 節點 62 補強二：廠商排名系列表（vrank）。欄寬由 app.js 的欄位定義以行內 style
+   寫進 col（上方 nth-child 百分比是叫工排名專用，不適用這組表）；
+   fixed 版面下超寬的文字內容以 … 截斷（td 帶 title 可滑過看全文），不溢出蓋鄰欄。
+   表頭改可折行——與 COL_W 清單表同慣例（表頭折行 2～3 字一行），
+   否則「加班時數(前2小時)」這類長欄名會被截字且無 title 可看 */
+.vrank td{overflow:hidden;text-overflow:ellipsis;}
+.vrank th{white-space:normal;overflow:hidden;vertical-align:middle;}
 /* 工種格跨整組（含小計列），舊制單的長字串（多個內容類別串接）需換行不得溢出 */
 .rank-table .rank-type{white-space:normal;word-break:break-all;vertical-align:middle;
   background:var(--bg-surface-1);border-right:1px solid var(--border-medium);}

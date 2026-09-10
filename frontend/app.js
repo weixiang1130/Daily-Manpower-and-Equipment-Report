@@ -4762,20 +4762,36 @@ function buildEngineerEquipRanking(){
   return [...g.values()].sort((a,b)=> b.days - a.days || b.count - a.count);
 }
 
-function buildAgentDeductionSummary(){
+/* 節點 62 補強二：機具代辦併入代辦工種彙總（原「代辦扣抵彙總」表移除）。
+   使用者回報兩表功能重複——計價下架後扣抵彙總只剩「廠商＋列數」，點工部分
+   被工種彙總完全涵蓋，唯一多的就是機具代辦，故整合成一張。
+   機具代辦綁廠商層級、無工種（合約 §4.10）→ 以「（機具代辦）」列呈現：
+   「代辦工數」欄放數量合計——⚠ 單位隨該單計價品項（天／小時），與點工的「工」
+   不同口徑，因此**不折入折算工數**（留白），表下註解明講。 */
+function buildEquipAgentTypeRows(){
   const g = new Map();
-  ["labor","equipment"].forEach(kind=>{
-    rankedRecs(kind)
-      .forEach(r=>{
-        agentDeductions(r, kind).forEach(d=>{
-          const e = g.get(d.vendor) || { vendor: d.vendor, rows: 0, amount: 0, noRate: 0, whys: new Set() };
-          e.rows++;
-          if(d.amount == null){ e.noRate++; e.whys.add(d.why); } else e.amount += d.amount;
-          g.set(d.vendor, e);
-        });
-      });
+  rankedRecs("equipment").forEach(r=>{
+    ((r.report && r.report.agentItems) || []).forEach(a=>{
+      if(!a) return;
+      const vendor = String(a.vendor || "").trim() || "（未填廠商）";
+      const e = g.get(vendor) || { equip: true, vendor, type: "（機具代辦）",
+                                   qty: 0, rows: 0, sources: new Set() };
+      e.qty += Number(a.qty) || 0;
+      e.rows++;
+      e.sources.add(recVendor(r) || "（未填廠商）");
+      g.set(vendor, e);
+    });
   });
-  return [...g.values()].sort((a,b)=> b.amount - a.amount);
+  return [...g.values()].sort((a,b)=> a.vendor.localeCompare(b.vendor, "zh-Hant"));
+}
+
+/* 畫面與 CSV 共用的組表：點工列（工種彙總）＋機具代辦列；
+   舊制警示列固定壓尾（原本就如此），機具列插在它前面。 */
+function buildAgentTypeCombined(){
+  const lab = buildAgentTypeSummary(rankedRecs("labor"), "labor");
+  const eq = buildEquipAgentTypeRows();
+  const li = lab.findIndex(e=>e.vendor === "（v23 前舊制單）");
+  return li >= 0 ? [...lab.slice(0, li), ...eq, ...lab.slice(li)] : [...lab, ...eq];
 }
 
 /* ==========================================================
@@ -4856,14 +4872,23 @@ function buildAgentTypeSummary(recs, kind){
    ⚠ v23.1 曾**刻意保留**代辦扣抵的金額欄，v24.5 起改為一併關閉——
      現場回饋「系統完全不接觸計價議題」，留著金額只會讓人看到
      「代扣金額 0／未能計價原因：未綁定費率」而誤以為系統壞了。
-     計算邏輯與費率資料原樣保留，改一個常數即整組回來。 */
-const VRANK_LABOR_COLS = ["排名","廠商","已回報單數","本工","加班前2h","加班2h後","總工數","代辦扣工","淨工數",
-  ...(PRICING_UI ? ["計價金額","未能計價單數"] : [])];
+     計算邏輯與費率資料原樣保留，改一個常數即整組回來。
+
+   節點 62 補強二（2026-09-10 現場回報版面歪掉）：欄位定義改物件 {t,w,num}——
+   舊版 vrankTableHTML 寫死「第 0 欄＋第 2 欄起＝數字欄」，那是替「排名/名稱/數字…」
+   形狀設計的；欄數或形狀不同的表（當時的兩欄代辦彙總）會把名稱靠右、數字靠左，
+   版面整個歪掉。對齊與欄寬自此都由本組定義驅動，CSV 表頭取 .t（見 vrankHeaders）。 */
+const VRANK_LABOR_COLS = [
+  {t:"排名",w:56,num:1}, {t:"廠商",w:170}, {t:"已回報單數",w:96,num:1},
+  {t:"本工",w:84,num:1}, {t:"加班前2h",w:92,num:1}, {t:"加班2h後",w:92,num:1},
+  {t:"總工數",w:88,num:1}, {t:"代辦扣工",w:92,num:1}, {t:"淨工數",w:90,num:1},
+  ...(PRICING_UI ? [{t:"計價金額",w:96,num:1},{t:"未能計價單數",w:90,num:1}] : [])];
 /* 節點 64：「引導人員(工)」獨立欄——人·工與台·日單位不同，不併入在場天數也不進淨值 */
-const VRANK_EQUIP_COLS = ["排名","廠商","已回報單數","在場天數","月租(台·月)","加班時數","引導人員(工)","代辦扣抵","淨在場天數",
-  ...(PRICING_UI ? ["計價金額","未能計價單數"] : [])];
-const VRANK_DED_COLS   = ["責任歸屬廠商","代辦列數",
-  ...(PRICING_UI ? ["代扣金額","未能計價列數","未能計價原因"] : [])];
+const VRANK_EQUIP_COLS = [
+  {t:"排名",w:56,num:1}, {t:"廠商",w:170}, {t:"已回報單數",w:96,num:1},
+  {t:"在場天數",w:88,num:1}, {t:"月租(台·月)",w:94,num:1}, {t:"加班時數",w:88,num:1},
+  {t:"引導人員(工)",w:96,num:1}, {t:"代辦扣抵",w:88,num:1}, {t:"淨在場天數",w:96,num:1},
+  ...(PRICING_UI ? [{t:"計價金額",w:96,num:1},{t:"未能計價單數",w:90,num:1}] : [])];
 
 const vrankLaborRow = (e,i) => [i+1, e.vendor, e.count, fmtRank(e.work),
   e.ot2 ? fmtRank(e.ot2) : "", e.otOver ? fmtRank(e.otOver) : "", fmtRank(e.units),
@@ -4875,25 +4900,37 @@ const vrankEquipRow = (e,i) => [i+1, e.vendor, e.count, fmtRank(e.days),
   e.guideWork ? fmtRank(e.guideWork) : "",   // 節點 64：引導人員（人·工，獨立欄）
   e.agUnits ? "-" + fmtRank(e.agUnits) : "", fmtRank(e.netUnits),
   ...(PRICING_UI ? [e.amount, e.noRate || ""] : [])];
-const vrankDedRow = e => [e.vendor, e.rows,
-  ...(PRICING_UI ? [e.amount, e.noRate || "", [...e.whys].join("；")] : [])];
 
 /* 工程師機具使用榜（節點 64）——欄位口徑同機具榜，只是分組鍵換成申請人 */
-const ENG_EQUIP_COLS = ["排名","申請人(工程師)","已回報單數","在場天數","月租(台·月)","加班時數","引導人員(工)"];
+const ENG_EQUIP_COLS = [
+  {t:"排名",w:56,num:1}, {t:"申請人(工程師)",w:150}, {t:"已回報單數",w:96,num:1},
+  {t:"在場天數",w:88,num:1}, {t:"月租(台·月)",w:94,num:1}, {t:"加班時數",w:88,num:1},
+  {t:"引導人員(工)",w:96,num:1}];
 const engEquipRow = (e,i) => [i+1, e.name, e.count, fmtRank(e.days),
   e.monthUnits ? fmtRank(e.monthUnits) : "",
   e.ot ? fmtRank(e.ot) : "",
   e.guideWork ? fmtRank(e.guideWork) : ""];
 
+/* CSV 表頭＝畫面欄名（同一份定義，改欄位兩邊一起動） */
+const vrankHeaders = cols => cols.map(c=>c.t);
+
 /* 代辦工種彙總（節點 62）。加班兩欄分開列——前 2 小時與第 3 小時起費率不同
    （計價紅線 1），合併就沒辦法按段扣款。
    「期間」放第一欄（與計價彙總同型）——成本部會把逐月匯出疊在一起，
    沒有期間欄的列疊起來就失去月份歸屬。 */
-const AGENT_TYPE_COLS = ["期間","責任歸屬廠商","工種","代辦工數","加班時數(前2小時)","加班時數(第3小時起)","時數(未分段)","折算工數","代辦列數","來源廠商(本單廠商)"];
-const agentTypeRow = (e, period) => [period, e.vendor, e.type, fmtRank(e.work),
-  e.ot2 ? fmtRank(e.ot2) : "", e.otOver ? fmtRank(e.otOver) : "",
-  e.legacyHours ? fmtRank(e.legacyHours) : "",
-  fmtRank(e.units), e.rows, [...e.sources].join("、")];
+const AGENT_TYPE_COLS = [
+  {t:"期間",w:76}, {t:"責任歸屬廠商",w:126}, {t:"工種",w:110},
+  {t:"代辦工數",w:82,num:1}, {t:"加班時數(前2小時)",w:96,num:1}, {t:"加班時數(第3小時起)",w:104,num:1},
+  {t:"時數(未分段)",w:96,num:1}, {t:"折算工數",w:82,num:1}, {t:"代辦列數",w:80,num:1},
+  {t:"來源廠商(本單廠商)",w:150}];
+const agentTypeRow = (e, period) => e.equip
+  /* 機具代辦列（補強二）：「代辦工數」欄＝數量合計（單位隨計價品項，天／小時），
+     加班與折算工數不適用一律留白——單位不同，折進去就是算錯 */
+  ? [period, e.vendor, e.type, e.qty ? fmtRank(e.qty) : "", "", "", "", "", e.rows, [...e.sources].join("、")]
+  : [period, e.vendor, e.type, fmtRank(e.work),
+     e.ot2 ? fmtRank(e.ot2) : "", e.otOver ? fmtRank(e.otOver) : "",
+     e.legacyHours ? fmtRank(e.legacyHours) : "",
+     fmtRank(e.units), e.rows, [...e.sources].join("、")];
 
 /* ==========================================================
    橫向長條圖（v23.1；零依賴 inline SVG）
@@ -4934,15 +4971,28 @@ function hBarChart(rows, opts){
     + (rest > 0 ? `<p class="hint">圖只列前 ${o.max} 名，另有 ${rest} 項未列出${o.tableBelow ? "——完整資料見下方表格" : ""}。</p>` : "");
 }
 
+/* 節點 62 補強二：對齊與欄寬改由欄位定義（{t,w,num}）驅動。
+   - 舊版把「第 0 欄＋第 2 欄起」寫死成數字欄——欄形狀不同的表會把名稱靠右、
+     數字靠左（2026-09-10 現場截圖回報的版面歪掉）。
+   - 欄寬用**行內 style 寫進 col**：.rank-table col:nth-child 的百分比是
+     叫工排名（工種/排名/…）專用，掛 colgroup 又不給行內寬會被那組規則套走。
+   - 文字欄配 title 屬性——fixed 版面下超寬內容以 …截斷（.vrank 的 CSS），
+     滑過看得到全文，不會溢出蓋到隔壁欄。 */
 function vrankTableHTML(title, cols, rows, note){
+  const colgroup = "<colgroup>" + cols.map(c=>`<col style="width:${c.w || 90}px">`).join("") + "</colgroup>";
+  const cell = (c, i) => {
+    const d = cols[i] || {};
+    const s = esc(String(c));
+    return d.num ? `<td class="num">${s}</td>` : `<td title="${s}">${s}</td>`;
+  };
   const body = rows.length
-    ? rows.map(r=>"<tr>" + r.map((c,i)=>`<td${i===0||i>=2 ? ' class="num"' : ""}>${esc(String(c))}</td>`).join("") + "</tr>").join("")
+    ? rows.map(r=>"<tr>" + r.map(cell).join("") + "</tr>").join("")
     : `<tr><td colspan="${cols.length}" class="empty-row">此期間無資料</td></tr>`;
   return `<div class="summary-title">${esc(title)}</div>
-    <div class="table-wrap"><table class="rank-table">
-    <thead><tr>${cols.map(c=>`<th class="num">${esc(c)}</th>`).join("")}</tr></thead>
+    <div class="table-wrap"><table class="rank-table vrank">${colgroup}
+    <thead><tr>${cols.map(c=>`<th${c.num ? ' class="num"' : ""}>${esc(c.t)}</th>`).join("")}</tr></thead>
     <tbody>${body}</tbody></table></div>`
-    + (note ? `<p class="hint">${note}</p>` : "");
+    + (note ? `<p class="hint rank-hint">${note}</p>` : "");
 }
 
 function renderVendorRankReport(){
@@ -4954,12 +5004,11 @@ function renderVendorRankReport(){
   const lab = buildVendorRanking("labor");
   const eq = buildVendorRanking("equipment");
   const engEq = buildEngineerEquipRanking();                        // 節點 64
-  const ded = buildAgentDeductionSummary();
-  const agt = buildAgentTypeSummary(rankedRecs("labor"), "labor");   // 節點 62
+  const agt = buildAgentTypeCombined();   // 節點 62＋補強二：點工工種列＋機具代辦列（一張表）
   const period = reportPeriodLabel();
   if(cnt) cnt.textContent = `${period}・點工 ${lab.length} 家・機具 ${eq.length} 家`
     + (engEq.length ? `・機具申請 ${engEq.length} 位工程師` : "")
-    + (ded.length ? `・代辦扣抵 ${ded.length} 家` : "");
+    + (agt.length ? `・代辦 ${agt.length} 列` : "");
 
   /* v23.1：先給圖再給表。排名的重點是「誰多誰少、差多少」，
      長條的長度一眼就答得出來；精確數字仍由下方表格負責（§10 圖不取代表） */
@@ -4984,43 +5033,43 @@ function renderVendorRankReport(){
     + vrankTableHTML(`工程師機具使用榜（${period}・依在場天數・按申請人）`, ENG_EQUIP_COLS, engEq.map(engEquipRow),
       "按<strong>申請人</strong>分組，口徑與上方機具廠商排名完全相同（在場天數：日租＝出工天數、月租＝逐日紀錄筆數；"
       + "月租台·月另計不相加；引導人員為人·工獨立欄）。僅計已回報單、跟隨期間篩選。")
-    + vrankTableHTML(`代辦扣抵彙總（${period}・依責任歸屬廠商）`, VRANK_DED_COLS, ded.map(vrankDedRow),
-      "代辦＝向本單廠商叫的工／機具但成本歸屬另一家。"
-      + (PRICING_UI
-          ? "計價時從該廠商扣回，金額依<strong>本單廠商</strong>的當季費率自動計算（合約 §4.10）。"
-          : "本表僅統計歸屬與數量；扣抵量已反映在上方兩張排行榜的「代辦扣工／代辦扣抵」欄。"))
-    /* 節點 62：把「代辦工數合計」攤回工種——各工種費率不同，只看合計不知道扣的是什麼工 */
-    + vrankTableHTML(`代辦工種彙總（${period}・責任歸屬廠商×工種・點工）`, AGENT_TYPE_COLS,
+    /* 節點 62：把「代辦工數合計」攤回工種——各工種費率不同，只看合計不知道扣的是什麼工。
+       補強二：原「代辦扣抵彙總」表併入本表（機具代辦列），一張表講完代辦 */
+    + vrankTableHTML(`代辦彙總（${period}・責任歸屬廠商×工種）`, AGENT_TYPE_COLS,
       agt.map(e=>agentTypeRow(e, period)),
-      "<strong>折算工數＝代辦工數＋(前2h＋3h起)÷8</strong>（8 小時＝1 工）。"
+      "代辦＝向本單廠商叫的工／機具但成本歸屬另一家；扣抵量已反映在上方兩張排行榜的「代辦扣工／代辦扣抵」欄。"
+      + "<strong>折算工數＝代辦工數＋(前2h＋3h起)÷8</strong>（8 小時＝1 工）。"
       + "⚠ 與點工榜「代辦扣工」對數時請先扣除「（v23 前舊制單）」列——該榜只計新制逐筆、不含舊制。"
       + "加班兩段分開列——前 2 小時與第 3 小時起費率不同，合併就沒辦法按段扣款。"
       + "「時數(未分段)」＝v23 前舊制單的代辦時數合計：無廠商工種歸屬、且可能與工數為同一批工的重複表達，"
       + "故<strong>不折入折算工數</strong>，僅供與計價彙總「廠商代辦時數」對帳；舊制列的「代辦列數」計的是單數。"
-      + "機具代辦綁廠商層級、無工種可分，不列入本表（見上方代辦扣抵彙總）。");
+      + "<strong>「（機具代辦）」列</strong>＝機具代辦（綁廠商層級、無工種）：「代辦工數」欄為數量合計，"
+      + "<strong>單位隨該單計價品項（天／小時）</strong>與點工的「工」不同口徑，故不折入折算工數。");
 }
 
 function exportVendorRankXls(){
   const lab = buildVendorRanking("labor");
   const eq = buildVendorRanking("equipment");
   const engEq = buildEngineerEquipRanking();                        // 節點 64
-  const ded = buildAgentDeductionSummary();
-  const agt = buildAgentTypeSummary(rankedRecs("labor"), "labor");   // 節點 62：與畫面同母體
-  if(!lab.length && !eq.length && !ded.length){ toast("此期間內尚無已回報資料可排名"); return; }
+  const agt = buildAgentTypeCombined();   // 節點 62＋補強二：與畫面同母體（含機具代辦列）
+  if(!lab.length && !eq.length && !agt.length){ toast("此期間內尚無已回報資料可排名"); return; }
   const period = reportPeriodLabel();
   /* 檔名只標「期間」＋匯出日：本頁四張表的母體只吃期間篩選（rankedRecs），
      廠商／內容／工程師篩選一律不套用——沿用 exportFilterTag() 會把沒發生的
-     篩選寫進檔名，收檔的人會以為內容篩過了。匯出日讓改版前後的檔案分得開。 */
+     篩選寫進檔名，收檔的人會以為內容篩過了。匯出日讓改版前後的檔案分得開。
+
+     ⚠ 區塊位置（節點 62 補強二重排，v24.16 起）：1 點工榜／2 機具榜／
+       3 代辦彙總（原第 3 塊「代辦扣抵彙總」移除、原第 4 塊擴充後前移）／
+       4 工程師機具使用榜。收檔端若有靠區塊位置取數的巨集要同步改——
+       這是使用者指示整併兩張重複表的**刻意變動**，CHANGELOG 有載明；
+       此後區塊位置再度凍結，新表一律附最後。 */
   const ptag = (reportFrom || reportTo) ? `_${reportFrom || "起"}至${reportTo || "今"}` : "";
   downloadCSVBlocks([
-    { title: `點工廠商排名（${period}・依淨工數＝總工數－代辦扣工）`, headers: VRANK_LABOR_COLS, rows: lab.map(vrankLaborRow) },
-    { title: `機具廠商排名（${period}・依在場天數）`, headers: VRANK_EQUIP_COLS, rows: eq.map(vrankEquipRow) },
-    { title: `代辦扣抵彙總（${period}・依責任歸屬廠商）`, headers: VRANK_DED_COLS, rows: ded.map(vrankDedRow) },
-    { title: `代辦工種彙總（${period}・責任歸屬廠商×工種・點工）`, headers: AGENT_TYPE_COLS,
+    { title: `點工廠商排名（${period}・依淨工數＝總工數－代辦扣工）`, headers: vrankHeaders(VRANK_LABOR_COLS), rows: lab.map(vrankLaborRow) },
+    { title: `機具廠商排名（${period}・依在場天數）`, headers: vrankHeaders(VRANK_EQUIP_COLS), rows: eq.map(vrankEquipRow) },
+    { title: `代辦彙總（${period}・責任歸屬廠商×工種）`, headers: vrankHeaders(AGENT_TYPE_COLS),
       rows: agt.map(e=>agentTypeRow(e, period)) },
-    /* 節點 64：工程師機具使用榜。畫面上排在機具榜之後，CSV 卻**固定附在最後**——
-       既有四個區塊的位置不能動（收檔端的巨集/樞紐靠區塊位置取數，插中間全數位移） */
-    { title: `工程師機具使用榜（${period}・依在場天數・按申請人）`, headers: ENG_EQUIP_COLS,
+    { title: `工程師機具使用榜（${period}・依在場天數・按申請人）`, headers: vrankHeaders(ENG_EQUIP_COLS),
       rows: engEq.map(engEquipRow) }
   ], `廠商排名_${MASTER.currentSite}${ptag}_${localDate()}.csv`);
 }
@@ -5531,9 +5580,13 @@ function exportLaborSummaryXlsx(){
   const period2 = reportPeriodLabel();
   const agtRows = agt.length ? agt.map(e=>agentTypeRow(e, period2))
                              : [[`（${period2} 無代辦資料）`]];
-  const xml2 = ['<row r="1">' + AGENT_TYPE_COLS.map((h, c)=>xlText(c, 1, XS.OHEAD, h)).join("") + "</row>"]
+  /* 補強二後 AGENT_TYPE_COLS 是 {t,w,num} 物件（畫面對齊用），xlsx 表頭要取 .t——
+     直接餵物件會印出 [object Object]。本表屬**點工**計價匯出，維持只列點工代辦
+     （機具代辦列在排名頁／排名 CSV 的整合表；機具計價彙總另有自己的 CSV）。 */
+  const agtHeaders = vrankHeaders(AGENT_TYPE_COLS);
+  const xml2 = ['<row r="1">' + agtHeaders.map((h, c)=>xlText(c, 1, XS.OHEAD, h)).join("") + "</row>"]
     .concat(dataRowsXml(agtRows, XS.PNUM, XS.PTEXT, 2, XS.PTEXTW));
-  sheets.push({ name: "代辦工種彙總", widths: autoWidths(AGENT_TYPE_COLS), rows: xml2 });
+  sheets.push({ name: "代辦工種彙總", widths: autoWidths(agtHeaders), rows: xml2 });
   /* 節點 63：第三張工作表「稽核差異明細」——成控實點與回報不符的單逐筆列出，
      成本部付款前直接在計價檔裡看到被點名的單。**無條件出現**（工作表數量固定，
      巨集才穩定——同代辦工種彙總的決策）；無差異時印一列說明。 */

@@ -2,6 +2,25 @@
 
 版本異動摘要。完整背景與設計決策請見 [`docs/milestones/`](docs/milestones/README.md)。
 
+## [節點 64–66 補強] 2026-09-10 — MAX 審查 15 項修正（全數修畢）
+- **安全/正確性**：三日鎖「先改申請日期再回報」兩步繞過封堵（守衛加規則 2＋前端成對）；
+  部署順序防護（ALTER 未跑不再全站 500，改優雅降級）；權限被整組收回時
+  不再整頁 TypeError（回選站畫面＋全鎖引導文字＋toast 疊層修正）；
+  查無單且 baseV>0 放行讓 409 deleted 出得來
+- **平價**：雲端／Auth:Mode=Off 前端不再單方面鎖（後端刻意不鎖，PIN 不得成唯一逃生口）
+- **資料安全**：完整備份/遷移包含瘦身站時擋下（防「看起來完整、多數站空殼」的假搬遷檔）；
+  VIEW 的 guide SUM 去 ISNULL（全未填≠0）；guide_note 改 NVARCHAR(MAX)
+- **架構**：三日鎖參數改 `app_settings:labor_report_lock` 單一來源
+  （master.laborReportLock 下發，改期免重編譯）；瘦身投影補加班分段欄位＋
+  只投影總覽讀得到的紀錄（防 payload 無界成長）＋退場站不下發
+- **一致性/收斂**：總覽標題與尾註交代卡片（全站）與清單（我的工地）的差額；
+  鎖檔套用改可進入的站；refetchSite 補 overviewOnly；numFieldVal 收斂三份副本；
+  0 使用＋明確填 0 誤警告修正；守衛共用 TrySiteId；🔒 提示按身分分流；
+  /whoami 加 canLeadOverrideScope
+- 含後端變更需重編譯；ALTER-v2416 增補（guide_note 欄型＋VIEW 重建）；
+  無 appsettings；`?ver=2026091005`＋`style.css?ver=2026091002`
+- 詳見各節點 milestone 的「MAX 審查修正」節
+
 ## [節點 62 補強二] 2026-09-10 — 排名頁版面對齊修正＋兩張代辦表整合
 - 現場截圖回報：①排名頁各表版面沒對齊（數字欄判定寫死＋無欄寬定義）
   ②「代辦扣抵彙總」與「代辦工種彙總」功能重複（使用者指示整合）

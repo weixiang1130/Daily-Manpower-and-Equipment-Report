@@ -533,6 +533,10 @@ tr.current-site-row td{background:var(--bg-surface-1);}
   cursor:pointer;text-align:left;
 }
 .gate-btn:hover{background:var(--teal-600);border-color:var(--teal-600);color:#fff;}
+/* 節點 66 補強（MAX 審查）：未開通站的鎖定鈕——原本掛沒定義的 class＋行內 opacity，
+   hover 還會整顆亮起來像可以點。真樣式：壓淡、禁用游標、hover 不變色 */
+.gate-btn-locked{opacity:.45;cursor:not-allowed;}
+.gate-btn-locked:hover{background:#fff;border-color:var(--line);color:var(--teal-800);}
 @media (max-width:560px){.gate-grid{grid-template-columns:1fr;}}
 
 /* ---------- 目前工地徽章（防呆） ---------- */
@@ -657,7 +661,9 @@ tr.clickable:hover td{background:var(--teal-100);}
   position:fixed;left:50%;bottom:24px;transform:translate(-50%,20px);
   background:var(--teal-800);color:#fff;padding:12px 22px;border-radius:999px;
   font-size:14px;font-weight:600;opacity:0;pointer-events:none;transition:all var(--duration-normal) ease;
-  z-index:100;box-shadow:0 8px 20px rgba(28,28,28,0.08);
+  /* z-index 必須高於 .overlay 的 200（MAX 審查）：選站攔截頁上點鎖定站的提示
+     原本畫在 90% 不透明遮罩**後面**，使用者按了完全看不到任何回饋 */
+  z-index:300;box-shadow:0 8px 20px rgba(28,28,28,0.08);
 }
 .toast.show{opacity:1;transform:translate(-50%,0);}
 

@@ -485,12 +485,21 @@ static void StripAudits(JsonNode? store, Authz? az)
    （reportTypeRows/trackLeftDays 唯一權威，不在 C# 重寫第二份）。
    因此下發的是**最小欄位集的紀錄**而不是算好的數字：
    - 點工：date/status/vendor/categories ＋ report{reportedAt,diff,signReturnDate,
-     zeroWork,actual,totalOT,workTypes[{type,work}]}
+     zeroWork,actual,totalOT,ot2Total,otOverTotal,workTypes[{type,work,ot2,otOver}]}
+     （MAX 審查修正：加班分段欄位要帶齊——otSegments/reportTypeRows 是唯一權威，
+      缺段的話未來任何全站加班指標會把 totalOT 全誤歸前 2 小時段、分段全變 0，
+      數字看似合理卻剛好少掉看不見的那些站；分段時數的敏感度不高於已下發的 work）
    - 機具：date/status/billing/rentTo ＋ report{signReturnDate}（追蹤計數用）
    **不下發**：id、人名（申請人/工程師/簽認/稽核人）、地點、工作內容、備註、
-   逐人/逐台明細、代辦、稽核、附件、時數細節。config 給空物件
+   逐人/逐台明細、代辦、稽核、附件。config 給空物件
    （不能給 null——boot 的種子邏輯看到假值會誤發 apiSaveConfig，且必 403）。
    overviewOnly=true 是前端「鎖站不給進」的判定依據。
+
+   **只投影總覽還讀得到的紀錄**（MAX 審查修正——不過濾的話每個封存月份都
+   永久增胖 payload，估 12 站對單站使用者一次多 2MB 且無界成長）：
+   已盤點全部消費端（卡片六數字/兩張本月排名/追蹤計數），留用條件＝
+   待回報 ∨ 本月已回報（reportedAt 當月）∨ 簽單未繳（signReturnDate 空）；
+   「已回報＋已繳簽單＋非當月」沒有任何讀者，一律不下發。
    ⚠ 一律 DeepClone——JsonNode 單親限制，掛過樹的節點不能直接搬。 */
 static JsonObject SlimOverviewStore(JsonNode? full)
 {
@@ -503,9 +512,21 @@ static JsonObject SlimOverviewStore(JsonNode? full)
     };
     if (full is not JsonObject f) return slim;
 
+    var thisMonth = DateTime.Now.ToString("yyyy-MM");   // 計價紅線 2：本地時區
+    // 留用條件（見上方註解）：待回報 ∨ 本月已回報 ∨ 簽單未繳
+    bool Keep(JsonObject r, JsonObject? rep)
+    {
+        if (Sx(r, "status") != "已回報" || rep is null) return true;
+        var ra = Sx(rep, "reportedAt") ?? "";
+        if (ra.StartsWith(thisMonth, StringComparison.Ordinal)) return true;
+        return string.IsNullOrEmpty(Sx(rep, "signReturnDate"));
+    }
+
     foreach (var n in (f["labor"] as JsonArray) ?? new JsonArray())
     {
         if (n is not JsonObject r) continue;
+        var rep = r["report"] as JsonObject;
+        if (!Keep(r, rep)) continue;
         var o = new JsonObject
         {
             ["date"] = r["date"]?.DeepClone(),
@@ -513,7 +534,7 @@ static JsonObject SlimOverviewStore(JsonNode? full)
             ["vendor"] = r["vendor"]?.DeepClone(),          // 分包商榜（使用者裁示全員可見）
             ["categories"] = r["categories"]?.DeepClone()   // v11 前舊單的工種 fallback
         };
-        if (r["report"] is JsonObject rep)
+        if (rep is not null)
         {
             o["report"] = new JsonObject
             {
@@ -522,11 +543,15 @@ static JsonObject SlimOverviewStore(JsonNode? full)
                 ["signReturnDate"] = rep["signReturnDate"]?.DeepClone(),
                 ["zeroWork"] = rep["zeroWork"]?.DeepClone(),
                 ["actual"] = rep["actual"]?.DeepClone(),
+                // 加班三欄帶齊——otSegments 唯一權威的完整輸入（見檔頭註解）
                 ["totalOT"] = rep["totalOT"]?.DeepClone(),
+                ["ot2Total"] = rep["ot2Total"]?.DeepClone(),
+                ["otOverTotal"] = rep["otOverTotal"]?.DeepClone(),
                 ["workTypes"] = new JsonArray(((rep["workTypes"] as JsonArray) ?? new JsonArray())
                     .OfType<JsonObject>()
                     .Select(w => (JsonNode)new JsonObject
-                    { ["type"] = w["type"]?.DeepClone(), ["work"] = w["work"]?.DeepClone() })
+                    { ["type"] = w["type"]?.DeepClone(), ["work"] = w["work"]?.DeepClone(),
+                      ["ot2"] = w["ot2"]?.DeepClone(), ["otOver"] = w["otOver"]?.DeepClone() })
                     .ToArray())
             };
         }
@@ -537,6 +562,8 @@ static JsonObject SlimOverviewStore(JsonNode? full)
     foreach (var n in (f["equipment"] as JsonArray) ?? new JsonArray())
     {
         if (n is not JsonObject r) continue;
+        var rep2 = r["report"] as JsonObject;
+        if (!Keep(r, rep2)) continue;
         var o = new JsonObject
         {
             ["date"] = r["date"]?.DeepClone(),
@@ -544,7 +571,7 @@ static JsonObject SlimOverviewStore(JsonNode? full)
             ["billing"] = r["billing"]?.DeepClone(),        // signBaseDate：月租以租期迄日為基準
             ["rentTo"] = r["rentTo"]?.DeepClone()
         };
-        o["report"] = r["report"] is JsonObject rep2
+        o["report"] = rep2 is not null
             ? new JsonObject { ["signReturnDate"] = rep2["signReturnDate"]?.DeepClone() }
             : null;
         ((JsonArray)slim["equipment"]!).Add(o);
@@ -727,11 +754,15 @@ static async Task<JsonObject> ReadStores(SqlConnection cn, string? onlySite)
                     ["diff"] = Num(rp["diff"]),                    // v22.6 可為 null（申請未填預定時數）
                     ["days"] = Num(rp["days"]),
                     ["otHours"] = Num(rp["ot_hours"]),
-                    // 節點 64 引導人員：可為 null（未填；與 0 有別，同 diff）
-                    ["guideWork"] = Num(rp["guide_work"]),
-                    ["guideOt2"] = Num(rp["guide_ot2"]),
-                    ["guideOtOver"] = Num(rp["guide_ot_over"]),
-                    ["guideNote"] = Str(rp["guide_note"]) ?? "",
+                    /* 節點 64 引導人員：可為 null（未填；與 0 有別，同 diff）。
+                       ⚠ 用 GetValueOrDefault 不用索引子（MAX 審查）：新程式先部署、
+                         ALTER-v2416 後跑的窗口裡，SELECT rp.* 的字典**沒有**這些鍵，
+                         索引子會 KeyNotFoundException → 整個 /api/data 500、全站進不來。
+                         缺欄時四鍵優雅降級為 null，系統照常服務。 */
+                    ["guideWork"] = Num(rp.GetValueOrDefault("guide_work")),
+                    ["guideOt2"] = Num(rp.GetValueOrDefault("guide_ot2")),
+                    ["guideOtOver"] = Num(rp.GetValueOrDefault("guide_ot_over")),
+                    ["guideNote"] = Str(rp.GetValueOrDefault("guide_note")) ?? "",
                     ["workContent"] = Str(rp["work_content"]) ?? "",
                     ["rateItem"] = Str(rp["rate_item"]) ?? "",     // v22.8
                     ["rateOtItem"] = Str(rp["rate_ot_item"]) ?? "",
@@ -968,16 +999,34 @@ app.MapGet("/api/data", async (HttpContext ctx) =>
             }
         }
     }
+    /* 節點 65 補強（MAX 審查）：三日鎖參數下發——app_settings 為單一來源、
+       前後端永遠同一份（改期免重編譯免換版）。非敏感，全員取得。 */
+    var (lkStart, lkDays) = await LaborLockConfig(cn);
+    master["laborReportLock"] = new JsonObject
+    {
+        ["start"] = lkStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+        ["windowDays"] = lkDays
+    };
+
     var stores = await ReadStores(cn, null);
     if (az is not null)
     {
         /* 節點 66：看不到的站從「整包移除」改成「瘦身投影」。
            「只濾清單而 stores 照給＝看起來隔離」的原則不變——瘦身投影只含
            算總覽必需的統計欄位（日期/狀態/廠商/工種工數/追蹤日期），
-           人名、地點、內容、備註、代辦、稽核、附件一概不下發（見 SlimOverviewStore）。 */
+           人名、地點、內容、備註、代辦、稽核、附件一概不下發（見 SlimOverviewStore）。
+           MAX 審查修正：①已退場站（is_active=0，不在 master.sites）對非可見者
+           **整包移除**（改版前行為）——前端根本不會讀、投影純屬死 payload
+           ②StripAudits 跳過瘦身店（沒有 audits 鍵，白走一趟）。 */
+        var activeNames = new HashSet<string>(siteRows.Select(s => (string)s["name"]!), StringComparer.Ordinal);
         foreach (var k in stores.Select(kv => kv.Key).Where(k => !az.CanSee(k)).ToList())
+        {
+            if (!activeNames.Contains(k)) { stores.Remove(k); continue; }
             stores[k] = SlimOverviewStore(stores[k]);
-        foreach (var kv in stores) StripAudits(kv.Value, az);
+        }
+        foreach (var kv in stores)
+            if (!(kv.Value is JsonObject so && so["overviewOnly"] is not null))
+                StripAudits(kv.Value, az);
     }
     var payload = new JsonObject { ["master"] = master, ["stores"] = stores };
     return Results.Content(payload.ToJsonString(Wr.JsonOpts), "application/json; charset=utf-8");
@@ -1181,16 +1230,21 @@ app.MapGet("/whoami", async (HttpContext ctx) =>
     o["sites"] = new JsonArray(az.Sites.Select(s => (JsonNode)JsonValue.Create(s)!).ToArray());
     o["canSeeAudits"] = az.CanSeeAudits;
     o["isAdmin"] = az.IsAdmin;
-    // v24.15：工地主管可刪已回報單的站（Director 站；前端據此決定刪除動線、也供診斷）
+    // v24.15：工地主管白名單站（前端據此決定代處理動線、也供診斷）
     o["leadSites"] = new JsonArray(az.LeadSites.OrderBy(x => x, StringComparer.Ordinal)
         .Select(s => (JsonNode)JsonValue.Create(s)!).ToArray());
-    /* ⚠ 直接把「能刪已回報單的範圍」講出來，不要讓人自己從 leadSites 推——
+    /* ⚠ 直接把「主管代處理權的範圍」講出來，不要讓人自己從 leadSites 推——
        管理員的 leadSites 恆為空（判定在規則 1／3 就 return 了），只看那個欄位
-       會得出「管理員不能刪」的相反結論。節點 53／54 的教訓：/whoami 本身也會誤導。 */
-    o["canDeleteReportedScope"] = az.IsAdmin ? "全部工地（系統管理者）"
+       會得出「管理員不能」的相反結論。節點 53／54 的教訓：/whoami 本身也會誤導。
+       節點 65 起這組權力涵蓋「刪已回報單＋逾期回報代處理」（CanLeadOverride 通則），
+       故另給語意正確的 canLeadOverrideScope；canDeleteReportedScope 保留同值
+       （既有查修文件引用它，改名會讓照文件查的人以為欄位不見了）。 */
+    var leadScope = az.IsAdmin ? "全部工地（系統管理者）"
         : az.LeadSites.Count > 0
             ? string.Join("、", az.LeadSites.OrderBy(x => x, StringComparer.Ordinal))
             : "（無——非管理員且非任何工地的主管）";
+    o["canLeadOverrideScope"] = leadScope + "／涵蓋：刪除已回報單、逾期回報與逾期單改期（節點 61＋65）";
+    o["canDeleteReportedScope"] = leadScope;
 
     /* ⚠ 工地角色**看得到幾個工地**這件事，只給結果是不夠的。
        「少一個工地」有兩種完全不同的成因，畫面上一模一樣：
@@ -1660,52 +1714,112 @@ static string? DateGuardError(JsonObject rec, string? storedDate, string? stored
    v24.15：工地主管（SiteLead）對**自己是 Director 的站**（az.CanDeleteReported）放行——
    多站主管每個 Director 站都放行；同一人在只是工程師的站（不在 LeadSites）仍被擋。
    鎖檔（結算凍結）由 LockGuard 先擋且優先，主管能刪的是未鎖檔的已回報單。 */
-/* 節點 65：點工三日回報鎖（伺服器端；長官裁示「三日內未回報就鎖起來」）。
-   出工日＋LaborReportWindowDays 個日曆天內可回報，之後工地承辦鎖死；
-   **該站主管（az.CanLeadOverride）可代為回報**、管理員不受限（呼叫端已排除）。
-   範圍刻意收窄，三條邊界：
-   1. 只鎖「待回報 → 已回報」的送出。**已回報單的後續編輯不受此鎖**——
-      節點 63 的稽核差異更正正是靠工地端事後修正數字，鎖編輯會把更正流程堵死。
-   2. 只鎖出工日 ≥ LaborReportLockStart 的單（不溯及既往）——否則部署當下
-      所有欠單瞬間全鎖，歷史帳永遠清不掉。
-   3. 僅點工（使用者裁示）；機具不鎖。
-   ⚠ 新舊日期都查（LockGuard 的教訓）：只查送進來的日期，把逾期單的出工日
-     改成今天再送回報就繞過去了。
-   形狀錯誤或查無資料一律回 null 交給 OpRecord 處理（400／衝突），
-   本守衛只管一件事：逾期的首次回報 → 403。 */
+/* 節點 65 三日鎖的參數讀取：**app_settings 為單一來源**（MAX 審查修正——
+   生效日本就預定「部署日確定後再調」，前後端各一份寫死常數必出同步縫）。
+   設定缺漏或壞 JSON 時退回 Wr 的程式預設值（fail-safe 到較寬鬆的一側，
+   不讓一筆壞設定把全公司的回報鎖死）。同一份值由 GET 的 master.laborReportLock
+   下發給前端——兩端永遠同一份，改期不用重編譯也不用等快取換版。 */
+static async Task<(DateOnly start, int windowDays)> LaborLockConfig(SqlConnection cn)
+{
+    var start = Wr.LaborReportLockStart;
+    var days = Wr.LaborReportWindowDays;
+    try
+    {
+        var j = await Scalar(cn, null, "SELECT value_json FROM dbo.app_settings WHERE setting_key=@k",
+            ("@k", Wr.LaborReportLockKey)) as string;
+        if (!string.IsNullOrWhiteSpace(j) && JsonNode.Parse(j) is JsonObject o)
+        {
+            if (DateOnly.TryParseExact(Sx(o, "start") ?? "", "yyyy-MM-dd",
+                    CultureInfo.InvariantCulture, DateTimeStyles.None, out var s)) start = s;
+            if (Dx(o, "windowDays") is decimal w && w >= 1 && w <= 60) days = (int)w;
+        }
+    }
+    catch { /* 壞 JSON：用預設值 */ }
+    return (start, days);
+}
+
+/* 節點 65（MAX 審查後全文重寫）：點工三日回報鎖（伺服器端）。
+   規則：
+   1. 「待回報 → 已回報」的送出：出工日＋windowDays 個日曆天內可回報，逾期 403。
+      已回報單（**且回報列真的存在**——status 字串可能與 report 列脫鉤，
+      節點 60 isReported 的教訓，半殘形狀不得永久豁免）的後續編輯不受此鎖
+      （節點 63 稽核差異更正流程依賴）。
+   2. **逾期「待回報」單的出工日不得變更**（僅該站主管/管理員可）——審查抓到的
+      兩步繞過：先「編輯申請」把日期改成今天（存回待回報不經任何守衛、
+      DateGuardError 對無 report 的存檔不驗）、再正常回報。日期沒動的存檔
+      （含成控稽核儲存整筆覆寫）照常放行。
+   3. 只鎖出工日 ≥ 生效日（不溯及既往）；僅點工；該站主管（CanLeadOverride）放行；
+      管理員不受限（呼叫端已排除）。
+   4. 查無 stored 且 baseV>0（開著表單時單被別人刪了）→ 放行給 OpRecord 回
+      409 deleted——在這裡 403 會把「單被刪了」誤導成「被鎖了、去找主管」，
+      承辦跑去找主管、主管也找不到單。
+   效能（審查修正）：今天 ≤ 生效日＋窗口 → 零紀錄查詢短路；其餘一次 JOIN
+   查回 status／日期／回報列存在（原本 3 個往返、其中 site 查詢與 LockGuard 重複）。 */
 static async Task<IResult?> OverdueReportGuard(SqlConnection cn, JsonObject body, Authz az)
 {
     if (Sx(body, "kind") != "labor") return null;
     if (body["record"] is not JsonObject rec) return null;
-    if (Sx(rec, "status") != "已回報") return null;   // 只有「送出回報」受限；存回待回報不管
     var site = Sx(body, "site");
     var id = Sx(rec, "id");
     if (site is null || id is null || !Wr.IdRe.IsMatch(id)) return null;
     if (az.CanLeadOverride(site)) return null;        // 該站主管代處理（節點 65 核心）
 
-    static bool Overdue(string? ds)
+    var (lockStart, windowDays) = await LaborLockConfig(cn);
+    var today = DateOnly.FromDateTime(DateTime.Now);
+    if (today <= lockStart.AddDays(windowDays)) return null;   // 生效日＋窗口前不可能有逾期單
+
+    bool Overdue(string? ds)
         => DateOnly.TryParseExact(ds ?? "", "yyyy-MM-dd",
                CultureInfo.InvariantCulture, DateTimeStyles.None, out var d)
-           && d >= Wr.LaborReportLockStart
-           && DateOnly.FromDateTime(DateTime.Now) > d.AddDays(Wr.LaborReportWindowDays);
+           && d >= lockStart && today > d.AddDays(windowDays);
 
-    var sid = await Scalar(cn, null, "SELECT site_id FROM dbo.sites WHERE name=@n", ("@n", site));
-    string? storedStatus = null, storedDate = null;
-    if (sid is not null)
+    var row = (await Query(cn,
+        @"SELECT r.status, CONVERT(varchar(10), r.work_date, 23) AS wd,
+                 CASE WHEN rp.record_id IS NULL THEN 0 ELSE 1 END AS has_rep
+            FROM dbo.labor_records r
+            JOIN dbo.sites s ON s.site_id = r.site_id
+            LEFT JOIN dbo.labor_reports rp ON rp.record_id = r.id
+           WHERE r.id=@id AND s.name=@n", ("@id", id), ("@n", site))).FirstOrDefault();
+    var incomingReported = Sx(rec, "status") == "已回報";
+
+    if (row is null)
     {
-        storedStatus = await Scalar(cn, null,
-            "SELECT status FROM dbo.labor_records WHERE id=@id AND site_id=@s",
-            ("@id", id), ("@s", Convert.ToInt32(sid))) as string;
-        storedDate = await Scalar(cn, null,
-            "SELECT CONVERT(varchar(10), work_date, 23) FROM dbo.labor_records WHERE id=@id AND site_id=@s",
-            ("@id", id), ("@s", Convert.ToInt32(sid))) as string;
+        if (Dx(body, "baseV") is decimal bv && bv > 0) return null;   // 規則 4：讓 409 deleted 出得來
+        if (incomingReported && Overdue(Sx(rec, "date")))             // 直接以已回報姿態建新單（僅 API）
+            return Results.Json(new { error = "forbidden",
+                message = $"出工日已超過 {windowDays} 天的回報期限，本單已鎖定——請洽工地主管代為回報" },
+                statusCode: 403);
+        return null;
     }
-    if (storedStatus == "已回報") return null;         // 編輯既有回報放行（邊界 1）
 
-    if (!Overdue(Sx(rec, "date")) && !Overdue(storedDate)) return null;
-    return Results.Json(new { error = "forbidden",
-        message = $"出工日已超過 {Wr.LaborReportWindowDays} 天的回報期限，本單已鎖定——請洽工地主管代為回報" },
-        statusCode: 403);
+    var storedDate = row["wd"] as string;
+    var storedReported = row["status"] as string == "已回報" && Convert.ToInt32(row["has_rep"]) == 1;
+    if (storedReported) return null;                  // 規則 1 例外：編輯既有回報放行
+
+    if (incomingReported)
+    {
+        // 規則 1：逾期首次回報——新舊日期都看（單一請求內的改日繞過在此擋）
+        if (Overdue(Sx(rec, "date")) || Overdue(storedDate))
+            return Results.Json(new { error = "forbidden",
+                message = $"出工日已超過 {windowDays} 天的回報期限，本單已鎖定——請洽工地主管代為回報" },
+                statusCode: 403);
+        return null;
+    }
+
+    // 規則 2：逾期待回報單的出工日不得變更——封掉「先改日期、再回報」的兩步繞過
+    if (Overdue(storedDate) && !string.Equals(Sx(rec, "date"), storedDate, StringComparison.Ordinal))
+        return Results.Json(new { error = "forbidden",
+            message = $"本單已超過 {windowDays} 天的回報期限並鎖定，出工日期僅限工地主管修改（避免改日期繞過回報鎖）" },
+            statusCode: 403);
+    return null;
+}
+
+/* 守衛共用的唯讀工地查詢（MAX 審查：原本四個守衛各抄一份）。
+   ⚠ 與 SiteId() 不同——SiteId 查無會**建站**（寫入），守衛絕不能帶這種副作用。 */
+static async Task<int?> TrySiteId(SqlConnection cn, string site)
+{
+    var v = await Scalar(cn, null, "SELECT site_id FROM dbo.sites WHERE name=@n", ("@n", site));
+    return v is null or DBNull ? null : Convert.ToInt32(v);
 }
 
 static async Task<IResult?> ReportedDeleteGuard(SqlConnection cn, JsonObject body, Authz az)
@@ -1717,12 +1831,12 @@ static async Task<IResult?> ReportedDeleteGuard(SqlConnection cn, JsonObject bod
     if (!Wr.IdRe.IsMatch(id)) return null;
     var recT = kind == "labor" ? "labor_records" : "equip_records";
 
-    var sid = await Scalar(cn, null, "SELECT site_id FROM dbo.sites WHERE name=@n", ("@n", site));
+    var sid = await TrySiteId(cn, site);
     if (sid is null) return null;
 
     var status = await Scalar(cn, null,
         $"SELECT status FROM dbo.{recT} WHERE id=@id AND site_id=@s",
-        ("@id", id), ("@s", Convert.ToInt32(sid)));
+        ("@id", id), ("@s", sid.Value));
     if (status as string == "已回報" && !az.CanDeleteReported(site))
         return Results.Json(new { error = "forbidden", message = "已回報的單據是計價依據，僅限管理員或該工地主管刪除" },
                             statusCode: 403);
@@ -1739,13 +1853,13 @@ static async Task<IResult?> AuditedDeleteGuard(SqlConnection cn, JsonObject body
     var kind = Sx(body, "kind");
     var id = Sx(body, "id");
     if (site is null || kind is not ("labor" or "equipment") || id is null) return null;
-    var sid = await Scalar(cn, null, "SELECT site_id FROM dbo.sites WHERE name=@n", ("@n", site));
+    var sid = await TrySiteId(cn, site);
     if (sid is null) return null;
     var (recT, audT) = kind == "labor" ? ("labor_records", "labor_audits") : ("equip_records", "equip_audits");
     var hasAudit = await Scalar(cn, null,
         $@"SELECT 1 FROM dbo.{audT} a JOIN dbo.{recT} r ON r.id = a.record_id
            WHERE a.record_id=@id AND r.site_id=@s",
-        ("@id", id), ("@s", Convert.ToInt32(sid)));
+        ("@id", id), ("@s", sid.Value));
     if (hasAudit is not null)
         return Results.Json(new { error = "forbidden",
                                   message = "本單已有成控稽核紀錄，刪除僅限成控／管理員（避免稽核紀錄隨單銷毀）" },
@@ -1760,9 +1874,9 @@ static async Task<IResult?> LockGuard(SqlConnection cn, JsonObject body, string 
     if (site is null || (kind != "labor" && kind != "equipment")) return null;   // 形狀錯誤交給各 op 回 400
     var recT = kind == "labor" ? "labor_records" : "equip_records";
 
-    var sid = await Scalar(cn, null, "SELECT site_id FROM dbo.sites WHERE name=@n", ("@n", site));
+    var sid = await TrySiteId(cn, site);
     if (sid is null) return null;
-    var siteId = Convert.ToInt32(sid);
+    var siteId = sid.Value;
 
     var dates = new List<string>();
     if (op == "record" && Sx(body["record"] as JsonObject, "date") is string nd) dates.Add(nd);
@@ -2722,12 +2836,16 @@ static class Wr
     /* 簽單繳回日的期限天數（合約 §4.7，與前端常數 SIGN_RETURN_MAX_DAYS 同值） */
     public const int SignReturnMaxDays = 20;
 
-    /* 節點 65：點工回報期限（日曆天，含週末；與前端 LABOR_REPORT_WINDOW_DAYS 同值）
-       與生效日（不溯及既往——只鎖出工日 ≥ 生效日的單；與前端 LABOR_REPORT_LOCK_START 同值）。
-       ⚠ 生效日暫定 2026-10-01，實際部署日確定後兩端**同步**調整——只改一邊
-         會出現「前端擋、後端放」或反過來的縫。 */
+    /* 節點 65：點工回報期限（日曆天，含週末）與生效日（不溯及既往）。
+       ⚠ MAX 審查後這兩個常數**降為預設值**：實際值以 app_settings 的
+         labor_report_lock（LaborLockConfig 讀取）為單一來源，並由
+         master.laborReportLock 下發給前端——改期不必重編譯、不必等快取換版。
+         設定缺漏／壞 JSON 時才用這裡的預設。 */
     public const int LaborReportWindowDays = 3;
     public static readonly DateOnly LaborReportLockStart = new(2026, 10, 1);
+    /* app_settings 鍵：{"start":"YYYY-MM-DD","windowDays":N}。改值下 UPDATE 即生效
+       （前端下一次 refresh 取得；守衛每次判定即時讀）。 */
+    public const string LaborReportLockKey = "labor_report_lock";
 
     /* app_settings 的鍵名（v23.2）。Auth.cs 也讀同一把鍵——**改這裡就好，勿各寫一份** */
     public const string AdminDeptKey = "admin_departments";

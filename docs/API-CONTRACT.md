@@ -50,17 +50,27 @@
 ```json
 "看不到的站": { "overviewOnly": true, "config": {},
   "labor": [ { "date","status","vendor","categories",
-               "report": { "reportedAt","diff","signReturnDate","zeroWork","actual","totalOT",
-                            "workTypes":[{"type","work"}] } } ],
+               "report": { "reportedAt","diff","signReturnDate","zeroWork","actual",
+                            "totalOT","ot2Total","otOverTotal",
+                            "workTypes":[{"type","work","ot2","otOver"}] } } ],
   "equipment": [ { "date","status","billing","rentTo", "report": { "signReturnDate" } } ] }
 ```
 
 - 用途：前端總覽對全站算「整體概況（卡片）」與「本月出工量排名」；
   追蹤提醒清單／各工地列控總覽／最近出工回報只列可進入的站
+- **加班三欄與 workTypes 的分段一律帶齊**（v24.16 審查修正）：`otSegments()`／
+  `reportTypeRows()` 是口徑唯一權威，缺段會讓未來任何全站加班指標把 totalOT
+  全誤歸前 2 小時段——分段時數的敏感度不高於已下發的 work
+- **只投影總覽讀得到的紀錄**（v24.16 審查修正，防 payload 隨封存月份無界成長）：
+  留用條件＝待回報 ∨ 本月已回報（reportedAt 當月）∨ 簽單未繳（signReturnDate 空）；
+  「已回報＋已繳簽單＋非當月」的紀錄沒有任何總覽消費端，不下發
+- **已退場工地（is_active=0）對非可見者整包不回**（改版前行為；前端不會讀）
 - **不下發**：紀錄 id、人名（申請人/工程師/簽認/稽核人）、地點、工作內容、備註、
   逐人/逐台明細、代辦、稽核、附件、名單池——資料隔離原則不變
 - `overviewOnly: true` 是前端「鎖站不給進」的判定依據（`siteEnterable()`）；
-  `?site=` 單站讀取與所有寫入對未授權站**仍回 403**（§3 的 CanSee 守衛不變）
+  `?site=` 單站讀取與所有寫入對未授權站**仍回 403**（§3 的 CanSee 守衛不變）。
+  前端另據此**擋下完整備份／切換日遷移包**（含瘦身站的匯出是「看起來完整、
+  多數站空殼」的假完整檔，必須由全站權限帳號產生）
 - 雲端／`Auth:Mode=Off`：無此投影（az 為 null 時 stores 照舊全量），行為與改版前相同
 
 ### 2.2 `GET ?site=<工地名>` — 單一工地（編輯前抓最新）
@@ -529,17 +539,31 @@
 
 #### 4.7.1 點工三日回報鎖（v24.16 節點 65；僅點工、僅地端權限模式）
 
-出工日＋**3 個日曆天**內（含第 3 天）可送出回報；之後該單對工地承辦**鎖定**，
-由**該站工地主管**（節點 61 白名單，`Authz.CanLeadOverride`）或管理員代為回報，回 403
-`{"error":"forbidden"}`。三條邊界（前端 `laborReportLockError()` 與伺服器
-`OverdueReportGuard` 同口徑）：
+出工日＋**windowDays 個日曆天**內（含最後一天）可送出回報；之後該單對工地承辦
+**鎖定**，由**該站工地主管**（節點 61 白名單，`Authz.CanLeadOverride`）或管理員
+代為回報，回 403 `{"error":"forbidden"}`。
 
-1. 只鎖「待回報 → 已回報」的**送出**；已回報單的後續編輯不受此鎖
+**參數的單一來源＝`app_settings` 鍵 `labor_report_lock`**（MAX 審查修正——
+生效日預定會改，兩端各寫死一份必出同步縫）：
+`{"start":"YYYY-MM-DD","windowDays":3}`，UPDATE 即生效（伺服器每次判定即時讀、
+前端由 `master.laborReportLock` 於開站/重新整理取得）；設定缺漏或壞 JSON 時
+兩端都退回程式預設（`Wr.LaborReportLockStart`＝2026-10-01／`Wr.LaborReportWindowDays`＝3）。
+
+規則（前端 `laborReportLockError()` 與伺服器 `OverdueReportGuard` 同口徑）：
+
+1. 只鎖「待回報 → 已回報」的**送出**；已回報單（且回報物件真的存在——
+   status 字串可能與 report 脫鉤，比照 `isReported()` 口徑）的後續編輯不受此鎖
    （§4.5 稽核差異的事後更正流程依賴編輯，鎖編輯會把更正堵死）
-2. 只鎖出工日 ≥ 生效日（常數 `LABOR_REPORT_LOCK_START`／`Wr.LaborReportLockStart`，
-   兩端同值）的單——不溯及既往
-3. 僅點工；機具不鎖。伺服器端**新舊出工日都查**（防「改日期繞鎖」）；
-   雲端／`Auth:Mode=Off` 無伺服器把關，前端以 adminPin 作為代處理入口（行為與其他閘門一致）
+2. **逾期「待回報」單的出工日不得變更**（僅主管/管理員可）——否則
+   「先編輯申請把日期改成今天、再回報」兩步就繞過（MAX 審查抓到）。
+   日期沒動的存檔（含成控稽核儲存的整筆覆寫）照常放行
+3. 只鎖出工日 ≥ 生效日的單——不溯及既往；僅點工、機具不鎖；
+   伺服器端**新舊出工日都查**
+4. 查無該單且 `baseV > 0`（開著表單時被他人刪除）→ 守衛放行、由 op:record
+   回 `409 {"reason":"deleted"}`——不可用 403 把「單被刪了」誤導成「被鎖了」
+5. 雲端／`Auth:Mode=Off`／舊部署：伺服器刻意不鎖（Off＝完全維持現行行為），
+   **前端亦不啟用**（AUTHZ 為 null 時 `laborReportLockError` 恆回 null）——
+   否則共用 adminPin 會成為唯一逃生口，且該 PIN 同時解鎖刪單/鎖檔/設定頁
 
 ## 5. 給後端重寫者的相容須知
 

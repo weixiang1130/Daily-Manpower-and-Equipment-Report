@@ -65,3 +65,16 @@
   警告五情境（分段順序／有加班無出工／0 使用帶引導／正常／全空）全對。
 - 完整 API 寫入→讀回（Program.cs 路徑）留待 64＋65＋66 併包後
   於本機上線模擬環境一次驗證。
+
+## MAX 審查修正（2026-09-10，與 65/66 同批）
+
+1. **部署順序防護**：新程式先上、ALTER 後跑的窗口裡，`SELECT rp.*` 的結果字典
+   沒有 guide_* 鍵，索引子 KeyNotFoundException → 整個 /api/data 500 全站進不來
+   ——四鍵改 GetValueOrDefault 優雅降級（MIS02 仍要求先跑 DB 腳本再部署）。
+2. **VIEW 的 SUM(ISNULL) 破壞 NULL≠0**：全 NULL 組會被壓成 0、與真填 0 無法區分
+   ——三個 guide SUM 拿掉 ISNULL（SUM 本就跳過 NULL），DB-SCHEMA 與 ALTER 同步。
+3. **guide_note 改 NVARCHAR(MAX)**（同 vendor_done_note 慣例）：原 400 上限只靠
+   前端 maxlength，超長直打 API 會讓整筆回報 500、遷移整批回滾；ALTER 補欄型升級步驟。
+4. 取值收斂：numOrNull／載回／plannedHours 三份「空白=null」副本統一走既有
+   numFieldVal/setNumField；0 使用＋明確填 0 的誤警告修正（!=null → >0）；
+   引導加班上限比照點工（前2h≤工×2、合計≤工×8）。

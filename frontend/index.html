@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;700&family=Space+Grotesk:wght@500;700&display=swap">
 <!-- ⚠ 改 js/css 必須同步進位 ?ver=（YYYYMMDDNN）——伺服器不送 Cache-Control，
      不進版＝使用者吃舊快取、等於沒部署（規範見 CLAUDE.md 前端要點） -->
-<link rel="stylesheet" href="style.css?ver=2026091001">
+<link rel="stylesheet" href="style.css?ver=2026091002">
 </head>
 <body>
 
@@ -89,23 +89,25 @@
 
     <div class="panel">
       <div class="panel-head">
-        <h2>追蹤提醒（全部工地）</h2>
-        <p class="hint">「未回報」與「簽單未繳」追的是同一個期限：<strong>基準日（一般單＝出工日；月租單＝租期迄日）後 20 天</strong>內須完成回報並繳回簽單。依剩餘天數由少到多排列——來得及搶救的在最上面；超過 20 天（簽單逾期不予採計）僅顯示彙總筆數。點選任一列即切換至該工地。<strong>自 2026-08-01 起算</strong>——更早的單是系統機制未完善前的舊資料，不列入追蹤（歷程報表仍查得到）。</p>
+        <!-- 節點 66（MAX 審查修正）：本清單只列**自己可進入的工地**（上方卡片仍算全站，
+             差額在清單尾註交代）——標題不可再寫「全部工地」，那會讓人把 3 列當成全公司只有 3 張 -->
+        <h2>追蹤提醒（我的工地）</h2>
+        <p class="hint">「未回報」與「簽單未繳」追的是同一個期限：<strong>基準日（一般單＝出工日；月租單＝租期迄日）後 20 天</strong>內須完成回報並繳回簽單。依剩餘天數由少到多排列——來得及搶救的在最上面；超過 20 天（簽單逾期不予採計）僅顯示彙總筆數。點選任一列即切換至該工地。<strong>自 2026-08-01 起算</strong>——更早的單是系統機制未完善前的舊資料，不列入追蹤（歷程報表仍查得到）。本清單只列您可進入的工地；未開通工地的張數在清單尾端彙總（計入上方卡片）。</p>
       </div>
       <div id="trackList" class="list-simple"></div>
     </div>
 
     <div class="panel">
       <div class="panel-head">
-        <h2>各工地列控總覽</h2>
-        <p class="hint">點選工地名稱即切換至該工地的資料環境（Context Switch），並跳轉至點工清單。「簽單尚未繳回」與上方追蹤提醒同口徑（點工＋機具、期限內）。</p>
+        <h2>各工地列控總覽（我的工地）</h2>
+        <p class="hint">點選工地名稱即切換至該工地的資料環境（Context Switch），並跳轉至點工清單。「簽單尚未繳回」與<strong>追蹤提醒清單</strong>同口徑（我的工地、點工＋機具、期限內）——上方卡片為全站合計，數字可能較大。</p>
       </div>
       <div id="siteBreakdown" class="table-wrap"></div>
     </div>
 
     <div class="panel">
       <div class="panel-head">
-        <h2>最近出工回報紀錄（全部工地）</h2>
+        <h2>最近出工回報紀錄（我的工地）</h2>
       </div>
       <div id="recentAudits" class="list-simple"></div>
     </div>
@@ -844,6 +846,6 @@
 <div id="toast" class="toast"></div>
 
 <script src="config.local.js?ver=2026082501"></script>
-<script src="app.js?ver=2026091004"></script>
+<script src="app.js?ver=2026091005"></script>
 </body>
 </html>

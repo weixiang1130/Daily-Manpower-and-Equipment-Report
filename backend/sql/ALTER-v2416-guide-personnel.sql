@@ -31,10 +31,21 @@ BEGIN
         guide_work    DECIMAL(6,2) NULL,   -- 引導人員出工數(工)；NULL＝未填
         guide_ot2     DECIMAL(6,2) NULL,   -- 引導人員加班時數(前2小時)
         guide_ot_over DECIMAL(6,2) NULL,   -- 引導人員加班時數(第3小時起)
-        guide_note    NVARCHAR(400) NULL;  -- 引導人員備註
+        guide_note    NVARCHAR(MAX) NULL;  -- 引導人員備註（自由文字一律 MAX，同 vendor_done_note 慣例）
     PRINT '已新增 dbo.equip_reports 引導人員四欄';
 END
 ELSE PRINT 'dbo.equip_reports.guide_work 已存在，略過';
+GO
+
+/* 1b. 曾以本腳本較早版本（guide_note NVARCHAR(400)）建過欄者：放寬為 MAX。
+   400 上限只靠前端 maxlength 防守，直接打 API 的超長備註會讓整筆回報 INSERT 500、
+   遷移時整批回滾（MAX 審查）。COL_LENGTH 對 NVARCHAR(MAX) 回 -1。 */
+IF COL_LENGTH('dbo.equip_reports', 'guide_note') NOT IN (-1)
+BEGIN
+    ALTER TABLE dbo.equip_reports ALTER COLUMN guide_note NVARCHAR(MAX) NULL;
+    PRINT '已放寬 dbo.equip_reports.guide_note 為 NVARCHAR(MAX)';
+END
+ELSE PRINT 'dbo.equip_reports.guide_note 已為 MAX（或不存在），略過';
 GO
 
 /* ---------- 2. 重建兩個 VIEW（帶入新欄） ---------- */
@@ -77,10 +88,14 @@ SELECT
     SUM(CASE WHEN e.zero_use = 1 THEN 1 ELSE 0 END) AS zero_use_count,
     SUM(ISNULL(e.days, 0))     AS total_days,      -- 總出工天數
     SUM(ISNULL(e.ot_hours, 0)) AS total_ot_hours,  -- 總加班時數
-    /* 節點 64 引導人員：人（工）的口徑，與機具的天數／時數分欄並存，不相加 */
-    SUM(ISNULL(e.guide_work, 0))    AS guide_work,
-    SUM(ISNULL(e.guide_ot2, 0))     AS guide_ot2,
-    SUM(ISNULL(e.guide_ot_over, 0)) AS guide_ot_over,
+    /* 節點 64 引導人員：人（工）的口徑，與機具的天數／時數分欄並存，不相加。
+       ⚠ 刻意**不包 ISNULL**（MAX 審查）：guide_* 是本表第一組「可空且 NULL 有語意」
+       的數值欄（NULL＝未填≠0）。SUM 本來就跳過 NULL；包了 ISNULL 會把
+       「整組全未填」壓成 0，與「真的填了 0」無法區分——前端明細刻意留白 vs 印 0，
+       兩個權威出口不能互相矛盾。days/ot_hours 是 NOT NULL DEFAULT 0，其 ISNULL 無害。 */
+    SUM(e.guide_work)    AS guide_work,
+    SUM(e.guide_ot2)     AS guide_ot2,
+    SUM(e.guide_ot_over) AS guide_ot_over,
     SUM(e.actual_hours) AS total_hours,
     SUM(ISNULL(e.vendor_done_work, 0))  AS vendor_done_work,
     SUM(ISNULL(e.vendor_done_hours, 0)) AS vendor_done_hours,

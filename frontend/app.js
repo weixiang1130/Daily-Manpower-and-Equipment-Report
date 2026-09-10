@@ -174,9 +174,14 @@ async function refetchSite(site){
   SITE_CACHE[site] = {
     config: st.config || (SITE_CACHE[site] && SITE_CACHE[site].config) || defaultSiteConfig(),
     labor: st.labor || [],
-    equipment: st.equipment || []
+    equipment: st.equipment || [],
+    /* 節點 66（MAX 審查）：第三個快取重建點也要搬 overviewOnly——siteEnterable
+       對缺旗標 fail-open，掉了等於把鎖站解鎖。今天所有呼叫端都傳可進入的
+       currentSite（單站 GET 對未授權站 403），但這是靠慣例不是靠結構；
+       單站端點日後若改回瘦身回應，漏了這行就是權限洞。 */
+    overviewOnly: !!(st.overviewOnly || (SITE_CACHE[site] && SITE_CACHE[site].overviewOnly))
   };
-  sortRecords(SITE_CACHE[site]);
+  if(!SITE_CACHE[site].overviewOnly) sortRecords(SITE_CACHE[site]);
 }
 
 /* 本地日期時間字串 "YYYY-MM-DDTHH:mm"——與 <input type="datetime-local"> 同格式。
@@ -547,16 +552,34 @@ function signReturnError(signDate, workDate){
    2. 只鎖出工日 ≥ 生效日的單（不溯及既往，部署時不會瞬間鎖死全部欠單）
    3. 僅點工（機具不鎖）
    ⚠ 這裡是 UI 動線；真正的把關在伺服器（同節點 61 的前後端成對原則）。 */
-const LABOR_REPORT_WINDOW_DAYS = 3;   // 與後端 Wr.LaborReportWindowDays 同值
-/* ⚠ 生效日暫定 2026-10-01，實際部署日確定後與後端 Wr.LaborReportLockStart **同步**調整 */
-const LABOR_REPORT_LOCK_START = "2026-10-01";
+/* MAX 審查修正：參數改以**後端 app_settings 為單一來源**（master.laborReportLock
+   下發，boot／refreshData 經 applyLaborLockConfig 套用）——生效日本就預定
+   「部署日確定後再調」，兩份寫死常數必出同步縫（改期還得重編譯＋等快取換版）。
+   下兩值只是「還沒拿到 master」時的預設，與後端 Wr 預設同值。 */
+let LABOR_REPORT_WINDOW_DAYS = 3;
+let LABOR_REPORT_LOCK_START = "2026-10-01";
+function applyLaborLockConfig(m){
+  if(!m || typeof m !== "object") return;
+  if(typeof m.start === "string" && /^\d{4}-\d{2}-\d{2}$/.test(m.start)) LABOR_REPORT_LOCK_START = m.start;
+  const d = Number(m.windowDays);
+  if(Number.isFinite(d) && d >= 1 && d <= 60) LABOR_REPORT_WINDOW_DAYS = d;
+}
 function laborReportLockError(rec){
-  if(!rec || rec.status === "已回報") return null;          // 邊界 1
-  if(!rec.date || rec.date < LABOR_REPORT_LOCK_START) return null;  // 邊界 2
+  /* MAX 審查修正：雲端／Auth:Mode=Off／舊部署（AUTHZ 為 null）一律不鎖——
+     那些環境的後端**刻意**不跑 OverdueReportGuard（Off＝完全維持現行行為），
+     前端單方面鎖會讓共用 adminPin 變成唯一逃生口（且那個 PIN 同時解鎖
+     刪單、鎖檔、設定頁）。地端權限模式（有 /whoami 身分）才啟用。 */
+  if(!AUTHZ) return null;
+  /* 邊界 1 用 isReported 口徑（status 字串可能與 report 脫鉤——節點 60 教訓）：
+     「真的已回報」的編輯放行；status=已回報但無 report 的半殘單不豁免 */
+  if(!rec || isReported(rec)) return null;
+  if(!rec.date || rec.date < LABOR_REPORT_LOCK_START) return null;  // 邊界 2：不溯及既往
   const deadline = addDays(rec.date, LABOR_REPORT_WINDOW_DAYS);
   if(localDate() <= deadline) return null;
   return `本單出工日 ${rec.date}，已超過 ${LABOR_REPORT_WINDOW_DAYS} 天的回報期限（最晚 ${deadline}）`;
 }
+/* 鎖定訊息尾句共用（原本三處各寫一份，改字會漏） */
+const LABOR_LOCK_CONTACT = "——本單已鎖定，請洽工地主管代為回報";
 
 /* v24.14 總覽追蹤口徑：不論「未回報」還是「簽單未繳」，追的都是同一個 20 天窗口
    ——基準日（signBaseDate：月租＝租期迄日、其餘＝出工日）＋20 天。
@@ -619,6 +642,7 @@ async function boot(){
       MASTER.siteGrants = data.master.siteGrants;
     if(data.master && data.master.siteLeads && typeof data.master.siteLeads === "object")
       MASTER.siteLeads = data.master.siteLeads;                 // 節點 61 主管白名單
+    applyLaborLockConfig(data.master && data.master.laborReportLock);   // 節點 65 補強：鎖參數單一來源
 
     if(data.master && Array.isArray(data.master.sites) && data.master.sites.length){
       MASTER.sites = data.master.sites;
@@ -637,7 +661,8 @@ async function boot(){
         equipment: st.equipment || [],
         overviewOnly: !!st.overviewOnly   // 節點 66：未授權站的瘦身標記（siteEnterable 的依據）
       };
-      sortRecords(SITE_CACHE[site]);
+      // 瘦身站的紀錄沒有 id，排序是恆等操作（MAX 審查：白付 localeCompare 成本），跳過
+      if(!SITE_CACHE[site].overviewOnly) sortRecords(SITE_CACHE[site]);
       if(!SITE_CACHE[site].config){
         SITE_CACHE[site].config = defaultSiteConfig();
         seedJobs.push(apiSaveConfig(site));
@@ -670,14 +695,26 @@ async function boot(){
   }
 }
 
+/* 未開通工地的提示訊息（節點 62 補強二教訓：同一句話寫兩份，改字會漏） */
+const siteLockedMsg = site => `「${site}」尚未開通查閱權限——請洽成控申請跨工地授權`;
+
 function showSiteGate(){
   const grid = document.getElementById("siteGateGrid");
   /* 節點 66：全部工地都列出來，未授權的鎖住——看得到全貌（總覽開放的一致體驗），
-     點了提示洽成控，不會靜默消失讓人以為系統壞了 */
-  grid.innerHTML = MASTER.sites.map(s=> siteEnterable(s)
+     點了提示洽成控，不會靜默消失讓人以為系統壞了。
+     MAX 審查修正：①一個站都進不去時（新人 project_code 未填、授權被整組收回）
+     要有引導文字——否則 12 顆全鎖的按鈕就是一條沒有任何說明的死路
+     ②鎖定樣式改真的 CSS class（原本掛了一個沒定義的 class＋行內 opacity，
+     hover 還會亮起來像可以點）。 */
+  const anyEnterable = MASTER.sites.some(siteEnterable);
+  grid.innerHTML =
+    (anyEnterable ? "" :
+      `<div class="empty-row" style="grid-column:1/-1;">目前沒有任何已開通的工地——
+       請洽成控申請開通（跨工地授權），開通後按上方「重新整理」即可進入。</div>`)
+    + MASTER.sites.map(s=> siteEnterable(s)
     ? `<button type="button" class="gate-btn" data-site="${esc(s)}">${esc(s)}</button>`
     : `<button type="button" class="gate-btn gate-btn-locked" data-locked-site="${esc(s)}"
-         title="尚未開通此工地的查閱權限" style="opacity:.45;">🔒 ${esc(s)}</button>`).join("");
+         title="尚未開通此工地的查閱權限">🔒 ${esc(s)}</button>`).join("");
   grid.querySelectorAll(".gate-btn[data-site]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
       document.getElementById("siteGate").hidden = true;
@@ -686,7 +723,7 @@ function showSiteGate(){
   });
   grid.querySelectorAll(".gate-btn[data-locked-site]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
-      toast(`「${btn.dataset.lockedSite}」尚未開通查閱權限——請洽成控申請跨工地授權`);
+      toast(siteLockedMsg(btn.dataset.lockedSite));
     });
   });
   document.getElementById("siteGate").hidden = false;
@@ -717,6 +754,7 @@ async function refreshData(silent){
       MASTER.siteGrants = data.master.siteGrants;
     if(data.master && data.master.siteLeads && typeof data.master.siteLeads === "object")
       MASTER.siteLeads = data.master.siteLeads;                 // 節點 61 主管白名單
+    applyLaborLockConfig(data.master && data.master.laborReportLock);   // 節點 65 補強：鎖參數單一來源
     for(const site of MASTER.sites){
       const st = (data.stores && data.stores[site]) || {};
       SITE_CACHE[site] = {
@@ -725,11 +763,24 @@ async function refreshData(silent){
         equipment: st.equipment || [],
         overviewOnly: !!st.overviewOnly   // 節點 66：重建快取時標記必須跟著搬，掉了就等於全站解鎖
       };
-      sortRecords(SITE_CACHE[site]);
+      if(!SITE_CACHE[site].overviewOnly) sortRecords(SITE_CACHE[site]);   // 瘦身站無 id，排序是恆等操作
     }
-    /* 節點 66：目前的站被移除**或被收回權限**（變瘦身站）都要退到可進入的站 */
+    /* 節點 66：目前的站被移除**或被收回權限**（變瘦身站）都要退到可進入的站。
+       ⚠ MAX 審查修正：可進入的站可能**一個都不剩**（授權被整組收回、快取重算）——
+         enterableSites()[0] 是 undefined，硬塞進 currentSite 會讓 cur() 直接
+         TypeError、整頁半殘且錯誤被 silent catch 吞掉。此時回選站畫面
+         （全鎖狀態有引導文字），與 boot 的空清單路徑同一個出口。 */
     if(!MASTER.sites.includes(MASTER.currentSite) || !siteEnterable(MASTER.currentSite)){
-      MASTER.currentSite = enterableSites()[0];
+      const en = enterableSites();
+      if(!en.length){
+        MASTER.currentSite = "";
+        ssDel("dm_site");
+        READY = false;
+        showSiteGate();
+        if(!silent) toast("您的工地權限已變更，目前沒有可進入的工地——請洽成控");
+        return;
+      }
+      MASTER.currentSite = en[0];
       ssSet("dm_site", MASTER.currentSite);
     }
     renderAll();
@@ -770,7 +821,7 @@ function switchSiteContext(site, silent){
      追蹤提醒/列控總覽的列點擊、記住的舊站名都會走進來）。
      後端 CanSee 守衛仍在，這裡是動線不是防線。 */
   if(!siteEnterable(site)){
-    toast(`「${site}」尚未開通查閱權限——請洽成控申請跨工地授權`);
+    toast(siteLockedMsg(site));
     renderSitePicker();   // 把下拉選單彈回目前工地
     return;
   }
@@ -1259,12 +1310,21 @@ function initLaborApplyForm(){
       return;
     }
 
+    const store = cur();
+    const existing = editingLaborApplyId ? store.labor.find(r=>r.id===editingLaborApplyId) : null;
+
+    /* 節點 65 補強（MAX 審查抓到的兩步繞過）：逾期待回報單的**出工日不得變更**——
+       否則「編輯申請把日期改成今天 → 再回報」就繞過三日鎖。日期沒動的編輯照常；
+       主管／管理員放行。與伺服器 OverdueReportGuard 規則 2 成對（那邊才是防線）。 */
+    if(existing && existing.date !== date && laborReportLockError(existing)
+       && !canLeadOverride(MASTER.currentSite)){
+      toast(`本單已超過 ${LABOR_REPORT_WINDOW_DAYS} 天的回報期限並鎖定，出工日期僅限工地主管修改`);
+      return;
+    }
+
     // 防呆：送出前確認工地
     const okSite = confirm(`⚠ 工地確認\n\n本筆點工申請將寫入共用資料庫的工地：\n「${MASTER.currentSite}」\n\n${date}・${vendor}・需求 ${fmt(required)} 工・申請人 ${applicant}\n\n工地正確嗎？`);
     if(!okSite) return;
-
-    const store = cur();
-    const existing = editingLaborApplyId ? store.labor.find(r=>r.id===editingLaborApplyId) : null;
 
     const rec = {
       id: editingLaborApplyId || uid(),
@@ -1507,7 +1567,7 @@ function initLaborReportForm(){
       const lockErr65 = laborReportLockError(rec);
       if(lockErr65){
         if(!canLeadOverride(MASTER.currentSite)){
-          toast(lockErr65 + "——本單已鎖定，請洽工地主管代為回報"); return;
+          toast(lockErr65 + LABOR_LOCK_CONTACT); return;
         }
         const okLead = confirm(`⚠ ${lockErr65}。\n\n您具本工地的主管（或管理員）權限，要代為回報這張逾期單嗎？`);
         if(!okLead) return;
@@ -1855,7 +1915,7 @@ async function loadLaborReportRecord(id){
   {
     const lockErr65 = laborReportLockError(rec);
     if(lockErr65 && !canLeadOverride(MASTER.currentSite)){
-      toast(lockErr65 + "——本單已鎖定，請洽工地主管代為回報");
+      toast(lockErr65 + LABOR_LOCK_CONTACT);
       return;
     }
   }
@@ -1962,9 +2022,12 @@ function renderLaborList(){
       const statusTag = reported
         ? (rep.zeroWork ? '<span class="tag bad">0工</span>' : '<span class="tag ok">已回報</span>')
         : '<span class="tag warn">待回報</span>';
-      /* 節點 65：逾期鎖定標記——讓承辦看清單就知道這張要找主管，不用點進去才被擋 */
+      /* 節點 65：逾期鎖定標記——讓承辦看清單就知道這張要找主管，不用點進去才被擋。
+         MAX 審查修正：主管自己看到「請洽工地主管」是叫他去找他自己——提示按身分分流 */
       const lockTag65 = !reported && laborReportLockError(r)
-        ? `<span class="tag bad" title="超過 ${LABOR_REPORT_WINDOW_DAYS} 天未回報，已鎖定；請洽工地主管代為回報">🔒逾期</span>`
+        ? `<span class="tag bad" title="${canLeadOverride(MASTER.currentSite)
+             ? `超過 ${LABOR_REPORT_WINDOW_DAYS} 天未回報已鎖定；您具主管權限，可代為回報`
+             : `超過 ${LABOR_REPORT_WINDOW_DAYS} 天未回報，已鎖定；請洽工地主管代為回報`}">🔒逾期</span>`
         : "";
       const diffTag = !reported ? "—" : (rep.diff===0 ? '<span class="tag ok">相符</span>' : '<span class="tag bad">'+fmt(rep.diff)+'</span>');
       const reportBtnLabel = reported ? "編輯回報" : "填寫回報";
@@ -2098,9 +2161,8 @@ function initEquipApplyForm(){
     if(!types.length){ toast("請選擇機具類型"); return; }
     const requiredQty = parseFloat(document.getElementById("e_requiredQty").value) || 0;
     // v22.6：空白存 null 而非 0——0 代表「預定就是 0 小時」，null 代表「沒填」，
-    // 差異計算要分得出來（舊單一律 null，差異顯示空白）
-    const phRaw = document.getElementById("e_plannedHours").value.trim();
-    const plannedHours = phRaw === "" ? null : (parseFloat(phRaw) || 0);
+    // 差異計算要分得出來（舊單一律 null，差異顯示空白）。走共用 numFieldVal（MAX 審查收斂）
+    const plannedHours = numFieldVal("e_plannedHours");
     const date = document.getElementById("e_date").value;
 
     if(isLockedDate(date)){
@@ -2491,14 +2553,11 @@ function initEquipReportForm(){
     const days = parseFloat(document.getElementById("e_days").value) || 0;
     const otHours = parseFloat(document.getElementById("e_otHours").value) || 0;
     /* 節點 64 引導人員：**空白＝null（未填）、0＝真的 0**——同 diff 的理由，
-       報表端據此決定留白或印 0，不可用 ||0 把兩者壓成同一個值 */
-    const numOrNull = id => {
-      const v = document.getElementById(id).value.trim();
-      return v === "" ? null : (parseFloat(v) || 0);
-    };
-    const guideWork   = numOrNull("e_guideWork");
-    const guideOt2    = numOrNull("e_guideOt2");
-    const guideOtOver = numOrNull("e_guideOtOver");
+       報表端據此決定留白或印 0。取值走共用的 numFieldVal（MAX 審查：
+       原本在此重造了一份逐字相同的 helper——這條「空白=null」規則只准活在一處）。 */
+    const guideWork   = numFieldVal("e_guideWork");
+    const guideOt2    = numFieldVal("e_guideOt2");
+    const guideOtOver = numFieldVal("e_guideOtOver");
     const guideNote   = document.getElementById("e_guideNote").value.trim();
 
     /* v22.9：勾了到場卻沒填時數就擋下來。**空白與 0 是兩件事**——
@@ -2652,8 +2711,15 @@ function collectEquipWarnings(usage, actualHours, zeroUse, days, otHours, monthl
     if(go > 0 && !(g2 > 0)) w.push("引導人員：填了第 3 小時起的加班，但前 2 小時為 0（加班時數應先計入前 2 小時）");
     if((g2 > 0 || go > 0) && !(gw > 0)) w.push("引導人員：有加班時數但出工數為 0 或未填");
     if(gw > 3) w.push(`引導人員出工數 ${fmt(gw)} 工，高於常態（單台機具通常配 1 名）`);
+    /* MAX 審查補：上限比照點工的加班規則（前 2 小時每工至多 2 小時、
+       合計至多每工 8 小時）——引導人員本來就是點工口徑，不該只有粗略的 12 小時線 */
+    if(gw > 0 && g2 > gw * 2) w.push(`引導人員：前 2 小時加班 ${fmt(g2)} 小時，超過出工數 ${fmt(gw)} 工 × 2 小時的上限`);
+    if(gw > 0 && (g2 || 0) + (go || 0) > gw * 8) w.push(`引導人員：加班合計 ${fmt((g2||0)+(go||0))} 小時，超過出工數 × 8 小時的常態上限`);
     if((g2 || 0) + (go || 0) > 12) w.push(`引導人員加班合計 ${fmt((g2||0)+(go||0))} 小時，高於常態`);
-    if(zeroUse && (gw != null || g2 != null || go != null))
+    /* MAX 審查修正：判「填了」要用 >0 不能用 != null——numFieldVal 的整個設計就是
+       0＝「明確填了 0」（確認今天沒有引導人員），對明確填 0 的人跳
+       「但填了引導人員」的確認框，語意恰好相反 */
+    if(zeroUse && (gw > 0 || g2 > 0 || go > 0))
       w.push("已勾選 0 使用確認，但填了引導人員——請確認機具未使用當日人員確實有到場");
   }
   if(zeroUse) return w;
@@ -2903,10 +2969,10 @@ async function loadEquipReportRecord(id){
   setCombo("cb_e_vendor", recVendor(rec));
   document.getElementById("e_days").value = rep.days != null ? rep.days : "";
   document.getElementById("e_otHours").value = rep.otHours != null ? rep.otHours : "";
-  // 節點 64 引導人員：null＝未填 → 留空白（不可顯示成 0，0 是「真的填了 0」）
-  document.getElementById("e_guideWork").value = rep.guideWork != null ? rep.guideWork : "";
-  document.getElementById("e_guideOt2").value = rep.guideOt2 != null ? rep.guideOt2 : "";
-  document.getElementById("e_guideOtOver").value = rep.guideOtOver != null ? rep.guideOtOver : "";
+  // 節點 64 引導人員：null＝未填 → 留空白（不可顯示成 0）；走共用 setNumField（MAX 審查）
+  setNumField("e_guideWork", rep.guideWork);
+  setNumField("e_guideOt2", rep.guideOt2);
+  setNumField("e_guideOtOver", rep.guideOtOver);
   document.getElementById("e_guideNote").value = rep.guideNote || "";
   document.getElementById("e_workContent").value = rep.workContent || "";
   /* v22.8：費率書不在 scope=all，開表單時才抓；抓到後填品項下拉並帶回原選擇 */
@@ -3074,16 +3140,18 @@ function renderDashboard(){
      超過 20 天（left<0）＝簽單已逾期不予採計、追回無實益——不進清單與卡片，
      只在清單尾端彙總一行（歷程報表照樣查得到；月租單本身仍可正常補回報，
      只有「簽單繳回日」欄位受期限限制——2026-08-28 於正式鏡像實測確認）。
-     v24.6 原則不變：只追 DASH_TRACK_SINCE 起的單，卡片與清單同一份資料。
+     v24.6 原則不變：只追 DASH_TRACK_SINCE 起的單。節點 66 起卡片與清單
+     **同源不同範圍**（卡片全站、清單自己的站），差額在清單尾註交代。
      機具的廠商一律走 recVendor()（v22.6 起廠商在回報時才填，唯一權威）。 */
   const today = localDate();
   const track = [];
   let expiredCount = 0;
   /* 節點 66：卡片（整體概況）算**全部工地**、追蹤提醒清單只列**自己可進的站**
-     （使用者 2026-09-10 裁示的分區）。計數與清單自此同源不同範圍：
-     overdue/sign 兩個計數在 collect 內對全站累加，push 只發生在可進入的站；
+     （使用者 2026-09-10 裁示的分區）。計數與清單自此**同源不同範圍**——
+     卡片數字可能大於清單列數，差額由 foreignCount 在清單尾註交代
+     （MAX 審查：不交代的話卡片就是一個從畫面上驗證不了的數字，違反計價紅線 4）。
      expiredCount 是清單的尾註（「另有 N 張超過 20 天」），跟清單同範圍。 */
-  let overdueCount = 0, signCount = 0;
+  let overdueCount = 0, signCount = 0, foreignCount = 0;
   const collect = (site, kind, rec) => {
     const left = trackLeftDays(rec, today);
     if(left === null) return;
@@ -3094,9 +3162,11 @@ function renderDashboard(){
     else if(rec.status === "已回報" && rec.report && !rec.report.signReturnDate) type = "簽單未繳";
     if(!type) return;
     if(left >= 0){ if(type === "未回報") overdueCount++; else signCount++; }   // 卡片：全站
-    if(!siteEnterable(site)) return;                                          // 清單：自己的站
+    if(!siteEnterable(site)){ if(left >= 0) foreignCount++; return; }          // 清單：自己的站
     if(left < 0){ expiredCount++; return; }
     track.push({ site, kind, type, base, left,
+                 // 節點 65：逾期鎖定的點工單標出來——「剩 N 天」對承辦已無意義，得找主管
+                 locked: kind === "點工" && !!laborReportLockError(rec),
                  vendor: (kind==="機具" ? recVendor(rec) : rec.vendor) || "—",
                  who: (rec.report && (kind==="機具" ? rec.report.checker : rec.report.engineer)) || rec.applicant || "—" });
   };
@@ -3117,7 +3187,7 @@ function renderDashboard(){
   `).join("");
 
   renderSiteBreakdown(today);
-  renderTrackList(track, expiredCount);
+  renderTrackList(track, expiredCount, foreignCount);
   renderDashRanking(allLabor);
 
   const recentEl = document.getElementById("recentAudits");
@@ -3143,12 +3213,15 @@ function renderDashboard(){
    統一用「期限剩 N 天」倒數（同一個 20 天窗口），剩越少排越前面——
    來得及搶救的排最上面，取代舊版「逾期天數多在前」讓死單永遠置頂的排序。
    列可點擊：切到該工地並跳到對應清單頁，直接接上處理動線。 */
-function renderTrackList(track, expiredCount){
+function renderTrackList(track, expiredCount, foreignCount){
   const el = document.getElementById("trackList");
   if(!el) return;
   const foot = [];
   if(track.length > 12) foot.push(`…另有 ${track.length - 12} 張未列出`);
   if(expiredCount) foot.push(`另有 ${expiredCount} 張已超過 20 天期限（簽單逾期不予採計），不列入追蹤——歷程報表仍查得到`);
+  /* 節點 66 補強（MAX 審查）：卡片算全站、本清單只列自己的站——差額要交代，
+     否則卡片是一個從畫面上驗證不了的數字（計價紅線 4） */
+  if(foreignCount) foot.push(`另有 ${foreignCount} 張在未開通的工地（僅計入上方卡片，由各該工地追蹤）`);
   const footHtml = foot.map(t=>`<div class="empty-row">${esc(t)}</div>`).join("");
   if(!track.length){
     el.innerHTML = '<div class="empty-row">目前沒有期限內待追蹤的單據</div>' + footHtml;
@@ -3159,7 +3232,10 @@ function renderTrackList(track, expiredCount){
     <div class="row-item clickable" data-site="${esc(o.site)}" data-kind="${esc(o.kind)}">
       <span><strong>${esc(o.site)}</strong>・${esc(o.kind)}・${esc(o.base)}
         <span class="row-meta">${esc(o.vendor)}／${esc(o.who)}</span></span>
-      <span><span class="tag">${esc(o.type)}</span><span class="tag ${sev(o.left)}">剩 ${o.left} 天</span></span>
+      <span><span class="tag">${esc(o.type)}</span>${
+        /* 節點 65 補強：逾期鎖定的點工單「剩 N 天」對承辦已無意義——標出要找主管 */
+        o.locked ? '<span class="tag bad" title="已超過回報期限鎖定，需工地主管代為回報">🔒須主管</span>' : ""
+      }<span class="tag ${sev(o.left)}">剩 ${o.left} 天</span></span>
     </div>
   `).join("") + footHtml;
 
@@ -3825,6 +3901,14 @@ async function buildMigrationBundle(){
     bundleProgress("① 下載單據與名單池…");
     const data = await api("GET", null, { scope: "all" });
     const stores = data.stores || {};
+    /* 節點 66 補強（MAX 審查）：權限只涵蓋部分工地時（有瘦身站）**擋下遷移包**——
+       包裡的站名都在、未授權站卻是無 id 的空殼，backup-json-to-sql 會把那些列
+       全數靜默跳過（只累計 skipped 計數），資訊處拿到一份「看起來完整、
+       十站是空的」匯入。遷移是全有或全無的事，必須由全站權限的帳號執行。 */
+    if(Object.values(stores).some(s=>s && s.overviewOnly)){
+      toast("⚠ 您的權限僅涵蓋部分工地，遷移包必須由具全站權限的管理員／成控帳號產生（避免產出缺站的搬遷檔）");
+      return;
+    }
 
     bundleProgress("② 下載行情通報費率書…");
     /* ⚠ 抓失敗**不可當成「本來就沒有費率」靜默帶過**——包裡照樣會有一個空的
@@ -5856,7 +5940,12 @@ function resetAuditView(){
 function renderAuditView(){
   if(!READY || !isAdmin()) return;
   const siteSel = document.getElementById("auditSite");
-  siteSel.innerHTML = MASTER.sites.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join("");
+  /* 節點 66 補強（MAX 審查）：稽核頁選站是唯一漏掉鎖定標示的下拉——PIN 管理員
+     （非後端全站角色）會看到未開通站像可選、點了才被 switchSiteContext 擋回。
+     與主選站下拉同一套標示（真成控／管理員全站可進，看不到鎖）。 */
+  siteSel.innerHTML = MASTER.sites.map(s=> siteEnterable(s)
+    ? `<option value="${esc(s)}">${esc(s)}</option>`
+    : `<option value="${esc(s)}" disabled>🔒 ${esc(s)}（未開通）</option>`).join("");
   siteSel.value = MASTER.currentSite;
   document.querySelectorAll("#auditKindSwitch .akind").forEach(b=>b.classList.toggle("active", b.dataset.akind===auditKind));
   if(auditDate === null) auditDate = localDate();   // 首次進稽核頁才帶入當天（延後計算，跨午夜分頁不會拿到昨天）
@@ -6392,15 +6481,17 @@ function isAdmin(){ return ssGet("dm_admin") === "1"; }
    ⚠ 這裡只是 UI 提示與動線，真正的把關在伺服器的 ReportedDeleteGuard——
      前端放行不等於刪得掉，前端擋住也不該是唯一防線。
    ⚠ 鎖檔另由 isLockedDate() 把關且優先：主管一樣刪不了鎖檔區間內的單（與後端一致）。 */
-function canDeleteReported(site){
+/* 主管代處理權（節點 65 把節點 61 的語意定為通則）：工地承辦的超常規操作
+   ——刪已回報單、逾期回報／逾期單改期——由該站主管代為執行。
+   **判定收斂在 canLeadOverride**（與後端 Authz.CanLeadOverride 同名同向——
+   MAX 審查抓到前後端的委派方向相反、兩邊註解互指對方為權威）；
+   canDeleteReported 是節點 61 時期的舊名，委派過來。
+   取不到身分（雲端／Auth:Mode=Off／舊部署）退回 adminPin，行為與改版前相同。 */
+function canLeadOverride(site){
   if(!AUTHZ) return isAdmin();
   return !!AUTHZ.isAdmin || (Array.isArray(AUTHZ.leadSites) && AUTHZ.leadSites.includes(site));
 }
-
-/* 主管代處理權（節點 65 把節點 61 的語意定為通則）：工地承辦的超常規操作
-   ——刪已回報單、逾期三日後的回報——由該站主管代為執行。與後端
-   Authz.CanLeadOverride 同一口徑；判定收斂在 canDeleteReported，勿另寫一份。 */
-function canLeadOverride(site){ return canDeleteReported(site); }
+function canDeleteReported(site){ return canLeadOverride(site); }
 
 function initAdmin(){
   document.getElementById("adminToggleBtn").addEventListener("click", ()=>{
@@ -6719,12 +6810,17 @@ function initLockRangeUI(){
      所以要明確確認。仍走「儲存設定」的同一條寫入路徑。 */
   document.getElementById("lk_applyAllBtn").addEventListener("click", async ()=>{
     if(!isAdmin()){ toast("僅限管理員操作"); return; }
-    if(!confirm(`將目前工地的 ${lockDraft.length} 段鎖檔規則「覆蓋」到全部 ${MASTER.sites.length} 個工地？
+    /* 節點 66 補強（MAX 審查）：只套用到**可進入的站**——MASTER.sites 現在列全站，
+       對未授權站發 apiSaveConfig 必 403、Promise.all 整批報「套用失敗」，
+       且瘦身站的本地 config 會被塞入從未落庫的 lockRanges 污染快取。
+       真管理員／成控（AllSites）不受影響（全部站都可進入）。 */
+    const applySites = enterableSites();
+    if(!confirm(`將目前工地的 ${lockDraft.length} 段鎖檔規則「覆蓋」到您可管理的 ${applySites.length} 個工地？
 各站原本的鎖檔設定會被取代（其他基礎資料不受影響）。`)) return;
     const snapshot = lockDraft.map(r=>({...r}));
     try{
       const jobs = [];
-      for(const site of MASTER.sites){
+      for(const site of applySites){
         if(!SITE_CACHE[site]) SITE_CACHE[site] = { config: defaultSiteConfig(), labor: [], equipment: [] };
         SITE_CACHE[site].config.lockRanges = snapshot.map(r=>({...r, id: uid()}));
         jobs.push(apiSaveConfig(site));
@@ -6800,8 +6896,11 @@ function initSettings(){
       toast("⚠ 設定雲端儲存失敗，請檢查網路後再試");
       return;
     }
-    if(!MASTER.sites.includes(MASTER.currentSite)){
-      MASTER.currentSite = MASTER.sites[0];
+    /* 節點 66 補強（MAX 審查）：回退要挑可進入的站——MASTER.sites[0] 現在可能是
+       瘦身站（設定頁儲存者若是 PIN 管理員而非後端全站角色，會落到一個空殼站）。
+       真管理員全站可進入，行為不變。 */
+    if(!MASTER.sites.includes(MASTER.currentSite) || !siteEnterable(MASTER.currentSite)){
+      MASTER.currentSite = enterableSites()[0] || MASTER.sites[0];
       ssSet("dm_site", MASTER.currentSite);
     }
     renderAll();
@@ -6842,6 +6941,12 @@ function initSettings(){
     if(!isAdmin()){ toast("僅限管理員操作"); return; }
     try{
       const data = await api("GET", null, { scope: "all" });
+      /* 節點 66 補強（MAX 審查）：同遷移包——含瘦身站的備份是「看起來完整、
+         多數站是空殼」的假完整檔，寧可擋下也不產生。 */
+      if(Object.values(data.stores || {}).some(s=>s && s.overviewOnly)){
+        toast("⚠ 您的權限僅涵蓋部分工地，完整備份必須由具全站權限的管理員／成控帳號產生");
+        return;
+      }
       const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
       /* 檔名刻意標明「不含附件」——這份 JSON 依合約不含附件本體與費率書，
          切換日誤把它當成搬家用的完整備份，附件會整批遺失（見 docs/milestones/48）。 */
